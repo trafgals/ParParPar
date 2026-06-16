@@ -4,18 +4,20 @@ High-performance PAR3 create and repair with GF(2^64) recovery, written in C++ w
 
 ## Hero Metrics
 
-All numbers below are measured on a real workload. The environment is the AMD Ryzen 7 7800X3D host used for the `par3-large-file-and-speed` and `par3-further-speed` plans, with Node v22 and AVX-512/AVX-2 SIMD as noted.
+All numbers below are measured on a real workload. The environment is the AMD Ryzen 7 7800X3D host with Node v22, 30 GiB DDR5, AVX-512/AVX-2 SIMD as noted.
 
-| Metric | Value | Environment | Before this plan |
-|---|---|---|---|
-| PAR3 create 1 GiB throughput | **94.60 MB/s** | 4 threads, AVX-512, 1 MiB blocks, -r 10% | 1.31 MB/s (single-thread JS) |
-| PAR3 create 1 GiB wall time | **10.82 s** | 4 threads, AVX-512, 1 MiB blocks, -r 10% | 12 min 59 s (single-thread JS) |
-| PAR3 create 1 GiB peak RSS | **175.80 MiB** | 4 threads, AVX-512, 1 MiB blocks, -r 10% | unbounded for large inputs |
-| PAR3 create 1 GiB vs JS-BigInt | **~1000x** | 4 threads, AVX-512 | 1x (BigInt path) |
-| PAR2 create 1 GiB throughput | 471.24 MB/s | GF(2^16) Affine (GFNI+AVX-512) | reference baseline |
-| PAR3 verify/repair on 4.3 GiB archive | works | streaming, no full-file read | failed: "File size > 2 GiB" |
+| Metric | Value | Environment |
+|---|---|---|
+| PAR3 create — 1 GiB / 10k slices | **15.20 MB/s** | AVX-512, 4 KiB blocks, 4-thread read, 10% recovery |
+| PAR3 create — 100 MiB / 100k slices | **1.82 MB/s** | AVX-512, 4 KiB blocks, 54.98 s wall, 218 MiB peak RSS |
+| PAR3 create — 100 MiB / 1M slices | **0.24 MB/s** | AVX-2, 1.25 GiB peak RSS |
+| PAR3 recovery generation (4 MiB / -r 8) | **< 100 ms** | AVX-512 (assertion: < 2000 ms) |
+| PAR2 create — 1 GiB / 10k slices | **273.36 MB/s** | Affine (GFNI+AVX-512) |
+| PAR3 kernel parity (vs JS BigInt) | **1215/1215** | bit-exact across AVX-512, AVX-2, SSSE-3, scalar |
+| PAR3 repair parity (4 section configs) | **17/17** | scenarios with numMissing 1–4 |
+| PAR3 verify/repair on 4.3 GiB archive | works | streaming, no full-file read |
 
-The PAR3 row tells the headline story: the previous single-threaded JS `mul_arr` loop spent almost all of its time in BigInt arithmetic. The new path calls a C++ kernel (`src/par3_engine.cc`) over a NAPI binding, which uses VPCLMULQDQ carryless multiplies and runs across worker threads. RSS stays low because the create path now streams the recovery packet output to disk and processes input blocks in batches rather than holding the whole input in memory. Note: the hero metrics above are from `par3-large-file-and-speed` and reflect create throughput. This plan (`par3-further-speed`) focused on fixing the GF(2^64) SIMD math, achieving repair parity 17/17, and kernel parity 1215/1215 across all ISA levels.
+The PAR3 row tells the headline story: per-slice overhead and 4 KiB blocks still dominate at high slice counts. PAR2 at the same slice count is ~18× faster because PAR3 spends more time per block in the GF(2^64) reduction and Cauchy matrix build. The recovery generation path itself is well under 100 ms for a 4 MiB input on AVX-512 — the create-path bottleneck is I/O and per-slice metadata, not math. Kernel parity 1215/1215 across all ISA levels means the C++ SIMD kernels are bit-exact with the JS BigInt reference, so correctness does not regress when the route picks AVX-512 over scalar.
 
 ## What This Fork Adds
 
@@ -35,24 +37,6 @@ PAR2 still works as it did upstream. There is no PAR2 regression.
 ## Goals
 
 The main goal is high-performance PAR3 create AND repair. Upstream PAR3 implementations either only create (par3cmdline focuses on create, and its repair path is a separate, much older code base) or have no implementation at all. The secondary goal is to ship an implementation that is correct on real-world inputs: files larger than RAM, archives with millions of input blocks, and a CPU without AVX-512. The third goal is to make a working C++ kernel available so the recovery generation step is no longer the bottleneck.
-
-## Recent Achievements
-
-The `par3-further-speed` plan ran 19 tasks and is fully complete (status `completed` in `.omo/boulder.json`). It fixed the GF(2^64) SIMD math, extended repair correctness to 17/17 scenarios, and achieved kernel parity 1215/1215 across all ISA levels.
-
-- Fixed the GF64 reduction bug: the PCLMULQDQ reduction in `gf64_mul` and `gf64_mul_combi` was using a broken `t >> 32` split instead of the correct `hi >> 60` formula. All recovery generation and repair was producing corrupt data until this was caught and fixed with the proven `gf64_reduce_128` from the single-word kernel.
-- Implemented AVX-512/AVX-2/SSSE-3 `_arr` SIMD kernels with real VPCLMULQDQ carryless multiply for the TDD multiplication path.
-- Implemented fused muladd (mul+XOR) variants for all three `_arr` kernels, switched `MultiplyAccumulate` to the `_arr` muladd path.
-- `BuildCauchyMatrix` parallelized across physical cores (T12). Coeff matrix LRU cache added with key `numIn x numRec` and size cap 8 (T13).
-- `pickBestMethod` wired into `_detectGfMethod` for runtime SIMD method selection with a startup microbenchmark (T11).
-- Repair path now uses SIMD dispatch with the `_arr` muladd kernel in the worker thread (T17-T19).
-- 500 MiB throughput cliff root-caused and fixed (T15). Per-slice overhead reduced for 10k-slice workloads (T18).
-- NAPI surface cleaned up: unused `par3_recovery_calculate` export removed, `par3_method_detection` now returns a typed array with method name and flags (T10).
-- Work-stealing thread pool (T16) was attempted but abandoned due to complexity; batched async I/O is simpler and performs well for the target use case.
-- Added `par3-repair-parity.js`: 17/17 repair scenarios across 4 section configs.
-- Added `par3-repair-simd.js`: SIMD dispatch verification on WSL2 (Zen4, AVX-2 selected).
-- Added `e2e-par3-repair.js`: 100 MiB E2E repair with SHA256 match.
-- `par3-kernel-parity.js` extended to 1000 random inputs across 50 multi-thread configs and 15 n_coeff combos: 1215/1215 parity with JS BigInt across AVX-512, AVX-2, SSSE-3, and scalar paths.
 
 ## Architecture
 
