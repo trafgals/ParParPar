@@ -602,9 +602,47 @@ if (process.env.PAR3_KERNEL_MICROBENCH === '1') {
 	var bytesPerSec = elementsPerSec * 8; // 8 bytes per element
 	var gbPerSec = bytesPerSec / 1e9;
 
-	console.log('microbench: ' + gbPerSec.toFixed(2) + ' GB/s (' +
+	console.log('microbench (mul_arr):  ' + gbPerSec.toFixed(2) + ' GB/s (' +
 		(elementsPerSec / 1e6).toFixed(1) + ' Melements/sec) on ' +
 		methodName + ', len=' + MB_LEN + ' bytes, n_coeff=1, reps=' + REPS);
+
+	// ----- Section E.2: muladd microbench via compute_recovery -----
+	// T5 restructures gf64_region_muladd_avx512_arr's inner loop. Measure it
+	// by calling compute_recovery (which internally invokes muladd_arr) on
+	// a 1 MiB random buffer with 1 input + 1 recovery (one muladd per call).
+	// Memset overhead is subtracted to isolate kernel throughput.
+	for (var warm = 0; warm < 5; warm++) {
+		mbOut.fill(0);
+		addon.compute_recovery(mbInp, mbOut, 1, 1, MB_LEN, 0, 1);
+	}
+
+	var mulStartNs = process.hrtime.bigint();
+	for (var rep = 0; rep < REPS; rep++) {
+		mbOut.fill(0);
+		addon.compute_recovery(mbInp, mbOut, 1, 1, MB_LEN, 0, 1);
+	}
+	var mulEndNs = process.hrtime.bigint();
+	var mulTotalSec = Number(mulEndNs - mulStartNs) / 1e9;
+
+	// Measure memset overhead alone
+	var memStartNs = process.hrtime.bigint();
+	for (var rep = 0; rep < REPS; rep++) {
+		mbOut.fill(0);
+	}
+	var memEndNs = process.hrtime.bigint();
+	var memSec = Number(memEndNs - memStartNs) / 1e9;
+
+	var mulOnlySec = mulTotalSec - memSec;
+	if (mulOnlySec <= 0) mulOnlySec = mulTotalSec; // fallback if subtraction goes negative
+	var mulElementsPerSec = (NUM_WORDS * REPS) / mulOnlySec;
+	var mulBytesPerSec = mulElementsPerSec * 8;
+	var mulGbPerSec = mulBytesPerSec / 1e9;
+
+	console.log('microbench (muladd via compute_recovery): ' + mulGbPerSec.toFixed(2) + ' GB/s (' +
+		(mulElementsPerSec / 1e6).toFixed(1) + ' Melements/sec) on ' +
+		methodName + ', len=' + MB_LEN + ' bytes, n_coeff=1, reps=' + REPS +
+		' (memset ' + (memSec * 1000).toFixed(2) + ' ms subtracted)');
+
 	console.log('Section E complete\n');
 }
 
