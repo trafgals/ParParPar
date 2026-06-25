@@ -288,62 +288,126 @@ void gf64_region_muladd_avx512_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HE
 
 	if (n_coeff == 1) {
 		/* Fast path: single coefficient broadcast across all lanes.
-		 * Software-pipelined inner loop: 4 VPCLMULQDQ per iteration (16 GF
-		 * elements), with prev-loads issued BETWEEN clmul and reduce so
-		 * load latency overlaps with reduction work. The 4 clmul, 4 loads,
-		 * 4 reduce, 4 XOR+store streams are independent and the OOO engine
-		 * can keep all four in flight concurrently to hide VPCLMULQDQ
-		 * latency (~3-7 cycles on Zen4). */
+		 *
+		 * T10 (this version): 4-way input unroll + 2-way output unroll.
+		 * Process 32 GF elements per outer iteration via 8 VPCLMULQDQ
+		 * (back-to-back, no deps between clmul calls). Layout: 4 streams,
+		 * each stream owns 2 clmul operating on disjoint input ZMMs
+		 * (one per output block). Total per outer iteration:
+		 *   - 8 input ZMMs covering in[i+0..31]
+		 *   - 8 clmul producing 32 128-bit products (4 elements each)
+		 *   - 8 reductions to 64-bit GF elements
+		 *   - 8 prev-loads + 8 XOR + 8 masked stores
+		 *
+		 * Each clmul reads its OWN input ZMM (NOT reused across output
+		 * blocks) because the kernel semantics is element-wise: output[k]
+		 * depends on input[k] for each k. The "4-way input unroll"
+		 * description in the plan refers to the 8-element sliding window
+		 * of inputs feeding the 8 clmul (4 from the low output block,
+		 * 4 from the high).
+		 *
+		 * Stream layout (4 streams × 2 clmul = 8 clmul):
+		 *   stream 0: in[i+0..3]   → out[i+0..3]   AND in[i+16..19] → out[i+16..19]
+		 *   stream 1: in[i+4..7]   → out[i+4..7]   AND in[i+20..23] → out[i+20..23]
+		 *   stream 2: in[i+8..11]  → out[i+8..11]  AND in[i+24..27] → out[i+24..27]
+		 *   stream 3: in[i+12..15] → out[i+12..15] AND in[i+28..31] → out[i+28..31]
+		 *
+		 * A `_mm_prefetch` (T0 hint) is issued in the middle of the loop
+		 * for the cache line that the NEXT outer iteration will consume
+		 * first. Distance: 256 elements = 32 cache lines ahead, giving
+		 * the L3-to-L1D transfer (~40-50 cycles on Zen4) enough time to
+		 * complete before the data is needed. */
 		uint64_t c0 = coeff[0];
 		__m512i coeff_broadcast = _mm512_set1_epi64((int64_t)c0);
 
-		size_t blocks = len / 16;
+		size_t blocks = len / 32;
 		for (size_t b = 0; b < blocks; b++) {
-			/* PHASE 1: 4 independent clmul (back-to-back, no deps). */
-			__m512i in_0 = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
+			/* PHASE 1: 8 input ZMMs and 8 back-to-back clmul. The 8
+			 * clmul are independent (different input ZMMs, same coeff
+			 * broadcast), so the OOO engine can keep all 8 in flight. */
+			/* Stream 0 */
+			__m512i in_0a = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
 			                                 0, (int64_t)in[i + 1], 0, (int64_t)in[i + 0]);
-			__m512i prod_0 = _mm512_clmulepi64_epi128(in_0, coeff_broadcast, 0x00);
+			__m512i prod_0a = _mm512_clmulepi64_epi128(in_0a, coeff_broadcast, 0x00);
+			__m512i in_0b = _mm512_set_epi64(0, (int64_t)in[i + 19], 0, (int64_t)in[i + 18],
+			                                 0, (int64_t)in[i + 17], 0, (int64_t)in[i + 16]);
+			__m512i prod_0b = _mm512_clmulepi64_epi128(in_0b, coeff_broadcast, 0x00);
 
-			__m512i in_1 = _mm512_set_epi64(0, (int64_t)in[i + 7], 0, (int64_t)in[i + 6],
+			/* Stream 1 */
+			__m512i in_1a = _mm512_set_epi64(0, (int64_t)in[i + 7], 0, (int64_t)in[i + 6],
 			                                 0, (int64_t)in[i + 5], 0, (int64_t)in[i + 4]);
-			__m512i prod_1 = _mm512_clmulepi64_epi128(in_1, coeff_broadcast, 0x00);
+			__m512i prod_1a = _mm512_clmulepi64_epi128(in_1a, coeff_broadcast, 0x00);
+			__m512i in_1b = _mm512_set_epi64(0, (int64_t)in[i + 23], 0, (int64_t)in[i + 22],
+			                                 0, (int64_t)in[i + 21], 0, (int64_t)in[i + 20]);
+			__m512i prod_1b = _mm512_clmulepi64_epi128(in_1b, coeff_broadcast, 0x00);
 
-			__m512i in_2 = _mm512_set_epi64(0, (int64_t)in[i + 11], 0, (int64_t)in[i + 10],
+			/* Stream 2 */
+			__m512i in_2a = _mm512_set_epi64(0, (int64_t)in[i + 11], 0, (int64_t)in[i + 10],
 			                                 0, (int64_t)in[i + 9], 0, (int64_t)in[i + 8]);
-			__m512i prod_2 = _mm512_clmulepi64_epi128(in_2, coeff_broadcast, 0x00);
+			__m512i prod_2a = _mm512_clmulepi64_epi128(in_2a, coeff_broadcast, 0x00);
+			__m512i in_2b = _mm512_set_epi64(0, (int64_t)in[i + 27], 0, (int64_t)in[i + 26],
+			                                 0, (int64_t)in[i + 25], 0, (int64_t)in[i + 24]);
+			__m512i prod_2b = _mm512_clmulepi64_epi128(in_2b, coeff_broadcast, 0x00);
 
-			__m512i in_3 = _mm512_set_epi64(0, (int64_t)in[i + 15], 0, (int64_t)in[i + 14],
+			/* Stream 3 */
+			__m512i in_3a = _mm512_set_epi64(0, (int64_t)in[i + 15], 0, (int64_t)in[i + 14],
 			                                 0, (int64_t)in[i + 13], 0, (int64_t)in[i + 12]);
-			__m512i prod_3 = _mm512_clmulepi64_epi128(in_3, coeff_broadcast, 0x00);
+			__m512i prod_3a = _mm512_clmulepi64_epi128(in_3a, coeff_broadcast, 0x00);
+			__m512i in_3b = _mm512_set_epi64(0, (int64_t)in[i + 31], 0, (int64_t)in[i + 30],
+			                                 0, (int64_t)in[i + 29], 0, (int64_t)in[i + 28]);
+			__m512i prod_3b = _mm512_clmulepi64_epi128(in_3b, coeff_broadcast, 0x00);
 
-			/* PHASE 2: 4 prev-loads (issued here, AFTER clmul but BEFORE
+			/* Prefetch input cache line for the NEXT outer iteration.
+			 * 256 elements ahead = 32 cache lines. The T0 hint brings
+			 * the line into L1D; the hardware overlaps the transfer with
+			 * the remaining work of this iteration (reduces + XOR +
+			 * stores). */
+			_mm_prefetch((const char *)(in + i + 32 * 8), _MM_HINT_T0);
+
+			/* PHASE 2: 8 prev-loads (issued here, AFTER clmul but BEFORE
 			 * reduce, so load latency overlaps with the reduction work). */
-			__m512i prev_0 = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i);
-			__m512i prev_1 = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 4);
-			__m512i prev_2 = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 8);
-			__m512i prev_3 = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 12);
+			__m512i prev_0a = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i);
+			__m512i prev_1a = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 4);
+			__m512i prev_2a = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 8);
+			__m512i prev_3a = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 12);
+			__m512i prev_0b = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 16);
+			__m512i prev_1b = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 20);
+			__m512i prev_2b = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 24);
+			__m512i prev_3b = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + i + 28);
 
-			/* PHASE 3: 4 independent reduce ops. */
+			/* PHASE 3: 8 independent reduce ops. */
 			__m512i lo_v, hi_v;
-			gf64_split_prod_512(prod_0, &lo_v, &hi_v);
-			__m512i red_0 = gf64_reduce_512(lo_v, hi_v);
-			gf64_split_prod_512(prod_1, &lo_v, &hi_v);
-			__m512i red_1 = gf64_reduce_512(lo_v, hi_v);
-			gf64_split_prod_512(prod_2, &lo_v, &hi_v);
-			__m512i red_2 = gf64_reduce_512(lo_v, hi_v);
-			gf64_split_prod_512(prod_3, &lo_v, &hi_v);
-			__m512i red_3 = gf64_reduce_512(lo_v, hi_v);
+			gf64_split_prod_512(prod_0a, &lo_v, &hi_v);
+			__m512i red_0a = gf64_reduce_512(lo_v, hi_v);
+			gf64_split_prod_512(prod_1a, &lo_v, &hi_v);
+			__m512i red_1a = gf64_reduce_512(lo_v, hi_v);
+			gf64_split_prod_512(prod_2a, &lo_v, &hi_v);
+			__m512i red_2a = gf64_reduce_512(lo_v, hi_v);
+			gf64_split_prod_512(prod_3a, &lo_v, &hi_v);
+			__m512i red_3a = gf64_reduce_512(lo_v, hi_v);
+			gf64_split_prod_512(prod_0b, &lo_v, &hi_v);
+			__m512i red_0b = gf64_reduce_512(lo_v, hi_v);
+			gf64_split_prod_512(prod_1b, &lo_v, &hi_v);
+			__m512i red_1b = gf64_reduce_512(lo_v, hi_v);
+			gf64_split_prod_512(prod_2b, &lo_v, &hi_v);
+			__m512i red_2b = gf64_reduce_512(lo_v, hi_v);
+			gf64_split_prod_512(prod_3b, &lo_v, &hi_v);
+			__m512i red_3b = gf64_reduce_512(lo_v, hi_v);
 
-			/* PHASE 4: 4 independent XOR+stores. */
-			_mm512_mask_storeu_epi64(out + i,      (__mmask8)0x0F, _mm512_xor_si512(prev_0, red_0));
-			_mm512_mask_storeu_epi64(out + i + 4,  (__mmask8)0x0F, _mm512_xor_si512(prev_1, red_1));
-			_mm512_mask_storeu_epi64(out + i + 8,  (__mmask8)0x0F, _mm512_xor_si512(prev_2, red_2));
-			_mm512_mask_storeu_epi64(out + i + 12, (__mmask8)0x0F, _mm512_xor_si512(prev_3, red_3));
+			/* PHASE 4: 8 independent XOR+stores. */
+			_mm512_mask_storeu_epi64(out + i,      (__mmask8)0x0F, _mm512_xor_si512(prev_0a, red_0a));
+			_mm512_mask_storeu_epi64(out + i + 4,  (__mmask8)0x0F, _mm512_xor_si512(prev_1a, red_1a));
+			_mm512_mask_storeu_epi64(out + i + 8,  (__mmask8)0x0F, _mm512_xor_si512(prev_2a, red_2a));
+			_mm512_mask_storeu_epi64(out + i + 12, (__mmask8)0x0F, _mm512_xor_si512(prev_3a, red_3a));
+			_mm512_mask_storeu_epi64(out + i + 16, (__mmask8)0x0F, _mm512_xor_si512(prev_0b, red_0b));
+			_mm512_mask_storeu_epi64(out + i + 20, (__mmask8)0x0F, _mm512_xor_si512(prev_1b, red_1b));
+			_mm512_mask_storeu_epi64(out + i + 24, (__mmask8)0x0F, _mm512_xor_si512(prev_2b, red_2b));
+			_mm512_mask_storeu_epi64(out + i + 28, (__mmask8)0x0F, _mm512_xor_si512(prev_3b, red_3b));
 
-			i += 16;
+			i += 32;
 		}
 
-		/* Tail (0..15 elements) -- scalar epilog. */
+		/* Tail (0..31 elements) -- scalar epilog. */
 		while (i < len) {
 			out[i] ^= gf64_mul_reference(in[i], c0);
 			i++;
