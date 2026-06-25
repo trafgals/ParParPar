@@ -278,24 +278,48 @@ void gf64_region_muladd_avx2_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDL
 
 	if (n_coeff == 1) {
 		/* Fast path: same vectorized reduction as gf64_region_mul_avx2_arr,
-		 * but XOR the 4 reduced values into the existing out[i+0..i+7]
+		 * but XOR the 8 reduced values into the existing out[i+0..i+15]
 		 * instead of overwriting them.
 		 *
-		 * Software-pipelined (T6): process 8 elements per outer iteration
-		 * with 4 in-flight VPCLMULQDQ + reduce + store streams. The phases
-		 * are arranged so the CPU's out-of-order engine can overlap:
-		 *   Phase 1 — issue 4 VPCLMULQDQ back-to-back (independent ops)
-		 *   Phase 2 — issue 4 prev loads (overlap with reductions)
-		 *   Phase 3 — reduce all 4 products (independent ops)
-		 *   Phase 4 — XOR with prev + store (independent stores)
-		 * With 4 clmul in flight the VPCLMULQDQ pipeline stays saturated.
+		 * T11 (this version): 4-way input unroll mirroring T10's AVX-512 layout.
+		 * Process 16 GF elements per outer iteration via 8 independent
+		 * VPCLMULQDQ (back-to-back, no deps between clmul calls). Layout:
+		 * 8 streams, each stream owns 1 clmul operating on 2 GF elements
+		 * (1 YMM holds 2 GF(2^64) elements, the upper 128 bits of each YMM
+		 * is zero padding since PCLMULQDQ only uses 64-bit halves). Total
+		 * per outer iteration:
+		 *   - 8 input YMMs covering in[i+0..15]
+		 *   - 8 clmul producing 16 64-bit products
+		 *   - 8 reductions to 64-bit GF elements
+		 *   - 8 prev-loads (XMM) + 8 XOR + 8 XMM stores
+		 *
+		 * Stream layout (8 streams × 1 clmul = 8 clmul):
+		 *   stream 0: in[i+0,1]   → out[i+0,1]
+		 *   stream 1: in[i+2,3]   → out[i+2,3]
+		 *   stream 2: in[i+4,5]   → out[i+4,5]
+		 *   stream 3: in[i+6,7]   → out[i+6,7]
+		 *   stream 4: in[i+8,9]   → out[i+8,9]
+		 *   stream 5: in[i+10,11] → out[i+10,11]
+		 *   stream 6: in[i+12,13] → out[i+12,13]
+		 *   stream 7: in[i+14,15] → out[i+14,15]
+		 *
+		 * A `_mm_prefetch` (T0 hint) is issued at the start of each outer
+		 * iteration for the cache line that the NEXT iteration will consume
+		 * first. Distance: 16 elements × 8 bytes = 128 bytes = 1 cache line
+		 * ahead, which gives the L3-to-L1D transfer time to complete before
+		 * the data is needed.
 		 */
 		uint64_t c0 = coeff[0];
 		__m256i coeff_broadcast = _mm256_set1_epi64x((int64_t)c0);
 
-		size_t blocks = len / 8;
+		size_t blocks = len / 16;
 		for (size_t b = 0; b < blocks; b++) {
-			/* Phase 1: 4 independent VPCLMULQDQ calls (each: 2 GF products). */
+			/* Prefetch one cache line ahead (16 GF elements = 128 B). */
+			_mm_prefetch((const char *)(in + i + 16 * 8), _MM_HINT_T0);
+
+			/* PHASE 1: 8 input YMMs and 8 back-to-back clmul. The 8 clmul
+			 * are independent (different input YMMs, same coeff broadcast),
+			 * so the OOO engine can keep all 8 in flight. */
 			__m256i in_0 = _mm256_setr_epi64x((int64_t)in[i + 0], 0, (int64_t)in[i + 1], 0);
 			__m256i prod_0 = _mm256_clmulepi64_epi128(in_0, coeff_broadcast, 0x00);
 
@@ -308,13 +332,29 @@ void gf64_region_muladd_avx2_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDL
 			__m256i in_3 = _mm256_setr_epi64x((int64_t)in[i + 6], 0, (int64_t)in[i + 7], 0);
 			__m256i prod_3 = _mm256_clmulepi64_epi128(in_3, coeff_broadcast, 0x00);
 
-			/* Phase 2: prev loads — overlap with reductions. */
+			__m256i in_4 = _mm256_setr_epi64x((int64_t)in[i + 8], 0, (int64_t)in[i + 9], 0);
+			__m256i prod_4 = _mm256_clmulepi64_epi128(in_4, coeff_broadcast, 0x00);
+
+			__m256i in_5 = _mm256_setr_epi64x((int64_t)in[i + 10], 0, (int64_t)in[i + 11], 0);
+			__m256i prod_5 = _mm256_clmulepi64_epi128(in_5, coeff_broadcast, 0x00);
+
+			__m256i in_6 = _mm256_setr_epi64x((int64_t)in[i + 12], 0, (int64_t)in[i + 13], 0);
+			__m256i prod_6 = _mm256_clmulepi64_epi128(in_6, coeff_broadcast, 0x00);
+
+			__m256i in_7 = _mm256_setr_epi64x((int64_t)in[i + 14], 0, (int64_t)in[i + 15], 0);
+			__m256i prod_7 = _mm256_clmulepi64_epi128(in_7, coeff_broadcast, 0x00);
+
+			/* PHASE 2: 8 prev loads (XMM) — overlap with reductions. */
 			__m128i prev_0 = _mm_loadu_si128((const __m128i *)(out + i + 0));
 			__m128i prev_1 = _mm_loadu_si128((const __m128i *)(out + i + 2));
 			__m128i prev_2 = _mm_loadu_si128((const __m128i *)(out + i + 4));
 			__m128i prev_3 = _mm_loadu_si128((const __m128i *)(out + i + 6));
+			__m128i prev_4 = _mm_loadu_si128((const __m128i *)(out + i + 8));
+			__m128i prev_5 = _mm_loadu_si128((const __m128i *)(out + i + 10));
+			__m128i prev_6 = _mm_loadu_si128((const __m128i *)(out + i + 12));
+			__m128i prev_7 = _mm_loadu_si128((const __m128i *)(out + i + 14));
 
-			/* Phase 3: reductions. */
+			/* PHASE 3: 8 reductions (split + reduce). */
 			__m256i lo_vec;
 			__m256i hi_vec;
 			gf64_split_prod_ymm(prod_0, &lo_vec, &hi_vec);
@@ -325,8 +365,16 @@ void gf64_region_muladd_avx2_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDL
 			__m256i red_2 = gf64_reduce_ymm(lo_vec, hi_vec);
 			gf64_split_prod_ymm(prod_3, &lo_vec, &hi_vec);
 			__m256i red_3 = gf64_reduce_ymm(lo_vec, hi_vec);
+			gf64_split_prod_ymm(prod_4, &lo_vec, &hi_vec);
+			__m256i red_4 = gf64_reduce_ymm(lo_vec, hi_vec);
+			gf64_split_prod_ymm(prod_5, &lo_vec, &hi_vec);
+			__m256i red_5 = gf64_reduce_ymm(lo_vec, hi_vec);
+			gf64_split_prod_ymm(prod_6, &lo_vec, &hi_vec);
+			__m256i red_6 = gf64_reduce_ymm(lo_vec, hi_vec);
+			gf64_split_prod_ymm(prod_7, &lo_vec, &hi_vec);
+			__m256i red_7 = gf64_reduce_ymm(lo_vec, hi_vec);
 
-			/* Phase 4: XOR + store. */
+			/* PHASE 4: 8 XOR + stores (XMM). */
 			_mm_storeu_si128((__m128i *)(out + i + 0),
 			                 _mm_xor_si128(prev_0, _mm256_castsi256_si128(red_0)));
 			_mm_storeu_si128((__m128i *)(out + i + 2),
@@ -335,8 +383,16 @@ void gf64_region_muladd_avx2_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDL
 			                 _mm_xor_si128(prev_2, _mm256_castsi256_si128(red_2)));
 			_mm_storeu_si128((__m128i *)(out + i + 6),
 			                 _mm_xor_si128(prev_3, _mm256_castsi256_si128(red_3)));
+			_mm_storeu_si128((__m128i *)(out + i + 8),
+			                 _mm_xor_si128(prev_4, _mm256_castsi256_si128(red_4)));
+			_mm_storeu_si128((__m128i *)(out + i + 10),
+			                 _mm_xor_si128(prev_5, _mm256_castsi256_si128(red_5)));
+			_mm_storeu_si128((__m128i *)(out + i + 12),
+			                 _mm_xor_si128(prev_6, _mm256_castsi256_si128(red_6)));
+			_mm_storeu_si128((__m128i *)(out + i + 14),
+			                 _mm_xor_si128(prev_7, _mm256_castsi256_si128(red_7)));
 
-			i += 8;
+			i += 16;
 		}
 
 		while (i < len) {
