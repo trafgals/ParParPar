@@ -79,6 +79,7 @@ static inline uint64_t gf64_reduce_128(uint64_t lo, uint64_t hi) {
  *   t2 = (R_hi<<4) ^ (R_hi<<3) ^ (R_hi<<1) ^ R_hi
  *   result = lo ^ t_lo ^ t2
  */
+__attribute__((target("avx2,vpclmulqdq")))
 static inline __m256i gf64_reduce_ymm(__m256i lo_vec, __m256i hi_vec) {
 	/* t_lo = (hi<<4) ^ (hi<<3) ^ (hi<<1) ^ hi */
 	__m256i t_lo = _mm256_xor_si256(
@@ -161,6 +162,7 @@ static inline __m256i gf64_reduce_ymm(__m256i lo_vec, __m256i hi_vec) {
  * imm8==3 case returns 0 per the Intel SDM, so we cannot use it here to
  * gather hi1 = prod[255:192] into output lane 1.)
  */
+__attribute__((target("avx2,vpclmulqdq")))
 static inline void gf64_split_prod_ymm(__m256i prod, __m256i *lo_vec, __m256i *hi_vec) {
 	__m128i prod_lo128 = _mm256_castsi256_si128(prod);    /* [lo0, hi0] */
 	__m128i prod_hi128 = _mm256_extracti128_si256(prod, 1); /* [lo1, hi1] */

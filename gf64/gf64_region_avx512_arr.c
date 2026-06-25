@@ -86,6 +86,7 @@ static volatile uint64_t gf64_reduce_canary = 0;
 /* Split a 4-product ZMM (one VPCLMULQDQ result) into separate lo/hi ZMMs.
  * After the call, *lo_out and *hi_out have their 4 active results in lanes 0..3
  * and zero in lanes 4..7. */
+__attribute__((target("avx512f,vpclmulqdq")))
 static inline void gf64_split_prod_512(__m512i prod, __m512i *lo_out, __m512i *hi_out) {
 	__m512i zero = _mm512_setzero_si512();
 	*lo_out = _mm512_permutex2var_epi64(prod, GF64_IDX_LO, zero);
@@ -96,6 +97,7 @@ static inline void gf64_split_prod_512(__m512i prod, __m512i *lo_out, __m512i *h
  * a 128-bit carry-less product split into (lo_i, hi_i). Returns lo_i ^ t_lo_i
  * ^ t2_i per lane, where t_lo = lo(hi*0x1B) and t2 = (overflow(hi*0x1B))*0x1B.
  * Bit-exact to gf64_reduce_128 (proven by par3-kernel-parity.js, 1215/1215). */
+__attribute__((target("avx512f,vpclmulqdq")))
 static inline __m512i gf64_reduce_512(__m512i lo_vec, __m512i hi_vec) {
 	__m512i one = _mm512_set1_epi64(1);
 
