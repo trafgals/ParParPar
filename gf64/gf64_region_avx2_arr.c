@@ -278,33 +278,65 @@ void gf64_region_muladd_avx2_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDL
 
 	if (n_coeff == 1) {
 		/* Fast path: same vectorized reduction as gf64_region_mul_avx2_arr,
-		 * but XOR the 2 reduced values into the existing out[i+0..i+1]
-		 * (and out[i+2..i+3]) instead of overwriting them.
+		 * but XOR the 4 reduced values into the existing out[i+0..i+7]
+		 * instead of overwriting them.
+		 *
+		 * Software-pipelined (T6): process 8 elements per outer iteration
+		 * with 4 in-flight VPCLMULQDQ + reduce + store streams. The phases
+		 * are arranged so the CPU's out-of-order engine can overlap:
+		 *   Phase 1 — issue 4 VPCLMULQDQ back-to-back (independent ops)
+		 *   Phase 2 — issue 4 prev loads (overlap with reductions)
+		 *   Phase 3 — reduce all 4 products (independent ops)
+		 *   Phase 4 — XOR with prev + store (independent stores)
+		 * With 4 clmul in flight the VPCLMULQDQ pipeline stays saturated.
 		 */
 		uint64_t c0 = coeff[0];
 		__m256i coeff_broadcast = _mm256_set1_epi64x((int64_t)c0);
 
-		size_t blocks = len / 4;
+		size_t blocks = len / 8;
 		for (size_t b = 0; b < blocks; b++) {
-			__m256i in01 = _mm256_setr_epi64x((int64_t)in[i + 0], 0, (int64_t)in[i + 1], 0);
-			__m256i prod01 = _mm256_clmulepi64_epi128(in01, coeff_broadcast, 0x00);
+			/* Phase 1: 4 independent VPCLMULQDQ calls (each: 2 GF products). */
+			__m256i in_0 = _mm256_setr_epi64x((int64_t)in[i + 0], 0, (int64_t)in[i + 1], 0);
+			__m256i prod_0 = _mm256_clmulepi64_epi128(in_0, coeff_broadcast, 0x00);
+
+			__m256i in_1 = _mm256_setr_epi64x((int64_t)in[i + 2], 0, (int64_t)in[i + 3], 0);
+			__m256i prod_1 = _mm256_clmulepi64_epi128(in_1, coeff_broadcast, 0x00);
+
+			__m256i in_2 = _mm256_setr_epi64x((int64_t)in[i + 4], 0, (int64_t)in[i + 5], 0);
+			__m256i prod_2 = _mm256_clmulepi64_epi128(in_2, coeff_broadcast, 0x00);
+
+			__m256i in_3 = _mm256_setr_epi64x((int64_t)in[i + 6], 0, (int64_t)in[i + 7], 0);
+			__m256i prod_3 = _mm256_clmulepi64_epi128(in_3, coeff_broadcast, 0x00);
+
+			/* Phase 2: prev loads — overlap with reductions. */
+			__m128i prev_0 = _mm_loadu_si128((const __m128i *)(out + i + 0));
+			__m128i prev_1 = _mm_loadu_si128((const __m128i *)(out + i + 2));
+			__m128i prev_2 = _mm_loadu_si128((const __m128i *)(out + i + 4));
+			__m128i prev_3 = _mm_loadu_si128((const __m128i *)(out + i + 6));
+
+			/* Phase 3: reductions. */
 			__m256i lo_vec;
 			__m256i hi_vec;
-			gf64_split_prod_ymm(prod01, &lo_vec, &hi_vec);
-			__m256i result01 = gf64_reduce_ymm(lo_vec, hi_vec);
-			__m128i prev01 = _mm_loadu_si128((const __m128i *)(out + i + 0));
+			gf64_split_prod_ymm(prod_0, &lo_vec, &hi_vec);
+			__m256i red_0 = gf64_reduce_ymm(lo_vec, hi_vec);
+			gf64_split_prod_ymm(prod_1, &lo_vec, &hi_vec);
+			__m256i red_1 = gf64_reduce_ymm(lo_vec, hi_vec);
+			gf64_split_prod_ymm(prod_2, &lo_vec, &hi_vec);
+			__m256i red_2 = gf64_reduce_ymm(lo_vec, hi_vec);
+			gf64_split_prod_ymm(prod_3, &lo_vec, &hi_vec);
+			__m256i red_3 = gf64_reduce_ymm(lo_vec, hi_vec);
+
+			/* Phase 4: XOR + store. */
 			_mm_storeu_si128((__m128i *)(out + i + 0),
-			                 _mm_xor_si128(prev01, _mm256_castsi256_si128(result01)));
-
-			__m256i in23 = _mm256_setr_epi64x((int64_t)in[i + 2], 0, (int64_t)in[i + 3], 0);
-			__m256i prod23 = _mm256_clmulepi64_epi128(in23, coeff_broadcast, 0x00);
-			gf64_split_prod_ymm(prod23, &lo_vec, &hi_vec);
-			__m256i result23 = gf64_reduce_ymm(lo_vec, hi_vec);
-			__m128i prev23 = _mm_loadu_si128((const __m128i *)(out + i + 2));
+			                 _mm_xor_si128(prev_0, _mm256_castsi256_si128(red_0)));
 			_mm_storeu_si128((__m128i *)(out + i + 2),
-			                 _mm_xor_si128(prev23, _mm256_castsi256_si128(result23)));
+			                 _mm_xor_si128(prev_1, _mm256_castsi256_si128(red_1)));
+			_mm_storeu_si128((__m128i *)(out + i + 4),
+			                 _mm_xor_si128(prev_2, _mm256_castsi256_si128(red_2)));
+			_mm_storeu_si128((__m128i *)(out + i + 6),
+			                 _mm_xor_si128(prev_3, _mm256_castsi256_si128(red_3)));
 
-			i += 4;
+			i += 8;
 		}
 
 		while (i < len) {
