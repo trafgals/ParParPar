@@ -42,18 +42,12 @@ function check(condition, msg) {
 }
 
 // Build a stub binding that mirrors the macOS arm64 build:
-// - has gf64_info (T2 fix preserves this for pickBestMethod)
-// - has compute_recovery / compute_recovery_full etc.
-// - LACKS Gf64Encoder_create (this is the bug condition)
+// - has gf64_info (T1b fix preserves this for pickBestMethod)
+// - LACKS Gf64Encoder_create (T3 fix: typeof guard, encoder=null)
+// - LACKS compute_recovery (T5 fix: typeof guard, useJsKernel=true)
+// Mirrors src/gf64_stub.cc which exports an empty object.
 var stubBinding = {
-    gf64_info: function() { return { method: 3, name: 'scalar' }; },
-    Gf64Encoder: function() {},
-    Gf64Encoder_destroy: function() {},
-    gf64_solve: function() { return Buffer.alloc(0); },
-    compute_recovery: function() {},
-    compute_recovery_full: function() {},
-    compute_repair: function() {},
-    solve_and_reconstruct: function() { return 0; }
+    gf64_info: function() { return { method: 3, name: 'scalar' }; }
 };
 
 // Make fs.existsSync() report every candidate .node path as present.
@@ -132,9 +126,29 @@ if (gen) {
             (gen.encoder === null ? 'null' : (typeof gen.encoder)) + ')');
     check(typeof gen.gfMethod === 'number',
         'PAR3Gen.gfMethod is a number (got: ' + JSON.stringify(gen.gfMethod) + ')');
+
+    // Exercise _processRecoveryBatch with the stub binding (no compute_recovery).
+    // Before T5 fix, this throws TypeError: binding.compute_recovery is not a function.
+    var processThrew = null;
+    try {
+        var batchSize = 1024;
+        var blockSize = 1024;
+        var numBatch = 1, numRecovery = 1;
+        var accumulator = Buffer.alloc(blockSize);
+        // Single zero-filled block — enough to exercise the JS mul_arr path.
+        var batch = [Buffer.alloc(blockSize)];
+        gen._processRecoveryBatch(batch, 0n, 0n, numRecovery, accumulator);
+    } catch (e) {
+        processThrew = e;
+    }
+    check(processThrew === null,
+        '_processRecoveryBatch does not throw when binding.compute_recovery is undefined' +
+            (processThrew ? ' (caught: ' + (processThrew.name || 'Error') + ': ' +
+                (processThrew.message || processThrew) + ')' : ''));
 } else {
     check(false, 'PAR3Gen.encoder is null (skipped: constructor threw)');
     check(false, 'PAR3Gen.gfMethod is a number (skipped: constructor threw)');
+    check(false, '_processRecoveryBatch fallback (skipped: constructor threw)');
 }
 
 // ============================================================================
