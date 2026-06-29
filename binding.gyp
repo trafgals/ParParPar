@@ -66,46 +66,52 @@
   "targets": [
     {
       "target_name": "parpar_gf",
-      "dependencies": [
-        "parpar_gf_c", "gf16", "gf16_generic", "gf16_sse2", "gf16_ssse3", "gf16_avx", "gf16_avx2", "gf16_avx512", "gf16_vbmi", "gf16_gfni", "gf16_gfni_avx2", "gf16_gfni_avx512", "gf16_gfni_avx10", "gf16_neon", "gf16_sha3", "gf16_sve", "gf16_sve2", "gf16_rvv", "gf16_rvv_zvbc",
-        "hasher", "hasher_sse2", "hasher_clmul", "hasher_xop", "hasher_bmi1", "hasher_avx2", "hasher_avx512", "hasher_avx512vl", "hasher_armcrc", "hasher_neon", "hasher_neoncrc", "hasher_sve2", "hasher_rvzbc"
-      ],
-      "sources": ["src/gf.cc", "gf16/controller.cpp", "gf16/controller_cpu.cpp", "gf16/controller_ocl.cpp", "gf16/controller_ocl_init.cpp"],
-      "include_dirs": ["gf16", "gf16/opencl-include"],
-      "cflags!": ["-fno-exceptions"],
-      "cxxflags!": ["-fno-exceptions"],
-      "cflags_cc!": ["-fno-exceptions"],
-      "defines": ["USE_LIBUV"],
-      "cflags": ["-fexceptions"],
-      "xcode_settings": {
-        "OTHER_CFLAGS!": ["-fno-exceptions"],
-        "OTHER_CXXFLAGS!": ["-fno-exceptions"],
-        "OTHER_CFLAGS": ["-fexceptions"],
-        "OTHER_CXXFLAGS": ["-fexceptions"],
-        "GCC_ENABLE_CPP_EXCEPTIONS": "YES"
-      },
-      "msvs_settings": {"VCCLCompilerTool": {"ExceptionHandling": "1"}},
       "conditions": [
-        ['enable_sanitizer==1', {
-          "variables": {
-            "supports_libasan%": "<!(<!(echo ${CXX_target:-${CXX:-c++}}) -MM -E hasher/hasher.cpp -static-libasan 2>/dev/null || true)",
-            "supports_libsan%": "<!(<!(echo ${CXX_target:-${CXX:-c++}}) -MM -E hasher/hasher.cpp -static-libsan 2>/dev/null || true)"
-          },
-          "conditions": [
-            ['supports_libasan!=""', {
-              "libraries": ["-static-libasan"]
-            }],
-            ['supports_libsan!=""', {
-              "libraries": ["-static-libsan"]
-            }]
+        ['OS!="win"', {
+          "dependencies": [
+            "parpar_gf_c", "gf16", "gf16_generic", "gf16_sse2", "gf16_ssse3", "gf16_avx", "gf16_avx2", "gf16_avx512", "gf16_vbmi", "gf16_gfni", "gf16_gfni_avx2", "gf16_gfni_avx512", "gf16_gfni_avx10", "gf16_neon", "gf16_sha3", "gf16_sve", "gf16_sve2", "gf16_rvv", "gf16_rvv_zvbc",
+            "hasher", "hasher_sse2", "hasher_clmul", "hasher_xop", "hasher_bmi1", "hasher_avx2", "hasher_avx512", "hasher_avx512vl", "hasher_armcrc", "hasher_neon", "hasher_neoncrc", "hasher_sve2", "hasher_rvzbc"
           ],
-          "cflags_cc": ["-fexceptions", "-std=c++17"],
-          "cxxflags": ["-fexceptions", "-std=c++17"]
+          "sources": ["src/gf.cc", "gf16/controller.cpp", "gf16/controller_cpu.cpp", "gf16/controller_ocl.cpp", "gf16/controller_ocl_init.cpp"],
+          "include_dirs": ["gf16", "gf16/opencl-include"],
+          "cflags!": ["-fno-exceptions"],
+          "cxxflags!": ["-fno-exceptions"],
+          "cflags_cc!": ["-fno-exceptions"],
+          "defines": ["USE_LIBUV"],
+          "cflags": ["-fexceptions"],
+          "xcode_settings": {
+            "OTHER_CFLAGS!": ["-fno-exceptions"],
+            "OTHER_CXXFLAGS!": ["-fno-exceptions"],
+            "OTHER_CFLAGS": ["-fexceptions"],
+            "OTHER_CXXFLAGS": ["-fexceptions"],
+            "GCC_ENABLE_CPP_EXCEPTIONS": "YES"
+          },
+          "msvs_settings": {"VCCLCompilerTool": {"ExceptionHandling": "1"}},
+          "conditions": [
+            ['enable_sanitizer==1', {
+              "variables": {
+                "supports_libasan%": "<!(<!(echo ${CXX_target:-${CXX:-c++}}) -MM -E hasher/hasher.cpp -static-libasan 2>/dev/null || true)",
+                "supports_libsan%": "<!(<!(echo ${CXX_target:-${CXX:-c++}}) -MM -E hasher/hasher.cpp -static-libsan 2>/dev/null || true)"
+              },
+              "conditions": [
+                ['supports_libasan!=""', {
+                  "libraries": ["-static-libasan"]
+                }],
+                ['supports_libsan!=""', {
+                  "libraries": ["-static-libsan"]
+                }]
+              ],
+              "cflags_cc": ["-fexceptions", "-std=c++17"],
+              "cxxflags": ["-fexceptions", "-std=c++17"]
+            }, {
+              "conditions": [['OS!="win"', {
+                "cflags_cc": ["-fexceptions", ">(cpp_std)"],
+                "cxxflags": ["-fexceptions", ">(cpp_std)"]
+              }]]
+            }]
+          ]
         }, {
-          "conditions": [['OS!="win"', {
-            "cflags_cc": ["-fexceptions", ">(cpp_std)"],
-            "cxxflags": ["-fexceptions", ">(cpp_std)"]
-          }]]
+          "sources": ["src/gf_stub.cc"]
         }]
       ]
     },
