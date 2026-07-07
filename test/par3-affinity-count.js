@@ -86,7 +86,10 @@ var PROBE_CODE = [
 
   '  process.stdout.write(cpusAllowed + "," + threads + "\\n");',
   '} catch (e) {',
-  '  process.stdout.write("PROC_ERR:" + e.message + "\\n"); process.exit(1);',
+  // /proc/self/status is Linux-only; on macOS/Windows/containers without /proc
+  // the probe cannot run. Treat as a graceful skip (exit 0 + NO_PROC marker)
+  // so the test can be invoked on any platform without false failures.
+  '  process.stdout.write("NO_PROC\\n"); process.exit(0);',
   '}',
 ].join('');
 

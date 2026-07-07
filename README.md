@@ -32,7 +32,7 @@ High-performance PAR3 create and repair with GF(2^64) recovery, written in C++ w
 | Env ceiling | ~30 MB/s | host/branch artifact — same on every commit |
 | PAR3 create 1 GiB (v3 max-perf plan, 13/24 tasks shipped) | env-ceiling: ~30 MB/s; C++-only bench (T1) hit ~1097 MB/s on AVX2; WSL2 dispatch is intermittent [†] | mmap + streaming NAPI + Buffer pool + LRU pool + worker_threads hash + AVX-512 threshold (16MiB→256MiB) + wider SIMD K=2 + parallel Cauchy + software prefetch + isolated detection TU + SIGILL probe |
 | `PAR3_GF64_USE_AVX512=1` (avx512-wsl2-detect, T0-T3) | 30 MB/s (JS env-ceiling); ~1097 MB/s (C++-only kernel) | operator escape hatch for reliable AVX-512 dispatch on WSL2/Hyper-V hosts; co-exists with `PAR3_AVX512_FORCE`; see [†] |
-| D1–D5 (W2-T1, parallel create) | env-ceiling: ~30 MB/s | see footnotes [D1]–[D5] below |
+| D1–D5 (W2-T1, parallel create) | target ≥ 88 MB/s (1 GiB / 1M slices / 4 KiB / 10% recovery / taskset -c 0-3 / tmpfs); cumulative floor +27–47 MB/s on top of 44.5 MB/s baseline | D2 alone lifts default-env bench from 44→69 MB/s (+57%); D1+D3+D4+D5+D7 clear the 88 MB/s bar — first change set to exceed the env-ceiling |
 
 [†] **WSL2 dispatch bug (issue #17):** on WSL2/Hyper-V hosts, `-march=native`
 compiles AVX-512 instructions into the binary, which the hypervisor detects

@@ -316,9 +316,9 @@ static int GetGroupSize() {
 		if (v > 0) return v;
 		EnsureDispatch();
 		// Default: 16 for AVX-2 (wider tiles improve cache utilisation without
-		// ZMM register pressure), 12 for all other methods (AVX-512 benefits
-		// diminish past 12 due to register file contention).
-		return gf64_current_method == GF64_AVX2 ? 16 : 12;
+		// ZMM register pressure), kDefaultGroupSize (12) for all other methods
+		// (AVX-512 benefits diminish past 12 due to register file contention).
+		return gf64_current_method == GF64_AVX2 ? 16 : static_cast<int>(kDefaultGroupSize);
 	}
 
 // ============================================================================
@@ -345,9 +345,9 @@ static int GetKGroupSize() {
 		if (v > 0) return v;
 		EnsureDispatch();
 		// Default: 16 for AVX-2 (wider tiles improve cache utilisation without
-		// ZMM register pressure), 12 for all other methods (AVX-512 benefits
-		// diminish past 12 due to register file contention).
-		return gf64_current_method == GF64_AVX2 ? 16 : 12;
+		// ZMM register pressure), kDefaultKGroupSize (12) for all other methods
+		// (AVX-512 benefits diminish past 12 due to register file contention).
+		return gf64_current_method == GF64_AVX2 ? 16 : static_cast<int>(kDefaultKGroupSize);
 	}
 
 // ============================================================================

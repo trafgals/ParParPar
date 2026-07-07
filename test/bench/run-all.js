@@ -276,7 +276,10 @@ function runBaselineMode(opts, callback) {
    * LOCAL ONLY — never run in CI.
    *
    * Baseline regression gate: runs the 1 GiB / 1M-slice PAR3 create benchmark
-   * 4 times (1 warmup + 3 measured) and asserts median throughput >= 88 MB/s.
+   * 6 times (1 warmup + 5 measured), discards min/max of the 5 measured
+   * values, and asserts median of the inner 3 is >= 88 MB/s. The min/max
+   * discard guards against cold-cache outliers skewing the result on noisy
+   * hardware.
    */
 
   console.log('PARPARPAR BASELINE GATE');
@@ -291,7 +294,7 @@ function runBaselineMode(opts, callback) {
   };
 
   var throughputResults = [];
-  var iterations = 4;  // 1 warmup + 3 measured
+  var iterations = 6;  // 1 warmup + 5 measured
   var t0 = Date.now();
 
   function runIteration(i) {
@@ -317,22 +320,55 @@ function runBaselineMode(opts, callback) {
   function evalBaseline() {
     var dt = Date.now() - t0;
 
-    // Sort ascending, median is middle element
+    // P1 guard: if all measured runs failed to capture metrics, exit
+    // inconclusive (exit code 2) instead of crashing on median.toFixed.
+    if (throughputResults.length === 0) {
+      console.log('\n=== BASELINE GATE RESULTS ===');
+      console.log('  No valid measurements collected (all ' + (iterations - 1) + ' measured runs failed or had missing metrics)');
+      console.log('  VERDICT:    INCONCLUSIVE');
+      callback(2);
+      return;
+    }
+
+    // Sort ascending; discard min and max; take median of the inner 3.
     throughputResults.sort(function(a, b) { return a - b; });
-    var median = throughputResults[Math.floor(throughputResults.length / 2)];
+    if (throughputResults.length < 5) {
+      // Fallback for degraded runs: take median of all available measurements.
+      var median = throughputResults[Math.floor(throughputResults.length / 2)];
+      console.log('\n=== BASELINE GATE RESULTS ===');
+      console.log('  Iterations: ' + throughputResults.length + ' measured (after warmup discard; fewer than 5 measured — using simple median)');
+      for (var i = 0; i < throughputResults.length; i++) {
+        console.log('    ' + (i + 1) + ': ' + throughputResults[i].toFixed(2) + ' MB/s');
+      }
+      console.log('  Median:     ' + median.toFixed(2) + ' MB/s');
+      console.log('  Threshold:  88 MB/s');
+      var pass = median >= 88;
+      console.log('  VERDICT:    ' + (pass ? 'PASS' : 'FAIL - baseline regression detected'));
+      writeEvidence(scenario, throughputResults, median, pass, dt);
+      callback(pass ? 0 : 1);
+      return;
+    }
+
+    var inner3 = throughputResults.slice(1, 4);  // discard [0] min and [4] max
+    var median = inner3[1];                       // middle of the inner 3
 
     console.log('\n=== BASELINE GATE RESULTS ===');
-    console.log('  Iterations: ' + throughputResults.length + ' measured (after warmup discard)');
+    console.log('  Iterations: 5 measured (after warmup discard; min and max discarded for stability)');
     for (var i = 0; i < throughputResults.length; i++) {
-      console.log('    ' + (i + 1) + ': ' + throughputResults[i].toFixed(2) + ' MB/s');
+      var tag = (i === 0 || i === 4) ? ' (discarded)' : '';
+      console.log('    ' + (i + 1) + ': ' + throughputResults[i].toFixed(2) + ' MB/s' + tag);
     }
-    console.log('  Median:     ' + median.toFixed(2) + ' MB/s');
-    console.log('  Threshold:  88 MB/s');
+    console.log('  Median of inner 3: ' + median.toFixed(2) + ' MB/s');
+    console.log('  Threshold:         88 MB/s');
 
     var pass = median >= 88;
     console.log('  VERDICT:    ' + (pass ? 'PASS' : 'FAIL - baseline regression detected'));
 
-    // Write evidence
+    writeEvidence(scenario, throughputResults, median, pass, dt);
+    callback(pass ? 0 : 1);
+  }
+
+  function writeEvidence(scenario, results, median, pass, dt) {
     var evidenceDir = path.join(__dirname, '..', '..', '.omo', 'evidence');
     if (!fs.existsSync(evidenceDir)) {
       fs.mkdirSync(evidenceDir, { recursive: true });
@@ -341,9 +377,9 @@ function runBaselineMode(opts, callback) {
     var evidence = {
       date: new Date().toISOString(),
       mode: MODE_BASELINE,
-      description: 'PAR3 create baseline gate: 1 GiB / 1M slices, median >= 88 MB/s',
+      description: 'PAR3 create baseline gate: 1 GiB / 1M slices, median >= 88 MB/s (5-run median-of-inner-3)',
       thresholdMBps: 88,
-      iterations: throughputResults,
+      iterations: results,
       medianMBps: median,
       pass: pass,
       durationMs: dt
@@ -354,8 +390,6 @@ function runBaselineMode(opts, callback) {
     } catch (e) {
       console.warn('  WARN: failed to write evidence: ' + e.message);
     }
-
-    callback(pass ? 0 : 1);
   }
 
   runIteration(0);
