@@ -317,6 +317,8 @@ function run() {
 		console.log('\nCleaning up...');
 		helpers.cleanup(tempDir);
 		console.log('Done.');
+		// Force exit: worker pool keeps event loop alive past test completion.
+		process.exit(process.exitCode || 0);
 	}
 }
 

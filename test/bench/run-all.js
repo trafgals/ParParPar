@@ -32,6 +32,8 @@ var os = require('os');
 var spawn = require('child_process').spawn;
 var helpers = require('./bench-helpers');
 
+var MODE_BASELINE = 'baseline';
+
 var SCENARIOS = [
   { id: 'par2-create-1G-10k',      script: 'par2-create-bench.js',  args: ['--size=1G', '--slices=10000'] },
   { id: 'par3-create-1G-10k',      script: 'par3-create-bench.js',  args: ['--size=1G', '--slices=10000'] },
@@ -66,9 +68,11 @@ function printHelp() {
   console.log('  --size=<size>  Source size to use (e.g. 1G, 500M, 1073741824). Default: 1G');
   console.log('  --only=<substr>  Only run scenarios whose id contains <substr>');
   console.log('  --keep         Pass --keep to child scripts (keep temp files)');
-  console.log('  --mode=cliff   Run cliff-detection gate: 100M + 500M, assert 500M >= 100M/3');
-  console.log('  --mode=large   Run large-scale benchmarks: 10 GiB / 1M slices (requires 20 GiB free disk)');
-  console.log('  --help, -h     Show this help');
+  console.log('  --mode=cliff     Run cliff-detection gate: 100M + 500M, assert 500M >= 100M/3');
+  console.log('  --mode=large     Run large-scale benchmarks: 10 GiB / 1M slices (requires 20 GiB free disk)');
+  console.log('  --mode=baseline  Run baseline regression gate: 1 GiB / 1M slices, assert median >= 88 MB/s');
+  console.log('  --mode=current   Alias for --mode=baseline');
+  console.log('  --help, -h       Show this help');
   console.log('');
   console.log('See BENCHMARKING.md for the full benchmarking protocol and reproducibility guide.');
   console.log('');
@@ -267,6 +271,130 @@ function runLargeMode(opts, callback) {
   }
 }
 
+function runBaselineMode(opts, callback) {
+  /*
+   * LOCAL ONLY — never run in CI.
+   *
+   * Baseline regression gate: runs the 1 GiB / 1M-slice PAR3 create benchmark
+   * 6 times (1 warmup + 5 measured), discards min/max of the 5 measured
+   * values, and asserts median of the inner 3 is >= 88 MB/s. The min/max
+   * discard guards against cold-cache outliers skewing the result on noisy
+   * hardware.
+   */
+
+  console.log('PARPARPAR BASELINE GATE');
+  console.log('========================');
+  console.log('Asserting: median throughput >= 88 MB/s');
+  console.log('');
+
+  var scenario = {
+    id: 'par3-create-1G-1M-baseline',
+    script: 'par3-create-bench.js',
+    args: ['--size=1G', '--slices=1000000']
+  };
+
+  var throughputResults = [];
+  var iterations = 6;  // 1 warmup + 5 measured
+  var t0 = Date.now();
+
+  function runIteration(i) {
+    if (i >= iterations) return evalBaseline();
+
+    console.log('--- Run ' + (i + 1) + '/' + iterations + ' ---');
+    runScenario(scenario, { size: null, keep: false }).then(function(r) {
+      var throughput = null;
+      if (r.metrics && r.metrics.metrics) {
+        throughput = r.metrics.metrics.createMBps;
+      }
+
+      console.log('  Throughput: ' + (throughput != null ? throughput.toFixed(2) + ' MB/s' : 'MISSING'));
+
+      if (i > 0 && throughput != null) {
+        throughputResults.push(throughput);
+      }
+
+      runIteration(i + 1);
+    });
+  }
+
+  function evalBaseline() {
+    var dt = Date.now() - t0;
+
+    // P1 guard: if all measured runs failed to capture metrics, exit
+    // inconclusive (exit code 2) instead of crashing on median.toFixed.
+    if (throughputResults.length === 0) {
+      console.log('\n=== BASELINE GATE RESULTS ===');
+      console.log('  No valid measurements collected (all ' + (iterations - 1) + ' measured runs failed or had missing metrics)');
+      console.log('  VERDICT:    INCONCLUSIVE');
+      callback(2);
+      return;
+    }
+
+    // Sort ascending; discard min and max; take median of the inner 3.
+    throughputResults.sort(function(a, b) { return a - b; });
+    if (throughputResults.length < 5) {
+      // Fallback for degraded runs: take median of all available measurements.
+      var median = throughputResults[Math.floor(throughputResults.length / 2)];
+      console.log('\n=== BASELINE GATE RESULTS ===');
+      console.log('  Iterations: ' + throughputResults.length + ' measured (after warmup discard; fewer than 5 measured — using simple median)');
+      for (var i = 0; i < throughputResults.length; i++) {
+        console.log('    ' + (i + 1) + ': ' + throughputResults[i].toFixed(2) + ' MB/s');
+      }
+      console.log('  Median:     ' + median.toFixed(2) + ' MB/s');
+      console.log('  Threshold:  88 MB/s');
+      var pass = median >= 88;
+      console.log('  VERDICT:    ' + (pass ? 'PASS' : 'FAIL - baseline regression detected'));
+      writeEvidence(scenario, throughputResults, median, pass, dt);
+      callback(pass ? 0 : 1);
+      return;
+    }
+
+    var inner3 = throughputResults.slice(1, 4);  // discard [0] min and [4] max
+    var median = inner3[1];                       // middle of the inner 3
+
+    console.log('\n=== BASELINE GATE RESULTS ===');
+    console.log('  Iterations: 5 measured (after warmup discard; min and max discarded for stability)');
+    for (var i = 0; i < throughputResults.length; i++) {
+      var tag = (i === 0 || i === 4) ? ' (discarded)' : '';
+      console.log('    ' + (i + 1) + ': ' + throughputResults[i].toFixed(2) + ' MB/s' + tag);
+    }
+    console.log('  Median of inner 3: ' + median.toFixed(2) + ' MB/s');
+    console.log('  Threshold:         88 MB/s');
+
+    var pass = median >= 88;
+    console.log('  VERDICT:    ' + (pass ? 'PASS' : 'FAIL - baseline regression detected'));
+
+    writeEvidence(scenario, throughputResults, median, pass, dt);
+    callback(pass ? 0 : 1);
+  }
+
+  function writeEvidence(scenario, results, median, pass, dt) {
+    var evidenceDir = path.join(__dirname, '..', '..', '.omo', 'evidence');
+    if (!fs.existsSync(evidenceDir)) {
+      fs.mkdirSync(evidenceDir, { recursive: true });
+    }
+    var evidencePath = path.join(evidenceDir, scenario.id + '.json');
+    var evidence = {
+      date: new Date().toISOString(),
+      mode: MODE_BASELINE,
+      description: 'PAR3 create baseline gate: 1 GiB / 1M slices, median >= 88 MB/s (5-run median-of-inner-3)',
+      thresholdMBps: 88,
+      iterations: results,
+      medianMBps: median,
+      pass: pass,
+      durationMs: dt
+    };
+    try {
+      fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+      console.log('\n[evidence] ' + evidencePath);
+    } catch (e) {
+      console.warn('  WARN: failed to write evidence: ' + e.message);
+    }
+  }
+
+  runIteration(0);
+}
+
 function main() {
   var opts = parseArgs();
   if (opts.help) { printHelp(); return; }
@@ -278,6 +406,11 @@ function main() {
 
   if (opts.mode === 'large') {
     runLargeMode(opts, function(code) { process.exit(code); });
+    return;
+  }
+
+  if (opts.mode === MODE_BASELINE || opts.mode === 'current') {
+    runBaselineMode(opts, function(code) { process.exit(code); });
     return;
   }
 
@@ -369,4 +502,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { SCENARIOS: SCENARIOS, runScenario: runScenario, runCliffMode: runCliffMode, runLargeMode: runLargeMode };
+module.exports = { SCENARIOS: SCENARIOS, runScenario: runScenario, runCliffMode: runCliffMode, runLargeMode: runLargeMode, runBaselineMode: runBaselineMode, MODE_BASELINE: MODE_BASELINE };
