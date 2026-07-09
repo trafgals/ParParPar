@@ -48,6 +48,28 @@ public:
 		int numThreads
 	);
 
+	/// v2-4: pre-computed coefficient matrix variant. Skips the matrix
+	/// build (assumes the matrix was already built and validated), so the
+	/// caller can overlap the matrix build with other work (e.g. file
+	/// read). The coeff buffer is owned by the caller and must outlive
+	/// this call. Layout: numRecovery rows × numInputs columns, row-major.
+	static void ComputeRecoveryBlocksWithCoeff(
+		const gf64_t* inputs, size_t numInputs,
+		gf64_t* recovery, size_t numRecovery,
+		size_t blockSize64,
+		const gf64_t* coeff,
+		int numThreads
+	);
+
+	/// v2-4: standalone matrix build. Allocates a buffer of
+	/// numRecovery × numInputs gf64_t, fills it with the Cauchy
+	/// coefficient matrix, and returns it. Caller must free() the
+	/// returned pointer. Returns nullptr on allocation failure.
+	static gf64_t* BuildCauchyMatrixAlloc(
+		size_t numInputs, size_t numRecovery,
+		uint64_t firstInput, uint64_t firstRecovery
+	);
+
 	/// Compute recovery blocks from a source file via mmap(2) zero-copy input.
 	/// Opens `sourcePath`, mmaps the file with MAP_PRIVATE | MAP_POPULATE, and
 	/// feeds the mapped region directly into the existing 2D-blocked kernel
