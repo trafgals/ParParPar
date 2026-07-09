@@ -1,22 +1,46 @@
 /*
- * Scalar Gao-Mateer-style additive FFT over GF(2^64).
+ * ============================================================================
+ * gf64/gf64_additive_fft.c — Gao-Mateer-style additive FFT over GF(2^64)
  *
- * The forward transform follows the simplified monomial-basis recursion used by
- * the par3-cauchy-fft-kernel T3 plan:
- *   1. split coefficients into even and odd halves;
- *   2. apply the Frobenius map (square) to each half;
- *   3. recursively transform each half;
- *   4. combine with the scalar additive butterfly
- *        y[i]     = even[i] + i * odd[i]
- *        y[i+h]   = y[i] + odd[i]
- *      over GF(2^64), where h = n / 2.
+ * T3 (scalar) and T4 (AVX-512 vectorized) of the par3-cauchy-fft-kernel plan.
  *
- * The exact inverse must undo the Frobenius map with 63 repeated squarings;
- * squaring itself is not self-inverse in GF(2^64). The public inverse then
- * applies the non-normalized T3 round-trip scale 2^(log2(n)-1).
+ * SCALAR FORWARD (T3)
+ *   The forward transform follows the simplified monomial-basis recursion:
+ *     1. split coefficients into even and odd halves;
+ *     2. apply the Frobenius map (square) to each half;
+ *     3. recursively transform each half;
+ *     4. combine with the scalar additive butterfly
+ *          y[i]     = even[i] + i * odd[i]
+ *          y[i+h]   = y[i] + odd[i]
+ *        over GF(2^64), where h = n / 2.
+ *
+ * SCALAR INVERSE (T3)
+ *   The exact inverse must undo the Frobenius map with 63 repeated squarings;
+ *   squaring itself is not self-inverse in GF(2^64). The public inverse then
+ *   applies the non-normalized T3 round-trip scale 2^(log2(n)-1).
+ *
+ * AVX-512 FORWARD / INVERSE (T4)
+ *   The AVX-512 entry points mirror the scalar recursion exactly, but lift
+ *   the element-wise operations into 8-lane SIMD:
+ *     - Frobenius squaring uses gf64_square_avx512 (T2)
+ *     - The butterfly's alpha * odd multiplications use gf64_mul_avx512 (T1)
+ *   For n < 64 the AVX-512 entries delegate to the scalar functions, since
+ *   the SIMD setup overhead dominates for small problems. Bit-exactness is
+ *   guaranteed by the bit-exactness of gf64_square_avx512 vs.
+ *   gf64_mul_reference(x, x) and gf64_mul_avx512 vs. gf64_mul_reference —
+ *   verified by the existing T1 / T2 parity tests and the new AVX-512
+ *   parity tests in test_gf64_additive_fft.c.
+ *
+ * SCOPE
+ *   This file consolidates the T3 (scalar) and T4 (AVX-512) implementations
+ *   into a single translation unit. The AVX-512 code does NOT modify any
+ *   scalar primitive (gf64/gf64_solve.c, gf64/gf64_square.c,
+ *   gf64/gf64_mul_avx512.c are all read-only dependencies).
+ * ============================================================================
  */
 
 #include "gf64_additive_fft.h"
+#include "gf64_mul.h"
 #include "gf64_square.h"
 
 #include <assert.h>
@@ -226,6 +250,200 @@ void gf64_poly_mul(
 
 	free(fa);
 	free(fb);
+}
+
+/* ===========================================================================
+ * T4: AVX-512 vectorized Gao-Mateer-style additive FFT.
+ *
+ * The recursion structure mirrors the scalar implementation exactly. The
+ * element-wise operations are lifted into 8-lane SIMD:
+ *   - Frobenius squaring uses gf64_square_avx512 (T2)
+ *   - The butterfly's alpha * odd multiplications use gf64_mul_avx512 (T1)
+ *
+ * Both T1 and T2 are bit-exact to the scalar GF(2^64) reference, so the
+ * recursion is bit-exact to gf64_fft_forward / gf64_fft_inverse. The N % 8
+ * tail and the small-N (n < 64) inner recursion delegate to the scalar
+ * implementation, since SIMD setup overhead dominates for small problems.
+ * =========================================================================== */
+
+#include <immintrin.h>
+
+#ifndef __GNUC__
+/* Stub out GCC __attribute__((target(...))) under MSVC. */
+#define __attribute__(...)
+#endif
+
+#define GF64_FFT_AVX512_MIN  ((size_t)64)
+#define GF64_FFT_AVX512_LANES ((size_t)8)
+
+/* Apply Frobenius 63 times (the inverse of x -> x^2 in GF(2^64)).
+ * SIMD via 63 calls to gf64_square_avx512 — matches the scalar
+ * gf64_apply_inverse_frobenius in lockstep, since both delegate to the
+ * same bit-exact squaring primitive. The in-place aliasing is safe:
+ * gf64_square_avx512 does load -> compute -> store per block. */
+static void gf64_apply_inverse_frobenius_avx512(gf64_t *values, size_t n) {
+	for (size_t round = 0; round < 63; round++) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wrestrict"
+		gf64_square_avx512(values, values, n);
+#pragma GCC diagnostic pop
+	}
+}
+
+/* AVX-512 vectorized in-place Gao-Mateer forward FFT.
+ *
+ * For n >= GF64_FFT_AVX512_MIN, mirrors the scalar gf64_fft_forward
+ * recursion, lifting the element-wise Frobenius squaring into 8-lane
+ * SIMD and the alpha * odd butterfly multiplications into 8-lane SIMD.
+ * For n < GF64_FFT_AVX512_MIN, delegates to the scalar implementation. */
+__attribute__((target("avx512f,vpclmulqdq")))
+void gf64_fft_forward_avx512(gf64_t *poly, size_t n) {
+	if (n <= 1) {
+		return;
+	}
+
+	if (n < GF64_FFT_AVX512_MIN) {
+		gf64_fft_forward(poly, n);
+		return;
+	}
+
+	assert(gf64_is_power_of_two(n));
+
+	size_t half = n / 2;
+	gf64_t *even_half = (gf64_t *)malloc(half * sizeof(gf64_t));
+	gf64_t *odd_half = (gf64_t *)malloc(half * sizeof(gf64_t));
+	if (even_half == NULL || odd_half == NULL) {
+		free(even_half);
+		free(odd_half);
+		abort();
+	}
+
+	/* Split poly into even/odd halves. The scalar deinterleave is bandwidth-
+	 * bound; the SIMD ops (square, mul) below carry the actual compute. */
+	for (size_t i = 0; i < half; i++) {
+		even_half[i] = poly[2 * i];
+		odd_half[i] = poly[2 * i + 1];
+	}
+
+	/* Frobenius (square) each half — 8 lanes per iteration via T2.
+	 * In-place aliasing is safe: gf64_square_avx512 does load -> compute
+	 * -> store per block. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wrestrict"
+	gf64_square_avx512(even_half, even_half, half);
+	gf64_square_avx512(odd_half, odd_half, half);
+#pragma GCC diagnostic pop
+
+	/* Recursive transform on each half — recurses down to n=64 in SIMD,
+	 * then drops into scalar for the bottom levels. */
+	gf64_fft_forward_avx512(even_half, half);
+	gf64_fft_forward_avx512(odd_half, half);
+
+	/* Butterfly combine. For each batch of 8 positions i, alpha is the
+	 * 8-element vector {i, i+1, ..., i+7}; one SIMD multiplication per
+	 * batch covers all 8 alpha * odd products. */
+	gf64_t alpha_buf[GF64_FFT_AVX512_LANES];
+	gf64_t prod_buf[GF64_FFT_AVX512_LANES];
+
+	for (size_t i = 0; i < half; i += GF64_FFT_AVX512_LANES) {
+		for (size_t k = 0; k < GF64_FFT_AVX512_LANES; k++) {
+			alpha_buf[k] = (gf64_t)(i + k);
+		}
+		gf64_mul_avx512(prod_buf, alpha_buf, odd_half + i, GF64_FFT_AVX512_LANES);
+
+		for (size_t k = 0; k < GF64_FFT_AVX512_LANES; k++) {
+			gf64_t beta = even_half[i + k];
+			gf64_t gamma = prod_buf[k];
+			poly[i + k] = beta ^ gamma;
+			poly[i + k + half] = poly[i + k] ^ odd_half[i + k];
+		}
+	}
+
+	free(even_half);
+	free(odd_half);
+}
+
+/* AVX-512 vectorized unscaled inverse — counterpart to the static
+ * gf64_fft_inverse_unscaled above. File-local (same TU as the scalar
+ * version), so it can call gf64_fft_inverse_unscaled directly for the
+ * small-N scalar fallback. */
+__attribute__((target("avx512f,vpclmulqdq")))
+static void gf64_fft_inverse_unscaled_avx512(gf64_t *poly, size_t n) {
+	if (n <= 1) {
+		return;
+	}
+
+	if (n < GF64_FFT_AVX512_MIN) {
+		gf64_fft_inverse_unscaled(poly, n);
+		return;
+	}
+
+	size_t half = n / 2;
+	gf64_t *even_half = (gf64_t *)malloc(half * sizeof(gf64_t));
+	gf64_t *odd_half = (gf64_t *)malloc(half * sizeof(gf64_t));
+	if (even_half == NULL || odd_half == NULL) {
+		free(even_half);
+		free(odd_half);
+		abort();
+	}
+
+	/* Step 1: inverse butterfly — split poly into even/odd halves.
+	 *
+	 * Math: given y_lo = poly[i], y_hi = poly[i + half], the inverse of the
+	 * forward butterfly (y_lo = e + i*o, y_hi = y_lo + o) gives
+	 *   o = y_lo + y_hi
+	 *   e = y_lo + i*o
+	 * The product is alpha * o (the SUM, not alpha * y_lo), so we must first
+	 * compute o = lo ^ hi, then multiply alpha by o, then xor with lo.
+	 * Mirrors the scalar gf64_fft_inverse_unscaled exactly. */
+	gf64_t alpha_buf[GF64_FFT_AVX512_LANES];
+	gf64_t odd_buf[GF64_FFT_AVX512_LANES];
+	gf64_t prod_buf[GF64_FFT_AVX512_LANES];
+
+	for (size_t i = 0; i < half; i += GF64_FFT_AVX512_LANES) {
+		for (size_t k = 0; k < GF64_FFT_AVX512_LANES; k++) {
+			gf64_t lo = poly[i + k];
+			gf64_t odd = lo ^ poly[i + k + half];
+			odd_buf[k] = odd;
+			odd_half[i + k] = odd;
+			alpha_buf[k] = (gf64_t)(i + k);
+		}
+		gf64_mul_avx512(prod_buf, alpha_buf, odd_buf, GF64_FFT_AVX512_LANES);
+
+		for (size_t k = 0; k < GF64_FFT_AVX512_LANES; k++) {
+			gf64_t lo = poly[i + k];
+			even_half[i + k] = lo ^ prod_buf[k];
+		}
+	}
+
+	/* Step 2: recurse on each half. */
+	gf64_fft_inverse_unscaled_avx512(even_half, half);
+	gf64_fft_inverse_unscaled_avx512(odd_half, half);
+
+	/* Step 3: apply inverse Frobenius (63 squarings) to each half. */
+	gf64_apply_inverse_frobenius_avx512(even_half, half);
+	gf64_apply_inverse_frobenius_avx512(odd_half, half);
+
+	/* Step 4: interleave. Scalar epilog; bandwidth-bound, the next pass
+	 * would SIMDify the deinterleave via vinserti/vpermi but T4 keeps it
+	 * simple. */
+	for (size_t i = 0; i < half; i++) {
+		poly[2 * i] = even_half[i];
+		poly[2 * i + 1] = odd_half[i];
+	}
+
+	free(even_half);
+	free(odd_half);
+}
+
+/* Public AVX-512 inverse: unscaled recursion + T3 round-trip scale. */
+__attribute__((target("avx512f,vpclmulqdq")))
+void gf64_fft_inverse_avx512(gf64_t *poly, size_t n) {
+	if (n <= 1) {
+		return;
+	}
+	gf64_fft_inverse_unscaled_avx512(poly, n);
+	gf64_scale_vector(poly, n, gf64_fft_scale(n));
 }
 
 HEDLEY_END_C_DECLS

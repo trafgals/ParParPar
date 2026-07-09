@@ -185,12 +185,156 @@ static void test_polynomial_multiplication(void) {
 	pass("polynomial multiplication");
 }
 
+static void test_avx512_forward_parity(void) {
+	printf("Test: AVX-512 forward parity for n=2^k, k=4..10, 1000 trials...\n");
+	for (unsigned int k = 4; k <= 10; k++) {
+		size_t n = (size_t)1U << k;
+		gf64_t *scalar_poly = (gf64_t *)malloc(n * sizeof(gf64_t));
+		gf64_t *avx512_poly = (gf64_t *)malloc(n * sizeof(gf64_t));
+		if (scalar_poly == NULL || avx512_poly == NULL) {
+			free(scalar_poly);
+			free(avx512_poly);
+			fail("avx512 forward parity malloc");
+			return;
+		}
+
+		int ok = 1;
+		g_rng = 0xCAFEBABEDEADBEEFULL ^ k;
+		for (unsigned int trial = 0; trial < 1000 && ok; trial++) {
+			for (size_t i = 0; i < n; i++) {
+				gf64_t v = splitmix64_next();
+				scalar_poly[i] = v;
+				avx512_poly[i] = v;
+			}
+
+			gf64_fft_forward(scalar_poly, n);
+			gf64_fft_forward_avx512(avx512_poly, n);
+
+			size_t bad = 0;
+			if (!vectors_match(scalar_poly, avx512_poly, n, &bad)) {
+				printf("    k=%u trial=%u i=%zu scalar=0x%016llx avx512=0x%016llx\n",
+				       k, trial, bad,
+				       (unsigned long long)scalar_poly[bad],
+				       (unsigned long long)avx512_poly[bad]);
+				ok = 0;
+			}
+		}
+
+		char name[64];
+		snprintf(name, sizeof(name), "avx512 forward parity n=%zu", n);
+		if (ok) pass(name); else fail(name);
+
+		free(scalar_poly);
+		free(avx512_poly);
+	}
+}
+
+static void test_avx512_inverse_parity(void) {
+	printf("Test: AVX-512 inverse parity for n=2^k, k=4..10, 1000 trials...\n");
+	for (unsigned int k = 4; k <= 10; k++) {
+		size_t n = (size_t)1U << k;
+		gf64_t *scalar_poly = (gf64_t *)malloc(n * sizeof(gf64_t));
+		gf64_t *avx512_poly = (gf64_t *)malloc(n * sizeof(gf64_t));
+		if (scalar_poly == NULL || avx512_poly == NULL) {
+			free(scalar_poly);
+			free(avx512_poly);
+			fail("avx512 inverse parity malloc");
+			return;
+		}
+
+		int ok = 1;
+		g_rng = 0xFEEDFACE12340000ULL ^ k;
+		for (unsigned int trial = 0; trial < 1000 && ok; trial++) {
+			for (size_t i = 0; i < n; i++) {
+				gf64_t v = splitmix64_next();
+				scalar_poly[i] = v;
+				avx512_poly[i] = v;
+			}
+
+			gf64_fft_inverse(scalar_poly, n);
+			gf64_fft_inverse_avx512(avx512_poly, n);
+
+			size_t bad = 0;
+			if (!vectors_match(scalar_poly, avx512_poly, n, &bad)) {
+				printf("    k=%u trial=%u i=%zu scalar=0x%016llx avx512=0x%016llx\n",
+				       k, trial, bad,
+				       (unsigned long long)scalar_poly[bad],
+				       (unsigned long long)avx512_poly[bad]);
+				ok = 0;
+			}
+		}
+
+		char name[64];
+		snprintf(name, sizeof(name), "avx512 inverse parity n=%zu", n);
+		if (ok) pass(name); else fail(name);
+
+		free(scalar_poly);
+		free(avx512_poly);
+	}
+}
+
+static void test_avx512_round_trip_scaled(void) {
+	printf("Test: AVX-512 scaled round-trip for n=2^k, k=4..10, 1000 trials...\n");
+	for (unsigned int k = 4; k <= 10; k++) {
+		size_t n = (size_t)1U << k;
+		gf64_t *orig = (gf64_t *)malloc(n * sizeof(gf64_t));
+		gf64_t *work = (gf64_t *)malloc(n * sizeof(gf64_t));
+		gf64_t *want = (gf64_t *)malloc(n * sizeof(gf64_t));
+		if (orig == NULL || work == NULL || want == NULL) {
+			free(orig);
+			free(work);
+			free(want);
+			fail("avx512 round-trip malloc");
+			return;
+		}
+
+		int ok = 1;
+		g_rng = 0xA6D3D0E55EED0000ULL ^ k ^ 0xC0FFEE;
+		for (unsigned int trial = 0; trial < 1000 && ok; trial++) {
+			for (size_t i = 0; i < n; i++) {
+				orig[i] = splitmix64_next();
+				work[i] = orig[i];
+			}
+
+			gf64_fft_forward_avx512(work, n);
+			gf64_fft_inverse_avx512(work, n);
+
+			gf64_t scale = roundtrip_scale(k);
+			for (size_t i = 0; i < n; i++) {
+				want[i] = gf64_mul_reference(orig[i], scale);
+			}
+
+			size_t bad = 0;
+			if (!vectors_match(work, want, n, &bad)) {
+				printf("    k=%u trial=%u i=%zu got=0x%016llx want=0x%016llx\n",
+				       k, trial, bad,
+				       (unsigned long long)work[bad],
+				       (unsigned long long)want[bad]);
+				ok = 0;
+			}
+		}
+
+		char name[64];
+		snprintf(name, sizeof(name), "avx512 round-trip n=%zu", n);
+		if (ok) pass(name); else fail(name);
+
+		free(orig);
+		free(work);
+		free(want);
+	}
+}
+
 int main(void) {
 	printf("GF64 additive FFT scalar tests\n");
 	test_round_trip_scaled();
 	test_constant_identity();
 	test_zero_forward();
 	test_polynomial_multiplication();
+
+	printf("\nGF64 additive FFT AVX-512 tests\n");
+	test_avx512_forward_parity();
+	test_avx512_inverse_parity();
+	test_avx512_round_trip_scaled();
 
 	printf("\nSummary: %d passed, %d failed\n", g_passed, g_failed);
 	return g_failed == 0 ? 0 : 1;
