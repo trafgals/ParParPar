@@ -76,10 +76,17 @@ HEDLEY_BEGIN_C_DECLS
 /* ----- CPUID + XCR0 wrappers (copied verbatim from gf64_dispatch.c) ----- */
 
 static void gf64_cpuid(int leaf, int subleaf, unsigned int *eax, unsigned int *ebx, unsigned int *ecx, unsigned int *edx) {
-#if defined(__GNUC__) && !defined(__clang__) && !defined(__INTEL_COMPILER)
+#if defined(_MSC_VER)
+	int info[4];
+	__cpuidex(info, leaf, subleaf);
+	*eax = (unsigned int)info[0];
+	*ebx = (unsigned int)info[1];
+	*ecx = (unsigned int)info[2];
+	*edx = (unsigned int)info[3];
+#elif defined(__GNUC__) && !defined(__clang__) && !defined(__INTEL_COMPILER)
 	__asm__ __volatile__ (
-		"mov %%ebx, %%esi\n\t"
-		"cpuid\n\t"
+		"mov %%ebx, %%esi\n	"
+		"cpuid\n	"
 		"mov %%esi, %%ebx"
 		: "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
 		: "a"(leaf), "c"(subleaf)
@@ -102,6 +109,11 @@ static inline uint64_t gf64_xgetbv(uint32_t xcr) {
 		: "c"(xcr)
 	);
 	return ((uint64_t)hi << 32) | lo;
+}
+#elif defined(_MSC_VER)
+#include <intrin.h>
+static inline uint64_t gf64_xgetbv(uint32_t xcr) {
+	return (uint64_t)_xgetbv(xcr);
 }
 #else
 static inline uint64_t gf64_xgetbv(uint32_t xcr) {
