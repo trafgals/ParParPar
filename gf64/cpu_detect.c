@@ -205,9 +205,20 @@ static int try_zmm_insn(void) {
  * instruction; without POSIX sigjmp_buf we can't safely catch SIGILL.
  * Callers will fall through to AVX-2 (the CPUID-only branch) and
  * trust CPUID+XCR0. The function still exists to keep the call site
- * in gf64_detect_method_internal uniform across all compilers. */
+ * in gf64_detect_method_internal uniform across all compilers.
+ *
+ * NOTE: On native Windows (no hypervisor CPUID mask), return 1 to
+ * trust CPUID+XCR0 — the SIGILL probe is a WSL2 observer-effect
+ * workaround and is unnecessary on bare metal. */
 static int try_zmm_insn(void) {
+#if defined(_M_AMD64)
+	/* Native x64 Windows: no hypervisor observes our ZMM instructions.
+	 * CPUID+XCR0 already checked AVX-512 availability; return 1 to
+	 * trust the hardware rather than falling through to AVX-2. */
+	return 1;
+#else
 	return 0;
+#endif
 }
 #endif
 

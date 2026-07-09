@@ -118,8 +118,36 @@
       "cflags_cc": ["-fpermissive"]
     },
     {
+      "target_name": "gf64_avx512",
+      "type": "static_library",
+      "defines": ["NDEBUG"],
+      "sources": ["gf64/gf64_region_avx512.c"],
+      "include_dirs": ["gf64"],
+      "conditions": [
+        ['target_arch in "ia32 x64" and OS=="win"', {
+          "msvs_settings": {
+            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
+          }
+        }]
+      ]
+    },
+    {
+      "target_name": "gf64_avx512_arr",
+      "type": "static_library",
+      "defines": ["NDEBUG"],
+      "sources": ["gf64/gf64_region_avx512_arr.c", "gf64/gf64_invert_avx512.c"],
+      "include_dirs": ["gf64"],
+      "conditions": [
+        ['target_arch in "ia32 x64" and OS=="win"', {
+          "msvs_settings": {
+            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
+          }
+        }]
+      ]
+    },
+    {
       "target_name": "parpar_gf64",
-      "dependencies": ["parpar_gf64_cpu_detect"],
+      "dependencies": ["parpar_gf64_cpu_detect", "gf64_avx512", "gf64_avx512_arr"],
       "conditions": [
         ['target_arch in "ia32 x64"', {
           "sources": [
@@ -132,13 +160,10 @@
             "gf64/gf64_region_ssse3_arr.c",
             "gf64/gf64_region_avx2.c",
             "gf64/gf64_region_avx2_arr.c",
-            "gf64/gf64_region_avx512.c",
-            "gf64/gf64_region_avx512_arr.c",
             "gf64/gf64_dispatch.c",
             "gf64/gf64_invert.c",
             "gf64/gf64_invert_ssse3.c",
             "gf64/gf64_invert_avx2.c",
-            "gf64/gf64_invert_avx512.c",
             "gf64/gf64_solve.c"
           ],
           "include_dirs": ["gf64"],
