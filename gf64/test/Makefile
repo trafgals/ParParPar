@@ -16,10 +16,11 @@ TEST_SOURCES := test.c
 TEST_ALL_SOURCES := test_all.c
 TEST_GF64_MUL_AVX512_SOURCES := test_gf64_mul_avx512.c
 TEST_GF64_SQUARE_SOURCES := test_gf64_square.c
+TEST_GF64_INVERT_ITA_SOURCES := test_gf64_invert_ita.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -39,5 +40,13 @@ test_gf64_mul_avx512: $(TEST_GF64_MUL_AVX512_SOURCES) ../gf64_mul_avx512.c ../gf
 test_gf64_square: $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_single.c
 
+# Parity test for the Itoh-Tsujii batched inversion (par3-cauchy-fft-kernel T5).
+# Compiles only the four TUs the inverter transitively touches: the new
+# gf64_invert_ita.c plus the primitives it depends on (gf64_square.c,
+# gf64_mul_avx512.c) and the scalar reference gf64_single.c. Needs
+# AVX-512F + VPCLMULQDQ at runtime.
+test_gf64_invert_ita: $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_square.c ../gf64_mul_avx512.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_square.c ../gf64_mul_avx512.c ../gf64_single.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita
