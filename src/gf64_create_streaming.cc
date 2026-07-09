@@ -13,10 +13,34 @@
 
 #include <node_api.h>
 
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/mman.h>
+#if defined(_WIN32)
+#  include <io.h>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  include <malloc.h>     // _aligned_malloc on MSVC
+#  define PARPAR_STREAMING_USE_MMAP 0
+#  define open  _open
+#  define close _close
+// MSVC's _fstati64 expects `struct _stati64`, not `struct stat`. We use the
+// _stati64 type throughout this file on Windows to keep the call sites
+// source-portable. _fstati64 returns the same fields.
+#  define stat _stati64
+#  define fstat _fstati64
+#  define lseek _lseek
+#  define O_RDONLY _O_RDONLY
+#  define read  _read
+#  define ssize_t int
+// _aligned_malloc is in global namespace on MSVC, NOT std::.
+#  define aligned_alloc(alignment, size) _aligned_malloc((size_t)(size), (size_t)(alignment))
+#  define aligned_free _aligned_free
+#else
+#  include <sys/stat.h>
+#  include <fcntl.h>
+#  include <unistd.h>
+#  include <sys/mman.h>
+#  define PARPAR_STREAMING_USE_MMAP 1
+#  define aligned_free(ptr) std::free(ptr)
+#endif
 
 #include <cerrno>
 #include <cstdlib>
@@ -187,12 +211,17 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 
 	const char* useMmapEnv = std::getenv("PAR3_GF64_USE_MMAP");
 	bool useMmap = (useMmapEnv != NULL && useMmapEnv[0] != '\0' && useMmapEnv[0] != '0');
+#if !PARPAR_STREAMING_USE_MMAP
+	// mmap() not available on this platform (e.g. Windows). Force read-path.
+	useMmap = false;
+#endif
 
 	const uint8_t* mappedPtr = NULL;
 	uint8_t* readBuffer = NULL;
 	bool mmapActive = false;
 
 	if(useMmap) {
+#if PARPAR_STREAMING_USE_MMAP
 		void* p = ::mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
 		if(p == MAP_FAILED) {
 			int err = errno;
@@ -204,9 +233,10 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 		}
 		mappedPtr = (const uint8_t*)p;
 		mmapActive = true;
+#endif
 	} else {
 		size_t totalBytes = (size_t)st.st_size;
-		readBuffer = (uint8_t*)std::aligned_alloc(64, (totalBytes + 63) & ~((size_t)63));
+		readBuffer = (uint8_t*)aligned_alloc(64, (totalBytes + 63) & ~((size_t)63));
 		if(readBuffer == NULL) {
 			::close(fd);
 			napi_throw_error(env, NULL, "aligned_alloc failed for source buffer");
@@ -218,7 +248,7 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 			if(n < 0) {
 				if(errno == EINTR) continue;
 				int err = errno;
-				std::free(readBuffer);
+				aligned_free(readBuffer);
 				::close(fd);
 				char msg[256];
 				std::snprintf(msg, sizeof(msg), "read failed: errno=%d (%s)", err, std::strerror(err));
@@ -226,7 +256,7 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 				return NULL;
 			}
 			if(n == 0) {
-				std::free(readBuffer);
+				aligned_free(readBuffer);
 				::close(fd);
 				napi_throw_error(env, NULL, "unexpected EOF while reading sourcePath");
 				return NULL;
@@ -238,10 +268,12 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 
 	const uint8_t* inputsBytes = mappedPtr;
 	size_t recoveryBytes = (size_t)numRecovery * (size_t)blockSize;
-	uint8_t* recovery = (uint8_t*)std::aligned_alloc(64, (recoveryBytes + 63) & ~((size_t)63));
+	uint8_t* recovery = (uint8_t*)aligned_alloc(64, (recoveryBytes + 63) & ~((size_t)63));
 	if(recovery == NULL) {
+#if PARPAR_STREAMING_USE_MMAP
 		if(mmapActive) ::munmap((void*)mappedPtr, (size_t)st.st_size);
-		if(readBuffer) std::free(readBuffer);
+#endif
+		if(readBuffer) aligned_free(readBuffer);
 		::close(fd);
 		napi_throw_error(env, NULL, "aligned_alloc failed for recovery buffer");
 		return NULL;
@@ -266,12 +298,14 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 	}
 
 	if(mmapActive) {
+#if PARPAR_STREAMING_USE_MMAP
 		::munmap((void*)mappedPtr, (size_t)st.st_size);
+#endif
 	}
 	if(readBuffer) {
-		std::free(readBuffer);
+		aligned_free(readBuffer);
 	}
-	std::free(recovery);
+	aligned_free(recovery);
 	::close(fd);
 
 	napi_value resultObj;

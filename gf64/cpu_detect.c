@@ -53,6 +53,14 @@
 #include "gf64_global.h"
 #include <string.h>
 
+#ifndef __GNUC__
+/* Stub out GCC __attribute__((target(...))) under MSVC.
+ * Use variadic macro so the entire trailing ((...)) parens are eaten as
+ * a single comma-separated argument list. */
+#define __attribute__(...) /* __attribute__ not supported under MSVC */
+#endif
+
+
 /* POSIX signal/sigsetjmp machinery is GCC/POSIX-only. Windows MSVC lacks
  * sigjmp_buf, sigsetjmp, siglongjmp, sigaction etc. The SIGILL probe is
  * a defence-in-depth layer for WSL2/Hyper-V hosts (Linux GCC); Windows

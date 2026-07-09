@@ -121,7 +121,7 @@
       "target_name": "parpar_gf64",
       "dependencies": ["parpar_gf64_cpu_detect"],
       "conditions": [
-        ['target_arch in "ia32 x64" and OS!="win"', {
+        ['target_arch in "ia32 x64"', {
           "sources": [
             "src/gf64_addon.cc",
             "src/gf64_create_streaming.cc",
@@ -149,7 +149,20 @@
               "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
               "cxxflags": ["-std=c++11", "-fmax-include-depth=1024", "-fpermissive", "-mno-avx512f"],
               "cflags_cc": ["-fpermissive"]
-            }]
+            }],
+            ["OS==\"win\"", {
+              # MSVC: no -mno-avx512f (cl.exe doesn't take it); use /arch:AVX2 as a
+              # baseline max-ISA for the gf64 TUs (avx512 TUs use their own
+              # __attribute__((target("avx512f"))) markers, gated by /arch).
+              # NODE_API_EXPERIMENTAL_NOGC_ENV_OPT_OUT makes the napi_wrap
+              # finalize callback typedef accept `const napi_env__*` (which is
+              # what src/gf64_addon.cc:74 already declares). Without it MSVC
+              # rejects the trampoline argument with C2664 because Node 22
+              # makes the env pointer non-const by default in the typedef.
+              "defines": ["NODE_API_EXPERIMENTAL_NOGC_ENV_OPT_OUT"],
+              "cflags": ["/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS"],
+              "cxxflags": ["/std:c++17", "/permissive-", "/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS", "/EHsc"]
+            }] 
           ]
         }, {
           "sources": ["src/gf64_stub.cc"]

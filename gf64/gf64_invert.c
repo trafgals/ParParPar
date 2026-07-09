@@ -1,6 +1,17 @@
 #include "gf64_invert.h"
 
 #ifdef _MSC_VER
+/* MSVC shim: count-leading-zeros via _BitScanReverse64. */
+static inline int gf64_msvc_clz64(uint64_t x) {
+    unsigned long idx;
+    _BitScanReverse64(&idx, x);
+    return (int)(63 - idx);
+}
+#define __builtin_clzll(x) gf64_msvc_clz64((uint64_t)(x))
+#endif
+
+
+#ifdef _MSC_VER
 # include <intrin.h>
 static inline int my_clzll(uint64_t x) {
     unsigned long idx;

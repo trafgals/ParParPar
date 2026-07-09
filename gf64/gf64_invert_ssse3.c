@@ -4,6 +4,28 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef _MSC_VER
+/* MSVC shim: count-leading-zeros via _BitScanReverse64. Returns
+ * bit index of highest set bit, or 0 for input 0 (caller already
+ * guards against 0). Matches GCC __builtin_clzll semantics in the
+ * call sites below. */
+static inline int gf64_msvc_clz64(uint64_t x) {
+    unsigned long idx;
+    _BitScanReverse64(&idx, x);
+    return (int)(63 - idx);
+}
+#define __builtin_clzll(x) gf64_msvc_clz64((uint64_t)(x))
+#endif
+
+
+#ifndef __GNUC__
+/* Stub out GCC __attribute__((target(...))) under MSVC.
+ * Use variadic macro so the entire trailing ((...)) parens are eaten as
+ * a single comma-separated argument list. */
+#define __attribute__(...) /* __attribute__ not supported under MSVC */
+#endif
+
+
 HEDLEY_BEGIN_C_DECLS
 
 extern void gf64_inverse_batch_scalar(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLEY_RESTRICT in, size_t N);

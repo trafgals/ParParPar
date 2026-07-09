@@ -9,13 +9,25 @@
 
 // POSIX mmap(2) / open(2) / fstat(2) / close(2) for the A1 zero-copy
 // mmap-based ComputeRecoveryBlocksFromFile entry (PAR3_GF64_USE_MMAP=1).
-// Linux/macOS only; the binding.gyp node-gyp target compiles on POSIX
-// where these headers are universally available. (Windows builds are
-// handled by the alternate compute_recovery_full NAPI path.)
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
+// Linux/macOS only; Windows builds fall back to file-read via
+// Win32 CreateFile/MapViewOfFile (or just a plain read) below.
+#if defined(_WIN32)
+#  include <io.h>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  define open  _open
+#  define close _close
+#  define fstat _fstat
+#  define lseek _lseek
+#  define O_RDONLY _O_RDONLY
+#  define PARPAR_USE_MMAP 0
+#else
+#  include <fcntl.h>
+#  include <sys/mman.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#  define PARPAR_USE_MMAP 1
+#endif
 
 #if defined(_MSC_VER)
 #include <malloc.h>
@@ -997,6 +1009,17 @@ int GF64Controller::ComputeRecoveryBlocksFromFile(
 	uint64_t      firstInput, uint64_t firstRecovery,
 	int           numThreads
 ) {
+#if !PARPAR_USE_MMAP
+	// Windows (or any non-POSIX build where mmap is unavailable):
+	// return -1 so the JS layer falls back to ComputeRecoveryBlocksFull
+	// over a JS-side file read.
+	(void)sourcePath; (void)recovery; (void)numRecovery;
+	(void)blockSize64; (void)firstInput; (void)firstRecovery; (void)numThreads;
+	std::fprintf(stderr,
+		"[par3] ComputeRecoveryBlocksFromFile: mmap-based path is not available "
+		"on this platform; use ComputeRecoveryBlocksFull with a pre-allocated buffer.\n");
+	return -1;
+#else
 	// --- Env gate. Default off; A2 / A3 will read this too. ---
 	const char* env = std::getenv("PAR3_GF64_USE_MMAP");
 	if (env == nullptr || *env == '\0' || std::atoi(env) != 1) {
@@ -1065,12 +1088,12 @@ int GF64Controller::ComputeRecoveryBlocksFromFile(
 	ComputeRecoveryBlocksFull(
 		inputs, numInputs,
 		recovery, numRecovery,
-		blockSize64,
-		firstInput, firstRecovery,
+		blockSize64, firstInput, firstRecovery,
 		numThreads);
 
 	// --- 5. Cleanup: munmap + close even on success. ---
 	::munmap(mapped, fileSize);
 	::close(fd);
 	return 0;
+#endif
 }

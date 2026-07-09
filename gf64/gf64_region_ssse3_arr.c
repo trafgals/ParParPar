@@ -4,6 +4,14 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifndef __GNUC__
+/* Stub out GCC __attribute__((target(...))) under MSVC.
+ * Use variadic macro so the entire trailing ((...)) parens are eaten as
+ * a single comma-separated argument list. */
+#define __attribute__(...) /* __attribute__ not supported under MSVC */
+#endif
+
+
 HEDLEY_BEGIN_C_DECLS
 
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);

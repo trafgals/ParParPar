@@ -3,6 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+/* MSVC shim: case-insensitive compare. */
+#define strcasecmp _stricmp
+#endif
+
+
 HEDLEY_BEGIN_C_DECLS
 
 extern void gf64_region_mul_scalar(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLEY_RESTRICT in, size_t len, gf64_t constant);
