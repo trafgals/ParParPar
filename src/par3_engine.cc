@@ -9,13 +9,25 @@
 
 // POSIX mmap(2) / open(2) / fstat(2) / close(2) for the A1 zero-copy
 // mmap-based ComputeRecoveryBlocksFromFile entry (PAR3_GF64_USE_MMAP=1).
-// Linux/macOS only; the binding.gyp node-gyp target compiles on POSIX
-// where these headers are universally available. (Windows builds are
-// handled by the alternate compute_recovery_full NAPI path.)
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
+// Linux/macOS only; Windows builds fall back to file-read via
+// Win32 CreateFile/MapViewOfFile (or just a plain read) below.
+#if defined(_WIN32)
+#  include <io.h>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  define open  _open
+#  define close _close
+#  define fstat _fstat
+#  define lseek _lseek
+#  define O_RDONLY _O_RDONLY
+#  define PARPAR_USE_MMAP 0
+#else
+#  include <fcntl.h>
+#  include <sys/mman.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#  define PARPAR_USE_MMAP 1
+#endif
 
 #if defined(_MSC_VER)
 #include <malloc.h>
@@ -124,9 +136,12 @@ static inline void EnsureDispatch() {
 // ============================================================================
 // Cauchy matrix construction worker count
 // ----------------------------------------------------------------------------
+// v2: tried 64 — slower than 8 due to std::async spawn overhead on small
+// matrix builds. Reverted to 8 which matches the thread count on Zen4
+// desktop CPUs.
+// ============================================================================
 static constexpr size_t kCauchyMaxWorkers = 8;
 static size_t s_cauchyWorkerCount = 0;
-
 // ============================================================================
 // Effective CPU count  (affinity-aware)
 // ----------------------------------------------------------------------------
@@ -182,28 +197,49 @@ void GF64Controller::BuildCauchyMatrix(
 		s_cauchyWorkerCount = (n == 0) ? 1 : n;
 	}
 
+	// v2: tried 2D-tile parallel (split columns across workers) — SLOWER
+	// than row-stealing because each worker ends up doing numRecovery row
+	// passes over its slice, multiplying the dispatch overhead. Reverted
+	// to the row-stealing default path below.
+	(void)0;
+
 	if (numRecovery <= 1 || s_cauchyWorkerCount <= 1) {
+		// v2 fix: build the row's denominators into a flat array, call the
+		// SIMD-batched gf64_inverse_batch_* once, scatter the inverses back
+		// into the row. The original code called the scalar gf64_inverse()
+		// per element (~30s for 1 GiB / 10K = 262M inverts); the batched
+		// AVX-2 / AVX-512 path is instruction-level-parallelism across 4-8
+		// lanes, not vectorized, but avoids the per-call function dispatch
+		// overhead and lets the compiler hoist the `denoms` reads.
+		// Avoid std::vector heap alloc by reusing a thread_local buffer.
+		static thread_local std::vector<uint64_t> denoms_tls;
+		if (denoms_tls.size() < numInputs) {
+			denoms_tls.resize(numInputs);
+		}
+		uint64_t* denoms = denoms_tls.data();
 		for (size_t r = 0; r < numRecovery; r++) {
 			uint64_t y = firstRecovery + r;
 			for (size_t c = 0; c < numInputs; c++) {
 				uint64_t x = firstInput + c;
 				uint64_t denom = x ^ y;
-				if (denom == 0) denom = 1;
-				coeffMatrix[r * numInputs + c] = gf64_inverse(denom);
+				denoms[c] = (denom == 0) ? 1 : denom;
 			}
+			gf64_inverse_batch(&coeffMatrix[r * numInputs], denoms, numInputs);
 		}
 		return;
 	}
 
 	// Parallel path: row-stealing via std::async workers.  nextRow is
 	// destroyed only after all futures complete (we block below), so
-	// workers can safely reference it by reference.
+	// workers can safely reference it by reference. Each worker has its
+	// own denoms buffer (reused per row, not reallocated).
 	std::atomic<size_t> nextRow{0};
 	std::vector<std::future<void>> futures;
 	futures.reserve(s_cauchyWorkerCount);
 
 	for (size_t w = 0; w < s_cauchyWorkerCount; w++) {
 		futures.push_back(std::async(std::launch::async, [=, &nextRow]() {
+			std::vector<uint64_t> denoms(numInputs);
 			for (size_t r = nextRow.fetch_add(1, std::memory_order_relaxed);
 			     r < numRecovery;
 			     r = nextRow.fetch_add(1, std::memory_order_relaxed)) {
@@ -211,9 +247,9 @@ void GF64Controller::BuildCauchyMatrix(
 				for (size_t c = 0; c < numInputs; c++) {
 					uint64_t x = firstInput + c;
 					uint64_t denom = x ^ y;
-					if (denom == 0) denom = 1;
-					coeffMatrix[r * numInputs + c] = gf64_inverse(denom);
+					denoms[c] = (denom == 0) ? 1 : denom;
 				}
+				gf64_inverse_batch(&coeffMatrix[r * numInputs], denoms.data(), numInputs);
 			}
 		}));
 	}
@@ -221,6 +257,18 @@ void GF64Controller::BuildCauchyMatrix(
 	for (auto& f : futures) {
 		f.wait();
 	}
+}
+
+// v2-4: standalone matrix build returning a fresh buffer (caller frees).
+gf64_t* GF64Controller::BuildCauchyMatrixAlloc(
+	size_t numInputs, size_t numRecovery,
+	uint64_t firstInput, uint64_t firstRecovery
+) {
+	if (numInputs == 0 || numRecovery == 0) return nullptr;
+	gf64_t* matrix = (gf64_t*)malloc(numRecovery * numInputs * sizeof(gf64_t));
+	if (!matrix) return nullptr;
+	BuildCauchyMatrix(matrix, numInputs, numRecovery, firstInput, firstRecovery);
+	return matrix;
 }
 
 // ============================================================================
@@ -860,6 +908,27 @@ void GF64Controller::ComputeRecoveryBlocks(
 	gf64_t* coeff = GetOrBuildCoeffMatrix(numInputs, numRecovery, firstInput, firstRecovery);
 	if (!coeff) return;
 
+	ComputeRecoveryBlocksWithCoeff(inputs, numInputs, recovery, numRecovery,
+	                                blockSize64, coeff, numThreads);
+}
+
+// ============================================================================
+// GF64Controller::ComputeRecoveryBlocksWithCoeff
+// ----------------------------------------------------------------------------
+// v2-4: pre-computed coefficient matrix variant. Skips the matrix build
+// entirely (assumes the matrix was already built and validated), so the
+// caller can overlap the matrix build with other work (e.g. file read).
+// The caller is responsible for freeing the coeff buffer after the call.
+// ============================================================================
+void GF64Controller::ComputeRecoveryBlocksWithCoeff(
+	const gf64_t* inputs, size_t numInputs,
+	gf64_t*       recovery, size_t numRecovery,
+	size_t        blockSize64,
+	const gf64_t* coeff,
+	int           numThreads
+) {
+	if (numInputs == 0 || numRecovery == 0 || !coeff) return;
+
 	// --- 2. Per-workload dispatch (PD2 AVX-512 downclock heuristic) ---
 	gf64_apply_method(gf64_method_for_workload(numInputs, numRecovery, blockSize64));
 
@@ -997,6 +1066,17 @@ int GF64Controller::ComputeRecoveryBlocksFromFile(
 	uint64_t      firstInput, uint64_t firstRecovery,
 	int           numThreads
 ) {
+#if !PARPAR_USE_MMAP
+	// Windows (or any non-POSIX build where mmap is unavailable):
+	// return -1 so the JS layer falls back to ComputeRecoveryBlocksFull
+	// over a JS-side file read.
+	(void)sourcePath; (void)recovery; (void)numRecovery;
+	(void)blockSize64; (void)firstInput; (void)firstRecovery; (void)numThreads;
+	std::fprintf(stderr,
+		"[par3] ComputeRecoveryBlocksFromFile: mmap-based path is not available "
+		"on this platform; use ComputeRecoveryBlocksFull with a pre-allocated buffer.\n");
+	return -1;
+#else
 	// --- Env gate. Default off; A2 / A3 will read this too. ---
 	const char* env = std::getenv("PAR3_GF64_USE_MMAP");
 	if (env == nullptr || *env == '\0' || std::atoi(env) != 1) {
@@ -1065,12 +1145,12 @@ int GF64Controller::ComputeRecoveryBlocksFromFile(
 	ComputeRecoveryBlocksFull(
 		inputs, numInputs,
 		recovery, numRecovery,
-		blockSize64,
-		firstInput, firstRecovery,
+		blockSize64, firstInput, firstRecovery,
 		numThreads);
 
 	// --- 5. Cleanup: munmap + close even on success. ---
 	::munmap(mapped, fileSize);
 	::close(fd);
 	return 0;
+#endif
 }

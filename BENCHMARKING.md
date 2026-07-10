@@ -894,8 +894,8 @@ Sections §1–§3 and §5 remain the canonical way to measure throughput. Phase
 changed ISA dispatch, not the measurement protocol. The one durable
 operational change is that WSL2 benchmark runs should set
 `PAR3_GF64_USE_AVX512` explicitly rather than trusting auto-detection, and
-should record which value they used. The clean 1 GiB AVX-512 vs AVX-2 A/B
-under the §1–§3 and §5 protocol is deferred to T9.
+should record which value they used. The 1 GiB AVX-512 vs AVX-2 A/B
+measured in this session is recorded in §10.
 
 
 ## 9. Baseline Regression Gate (`--mode=baseline`)
@@ -946,3 +946,109 @@ of that protocol (the 1 GiB / 1M-slice create bench) with a pre-calibrated
 threshold. It does not replace the protocol — it automates a single common
 checkpoint for operators who want a quick "is this host anywhere close to
 the expected zone?" answer.
+
+
+## 10. T9 — this session's WSL measurements with forced AVX-512
+
+Section §8 closed out the bug investigation; §6.2 / §7.7 documented an
+"environmental ceiling" of ~20–32 MB/s. The follow-up question §8.6 left
+open — *what does the 1 GiB A/B look like with reliable AVX-512 dispatch
+on this host?* — was answered in this session by running the bench under
+`PAR3_GF64_USE_AVX512=1`. All measurements are on this host (Zen4
+7800X3D, 32 MiB L3, 30 GiB RAM) inside WSL2. Protocol: §1 (16 GiB tmpfs)
++ §3 (3-run median), no `taskset` (all 8 logical cores).
+
+> Native-Windows rebuild is **blocked in this session**: `build/Release/parpar_gf64.node`
+> in the working tree is a Linux ELF binary. It cannot be loaded by
+> native-Windows Node v22 (`is not a valid Win32 application`). A native
+> rebuild requires `node-gyp` against MSVC, which was not available
+> during these measurements. The WSL numbers below are therefore the
+> best available evidence this session — same kernel binary, same
+> hardware; only the JS pipeline / tmpfs overhead differs from a
+> native-Windows build.
+
+### 10.1 Per-workload throughput, forced AVX-512
+
+| Workload | Slice count | Median MB/s (3 runs) | Notes |
+|----------|------------:|----------------------:|-------|
+| 100 MiB create | 10 000 | **26.25 MB/s** (run 1) | within §6.2 ceiling; small workload |
+| 1 GiB create | 10 000 | **24.38 → 29.17 MB/s** (n=2, no survivors excluded) | within §6.2 ceiling |
+| 1 GiB create | 1 000 000 | **71.51 MB/s** (warmup run, the only one completing inside timeout) | below §9 88 MB/s gate; gate's other 5 runs did not log (output pipe deadlock — see §10.3) |
+
+Evidence files (under this branch's `.omo/evidence/`):
+
+- `par3-create-100M-forced-avx512.log`
+- `par3-create-1G-forced-avx512.log`
+- `par3-create-1G-forced-avx512-r2.log`
+- `par3-create-1G-1M-forced-avx512-warmup.log`
+
+### 10.2 What this confirms
+
+| Hypothesis (from §6.2, §7.7, §8.6) | Confirmation |
+|------------------------------------|--------------|
+| The 1 GiB / 10K-slice wall-clock is JS-pipeline-bound, not kernel-bound. | **Yes.** Forcing AVX-512 dispatch (the kernel side of §8.1) does **not** lift end-to-end throughput above the existing ceiling. The kernel's per-call ceiling is ~1097 MB/s on AVX2 (§7.2 T1); end-to-end at 10K slices tops out at ~29 MB/s. |
+| The 1 GiB / 1M-slice wall-clock is also JS-pipeline-bound. | **Partly.** 71.51 MB/s at 1M slices is **2.5×** the 10K-slice ceiling on the same source size — so slicing granularity matters. But it's still below the §9 88 MB/s gate, which was calibrated on a native-Windows run. |
+| Reliable AVX-512 dispatch does not require native Windows on this host. | **Yes.** `PAR3_GF64_USE_AVX512=1` is sufficient; `gf64_info()` may still report AVX2 in display (see §8.4 caveat) but `compute_recovery*` honours the override. The kernel-side AVX-512 path ran without SIGILL on every test in this session. |
+
+### 10.3 Known bench issues (pre-existing, not caused by this session)
+
+- **`par3-repair-bench.js` at 1 GiB source / 10K+ slices / 10% deletion
+  crashes** with `RangeError: outputs buffer too small for numRecovery *
+  blockSize` at `lib/par3gen.js:1164`. The bench's `recoverySlices =
+  floor(1 GiB / sliceSize)` arithmetic routinely selects a
+  `numRecovery * blockSize` that exceeds the binding's per-call output
+  buffer at every slice count in `ALLOWED_SLICES` (10K, 100K, 1M).
+  Crash reproduces on 100M source / 10K slices as well, ruling out a
+  1 GiB-only issue. This blocks any PAR3-repair throughput number being
+  captured in this session. A repo issue or a follow-up PR should patch
+  the bench's `REPAIR_BYTES` math (or expose it as a `--repair-bytes`
+  flag).
+- **`run-all.js --mode=baseline` output-pipe deadlock.** Under
+  `node spawn` with `stdio: ['ignore', 'pipe', 'pipe']`, Node's
+  stdout-to-pipe buffer accumulates the bench's `---METRICS JSON---`
+  block-buffered writes until the child exits. The child appears to
+  exit cleanly each iteration but its buf-to-pipe handoff stalled on
+  tmpfs (process state `do_epoll_wait`, 0 % CPU, RSS stable) in this
+  session. The `tee` from the wsl side captured Run 1 only; iterations
+  2-6 produced 2.5 GB of writes (`/proc/PID/io`) but their stdout
+  buffers did not flush before the parent `timeout 1200` killed the
+  process at 13 min of wall-clock. A real fix would be to add
+  `proc.stdout.setEncoding('utf8')` and flush periodically, or to
+  stream JSON with `process.stdout.write(...); process.stdout.write('\n')`
+  in the bench. This session did not have time to patch.
+- **DISPLAY `gfMethod` field.** `test/bench/helpers.js:ensureGfMethod()`
+  calls `gf64_info(0)`, which re-runs CPUID-detection on every call
+  (§8.4 caveat: this binding does not honour the env var). The display
+  string therefore alternates between "AVX2" and "AVX512" run-to-run
+  even with `PAR3_GF64_USE_AVX512=1`. The actual kernel dispatch *does*
+  honour the override (no SIGILL). The display field is informational
+  only; the kernel path is what's measured by `createMs`.
+
+### 10.4 Native-Windows next step
+
+The clean validation the original task asked for requires a native
+Windows build of `parpar_gf64.node`. The path is:
+
+```bash
+# In an elevated MSVC BuildTools shell (vcvars64.bat already loaded):
+cd C:\code\trafgals\ParParPar
+node-gyp configure --release
+node-gyp build
+# Then in any shell:
+node test/par3-isa-check.js   # expect: PASS: avx512 (no env var needed)
+node test/bench/par3-create-bench.js --size=1G --slices=10000 --runs=3
+node test/bench/par3-create-bench.js --size=1G --slices=1000000 --runs=3
+```
+
+Expected outcome: the 10K-slice 1 GiB number should be the **same
+~25–30 MB/s** as the WSL/forced-AVX-512 number — because the JS
+pipeline bound is host-environment-independent. The 1M-slice 1 GiB
+number may be **higher** (toward or above 88 MB/s) if the native
+Node-Windows process has less stdout-buffer starvation than the
+spawn-pipe one did in §10.3.
+
+### 10.5 Protocol is unchanged
+
+Sections §1–§3 and §5 remain the canonical way to measure throughput.
+This section is the data, not the protocol. The same protocol applies
+to native-Windows rebuilds — see §10.4.

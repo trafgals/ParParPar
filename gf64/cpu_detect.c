@@ -53,6 +53,14 @@
 #include "gf64_global.h"
 #include <string.h>
 
+#ifndef __GNUC__
+/* Stub out GCC __attribute__((target(...))) under MSVC.
+ * Use variadic macro so the entire trailing ((...)) parens are eaten as
+ * a single comma-separated argument list. */
+#define __attribute__(...) /* __attribute__ not supported under MSVC */
+#endif
+
+
 /* POSIX signal/sigsetjmp machinery is GCC/POSIX-only. Windows MSVC lacks
  * sigjmp_buf, sigsetjmp, siglongjmp, sigaction etc. The SIGILL probe is
  * a defence-in-depth layer for WSL2/Hyper-V hosts (Linux GCC); Windows
@@ -68,10 +76,17 @@ HEDLEY_BEGIN_C_DECLS
 /* ----- CPUID + XCR0 wrappers (copied verbatim from gf64_dispatch.c) ----- */
 
 static void gf64_cpuid(int leaf, int subleaf, unsigned int *eax, unsigned int *ebx, unsigned int *ecx, unsigned int *edx) {
-#if defined(__GNUC__) && !defined(__clang__) && !defined(__INTEL_COMPILER)
+#if defined(_MSC_VER)
+	int info[4];
+	__cpuidex(info, leaf, subleaf);
+	*eax = (unsigned int)info[0];
+	*ebx = (unsigned int)info[1];
+	*ecx = (unsigned int)info[2];
+	*edx = (unsigned int)info[3];
+#elif defined(__GNUC__) && !defined(__clang__) && !defined(__INTEL_COMPILER)
 	__asm__ __volatile__ (
-		"mov %%ebx, %%esi\n\t"
-		"cpuid\n\t"
+		"mov %%ebx, %%esi\n	"
+		"cpuid\n	"
 		"mov %%esi, %%ebx"
 		: "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
 		: "a"(leaf), "c"(subleaf)
@@ -94,6 +109,11 @@ static inline uint64_t gf64_xgetbv(uint32_t xcr) {
 		: "c"(xcr)
 	);
 	return ((uint64_t)hi << 32) | lo;
+}
+#elif defined(_MSC_VER)
+#include <intrin.h>
+static inline uint64_t gf64_xgetbv(uint32_t xcr) {
+	return (uint64_t)_xgetbv(xcr);
 }
 #else
 static inline uint64_t gf64_xgetbv(uint32_t xcr) {
@@ -185,9 +205,20 @@ static int try_zmm_insn(void) {
  * instruction; without POSIX sigjmp_buf we can't safely catch SIGILL.
  * Callers will fall through to AVX-2 (the CPUID-only branch) and
  * trust CPUID+XCR0. The function still exists to keep the call site
- * in gf64_detect_method_internal uniform across all compilers. */
+ * in gf64_detect_method_internal uniform across all compilers.
+ *
+ * NOTE: On native Windows (no hypervisor CPUID mask), return 1 to
+ * trust CPUID+XCR0 — the SIGILL probe is a WSL2 observer-effect
+ * workaround and is unnecessary on bare metal. */
 static int try_zmm_insn(void) {
+#if defined(_M_AMD64)
+	/* Native x64 Windows: no hypervisor observes our ZMM instructions.
+	 * CPUID+XCR0 already checked AVX-512 availability; return 1 to
+	 * trust the hardware rather than falling through to AVX-2. */
+	return 1;
+#else
 	return 0;
+#endif
 }
 #endif
 

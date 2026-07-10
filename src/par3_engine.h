@@ -48,6 +48,28 @@ public:
 		int numThreads
 	);
 
+	/// v2-4: pre-computed coefficient matrix variant. Skips the matrix
+	/// build (assumes the matrix was already built and validated), so the
+	/// caller can overlap the matrix build with other work (e.g. file
+	/// read). The coeff buffer is owned by the caller and must outlive
+	/// this call. Layout: numRecovery rows × numInputs columns, row-major.
+	static void ComputeRecoveryBlocksWithCoeff(
+		const gf64_t* inputs, size_t numInputs,
+		gf64_t* recovery, size_t numRecovery,
+		size_t blockSize64,
+		const gf64_t* coeff,
+		int numThreads
+	);
+
+	/// v2-4: standalone matrix build. Allocates a buffer of
+	/// numRecovery × numInputs gf64_t, fills it with the Cauchy
+	/// coefficient matrix, and returns it. Caller must free() the
+	/// returned pointer. Returns nullptr on allocation failure.
+	static gf64_t* BuildCauchyMatrixAlloc(
+		size_t numInputs, size_t numRecovery,
+		uint64_t firstInput, uint64_t firstRecovery
+	);
+
 	/// Compute recovery blocks from a source file via mmap(2) zero-copy input.
 	/// Opens `sourcePath`, mmaps the file with MAP_PRIVATE | MAP_POPULATE, and
 	/// feeds the mapped region directly into the existing 2D-blocked kernel
@@ -133,6 +155,53 @@ public:
 		gf64_t* rhsBlocks,
 		size_t n,
 		size_t blockSize64,
+		int numThreads
+	);
+
+	/// Compute recovery blocks via the Barycentric Lagrange interpolation kernel.
+	/// T9 of the par3-cauchy-fft-kernel plan. For each output block r and word
+	/// position w:
+	///
+	///     out[r][w] = num[w](y_r) / den(y_r)
+	///
+	/// where the input points x_c = firstInput + c, the recovery points
+	/// y_r = firstRecovery + r, the barycentric weights W_j = 1/P'(x_j) (P =
+	/// prod over inputs), and
+	///
+	///     num[w](y) = sum_j in[j][w] * W_j / (y + x_j)
+	///     den(y)    = sum_j W_j / (y + x_j)
+	///
+	/// Equivalently (using the partial-fraction identity), the output is the
+	/// Lagrange interpolation of {in[j][w]} at the input points, evaluated at
+	/// the recovery points.
+	///
+	/// THIS IS THE BARycentric Lagrange KERNEL, NOT the Cauchy matrix-vector
+	/// product. Callers that need the Cauchy matrix linear map (the engine's
+	/// historical recovery semantics) should use ComputeRecoveryBlocks /
+	/// ComputeRecoveryBlocksWithCoeff instead. The two kernels compute
+	/// different linear maps over the same input blocks; they are not
+	/// bit-equivalent in general.
+	///
+	/// CURRENT IMPLEMENTATION (T9 first version): naive O(N²) per recovery
+	/// block — the full numerator sum is recomputed at every y_r. The future
+	/// Bostan-Schost multi-point evaluation (T8's currently-Horner fallback
+	/// will be replaced by the proper O(N log²N) MPE) drives this to
+	/// O((D + N) log²(D + N)) per kernel call. See src/par3_engine_barycentric.cc
+	/// for the TODO marker.
+	///
+	/// @param inputs        Input data blocks (numInputs blocks of blockSize64 words each)
+	/// @param numInputs     Number of input data blocks
+	/// @param recovery      Output recovery blocks (numRecovery blocks of blockSize64 words each)
+	/// @param numRecovery   Number of recovery blocks to compute
+	/// @param blockSize64   Block size in 64-bit words
+	/// @param firstInput    First input exponent for the interpolation grid
+	/// @param firstRecovery First recovery exponent for the evaluation grid
+	/// @param numThreads    Number of threads (0 = auto, currently single-threaded in T9)
+	static void ComputeRecoveryBlocksBarycentric(
+		const gf64_t* inputs, size_t numInputs,
+		gf64_t* recovery, size_t numRecovery,
+		size_t blockSize64,
+		uint64_t firstInput, uint64_t firstRecovery,
 		int numThreads
 	);
 };

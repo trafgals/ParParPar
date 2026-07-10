@@ -118,27 +118,53 @@
       "cflags_cc": ["-fpermissive"]
     },
     {
-      "target_name": "parpar_gf64",
-      "dependencies": ["parpar_gf64_cpu_detect"],
+      "target_name": "gf64_avx512",
+      "type": "static_library",
+      "defines": ["NDEBUG"],
+      "sources": ["gf64/gf64_region_avx512.c"],
+      "include_dirs": ["gf64"],
       "conditions": [
-        ['target_arch in "ia32 x64" and OS!="win"', {
+        ['target_arch in "ia32 x64" and OS=="win"', {
+          "msvs_settings": {
+            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
+          }
+        }]
+      ]
+    },
+    {
+      "target_name": "gf64_avx512_arr",
+      "type": "static_library",
+      "defines": ["NDEBUG"],
+      "sources": ["gf64/gf64_region_avx512_arr.c", "gf64/gf64_invert_avx512.c", "gf64/gf64_mul_avx512.c", "gf64/gf64_square.c", "gf64/gf64_invert_ita.c", "gf64/gf64_additive_fft.c", "gf64/gf64_subproduct.c", "gf64/gf64_barycentric.c", "gf64/gf64_mpe.c"],
+      "include_dirs": ["gf64"],
+      "conditions": [
+        ['target_arch in "ia32 x64" and OS=="win"', {
+          "msvs_settings": {
+            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
+          }
+        }]
+      ]
+    },
+    {
+      "target_name": "parpar_gf64",
+      "dependencies": ["parpar_gf64_cpu_detect", "gf64_avx512", "gf64_avx512_arr"],
+      "conditions": [
+        ['target_arch in "ia32 x64"', {
           "sources": [
             "src/gf64_addon.cc",
             "src/gf64_create_streaming.cc",
             "src/par3_engine.cc",
+            "src/par3_engine_barycentric.cc",
             "gf64/gf64_single.c",
             "gf64/gf64_region_scalar.c",
             "gf64/gf64_region_ssse3.c",
             "gf64/gf64_region_ssse3_arr.c",
             "gf64/gf64_region_avx2.c",
             "gf64/gf64_region_avx2_arr.c",
-            "gf64/gf64_region_avx512.c",
-            "gf64/gf64_region_avx512_arr.c",
             "gf64/gf64_dispatch.c",
             "gf64/gf64_invert.c",
             "gf64/gf64_invert_ssse3.c",
             "gf64/gf64_invert_avx2.c",
-            "gf64/gf64_invert_avx512.c",
             "gf64/gf64_solve.c"
           ],
           "include_dirs": ["gf64"],
@@ -149,7 +175,20 @@
               "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
               "cxxflags": ["-std=c++11", "-fmax-include-depth=1024", "-fpermissive", "-mno-avx512f"],
               "cflags_cc": ["-fpermissive"]
-            }]
+            }],
+            ["OS==\"win\"", {
+              # MSVC: no -mno-avx512f (cl.exe doesn't take it); use /arch:AVX2 as a
+              # baseline max-ISA for the gf64 TUs (avx512 TUs use their own
+              # __attribute__((target("avx512f"))) markers, gated by /arch).
+              # NODE_API_EXPERIMENTAL_NOGC_ENV_OPT_OUT makes the napi_wrap
+              # finalize callback typedef accept `const napi_env__*` (which is
+              # what src/gf64_addon.cc:74 already declares). Without it MSVC
+              # rejects the trampoline argument with C2664 because Node 22
+              # makes the env pointer non-const by default in the typedef.
+              "defines": ["NODE_API_EXPERIMENTAL_NOGC_ENV_OPT_OUT"],
+              "cflags": ["/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS"],
+              "cxxflags": ["/std:c++17", "/permissive-", "/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS", "/EHsc"]
+            }] 
           ]
         }, {
           "sources": ["src/gf64_stub.cc"]

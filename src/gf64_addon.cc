@@ -71,8 +71,8 @@ static void Gf64EncoderWrapper_Finalize(napi_env__* env, void* data, void* hint)
 	}
 }
 
-static void Gf64EncoderWrapper_Finalize_Trampoline(const napi_env__* env, void* data, void* hint) {
-	Gf64EncoderWrapper_Finalize(const_cast<napi_env__*>(env), data, hint);
+static void NAPI_CDECL Gf64EncoderWrapper_Finalize_Trampoline(napi_env__* env, void* data, void* hint) {
+	Gf64EncoderWrapper_Finalize(env, data, hint);
 }
 
 static napi_value gf64_info_NAPI(napi_env env, napi_callback_info info) {
@@ -1532,13 +1532,375 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 	size_t blockSize64 = (size_t)(blockSize / 8);
 
 	gf64_init_dispatch();
-	GF64Controller::ComputeRecoveryBlocksFull(
+#ifndef _WIN32
+	#include <sys/time.h>
+#endif
+	long long t0 = 0, t1 = 0;
+	if (getenv("PAR3_PROFILE")) {
+#ifndef _WIN32
+		struct timeval tv0;
+		gettimeofday(&tv0, NULL);
+		t0 = (long long)tv0.tv_sec * 1000000LL + (long long)tv0.tv_usec;
+#endif
+	}
+
+GF64Controller::ComputeRecoveryBlocksFull(
 		(gf64_t*)aligned_inputs, (size_t)numInputs,
 		(gf64_t*)aligned_outputs, (size_t)numRecovery,
 		blockSize64,
 		firstInput, firstRecovery,
 		(int)numThreads
 	);
+
+	// v2: per-stage kernel timing. PAR3_PROFILE must be set in the parent
+	// process env (the C side reads it via getenv since the C env is
+	// shared). Output goes to stderr so it survives stdout buffering in
+	// pipe-attached child processes.
+	if (getenv("PAR3_PROFILE")) {
+#ifndef _WIN32
+		struct timeval tv2;
+		gettimeofday(&tv2, NULL);
+		t1 = (long long)tv2.tv_sec * 1000000LL + (long long)tv2.tv_usec;
+		fprintf(stderr, "[PAR3_PROFILE-KERNEL] numInputs=%zu numRecovery=%zu blockSize64=%zu single-call took=%lldus\n",
+			(size_t)numInputs, (size_t)numRecovery, (size_t)blockSize64, t1 - t0);
+#else
+		fprintf(stderr, "[PAR3_PROFILE-KERNEL] numInputs=%zu numRecovery=%zu blockSize64=%zu single-call\n",
+			(size_t)numInputs, (size_t)numRecovery, (size_t)blockSize64);
+#endif
+	}
+
+	if (needs_inputs_temp) {
+		memcpy(inputs, aligned_inputs, (size_t)numInputs * blockSize);
+		ALIGN_FREE(aligned_inputs);
+	}
+	if (needs_outputs_temp) {
+		memcpy(outputs, aligned_outputs, (size_t)numRecovery * blockSize);
+		ALIGN_FREE(aligned_outputs);
+	}
+
+	return NULL;
+}
+
+// compute_recovery_barycentric NAPI binding — barycentric-form single-call
+// variant of compute_recovery_full. Same args as ComputeRecoveryFull_NAPI,
+// but routes through GF64Controller::ComputeRecoveryBlocksBarycentric, which
+// uses the barycentric Lagrange interpolation form (subproduct tree + point
+// evaluation) instead of building the dense Cauchy matrix. This is the path
+// T9 (par3_engine_barycentric.cc) opens up; lib/par3gen.js exposes this as
+// the recovery-side entry that avoids the O(N²) matrix-build cost.
+static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 8;
+	napi_value args[8];
+
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get callback info");
+		return NULL;
+	}
+
+	if(argc < 7) {
+		napi_throw_type_error(env, NULL, "Requires inputs, outputs, numInputs, numRecovery, blockSize, firstInput, firstRecovery [, numThreads]");
+		return NULL;
+	}
+
+	gf64_t* inputs = NULL;
+	size_t inputsLen = 0;
+	status = napi_get_buffer_info(env, args[0], (void**)&inputs, &inputsLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "inputs must be a Buffer");
+		return NULL;
+	}
+	void* aligned_inputs = (void*)inputs;
+	bool needs_inputs_temp = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+		void* tmp = nullptr;
+		if (ALIGN_ALLOC(tmp, inputsLen, 64)) {
+			memcpy(tmp, inputs, inputsLen);
+			aligned_inputs = tmp;
+			needs_inputs_temp = true;
+		} else {
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed");
+			return NULL;
+		}
+	}
+
+	gf64_t* outputs = NULL;
+	size_t outputsLen = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&outputs, &outputsLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "outputs must be a Buffer");
+		return NULL;
+	}
+	void* aligned_outputs = (void*)outputs;
+	bool needs_outputs_temp = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+		void* tmp = nullptr;
+		if (ALIGN_ALLOC(tmp, outputsLen, 64)) {
+			memcpy(tmp, outputs, outputsLen);
+			aligned_outputs = tmp;
+			needs_outputs_temp = true;
+		} else {
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed");
+			return NULL;
+		}
+	}
+
+	int32_t numInputs = 0;
+	status = napi_get_value_int32(env, args[2], &numInputs);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "numInputs must be an integer");
+		return NULL;
+	}
+
+	int32_t numRecovery = 0;
+	status = napi_get_value_int32(env, args[3], &numRecovery);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "numRecovery must be an integer");
+		return NULL;
+	}
+
+	int64_t blockSize = 0;
+	status = napi_get_value_int64(env, args[4], &blockSize);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "blockSize must be an integer");
+		return NULL;
+	}
+
+	uint64_t firstInput = 0;
+	status = get_uint64_from_value(env, args[5], &firstInput);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "firstInput must be a Number or BigInt");
+		return NULL;
+	}
+
+	uint64_t firstRecovery = 0;
+	status = get_uint64_from_value(env, args[6], &firstRecovery);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "firstRecovery must be a Number or BigInt");
+		return NULL;
+	}
+
+	int32_t numThreads = 0;
+	if(argc >= 8) {
+		status = napi_get_value_int32(env, args[7], &numThreads);
+		if(status != napi_ok) {
+			napi_throw_type_error(env, NULL, "numThreads must be an integer");
+			return NULL;
+		}
+	}
+
+	if(numInputs <= 0) {
+		napi_throw_range_error(env, NULL, "numInputs must be positive");
+		return NULL;
+	}
+
+	if(numRecovery <= 0) {
+		napi_throw_range_error(env, NULL, "numRecovery must be positive");
+		return NULL;
+	}
+
+	if(blockSize <= 0 || blockSize % 8 != 0) {
+		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
+		return NULL;
+	}
+
+	if(inputsLen < (size_t)(numInputs * blockSize)) {
+		napi_throw_range_error(env, NULL, "inputs buffer too small for numInputs * blockSize");
+		return NULL;
+	}
+
+	if(outputsLen < (size_t)(numRecovery * blockSize)) {
+		napi_throw_range_error(env, NULL, "outputs buffer too small for numRecovery * blockSize");
+		return NULL;
+	}
+
+	size_t blockSize64 = (size_t)(blockSize / 8);
+
+	gf64_init_dispatch();
+
+	GF64Controller::ComputeRecoveryBlocksBarycentric(
+		(const gf64_t*)aligned_inputs, (size_t)numInputs,
+		(gf64_t*)aligned_outputs, (size_t)numRecovery,
+		blockSize64,
+		firstInput, firstRecovery,
+		(int)numThreads
+	);
+
+	if (needs_inputs_temp) {
+		memcpy(inputs, aligned_inputs, (size_t)numInputs * blockSize);
+		ALIGN_FREE(aligned_inputs);
+	}
+	if (needs_outputs_temp) {
+		memcpy(outputs, aligned_outputs, (size_t)numRecovery * blockSize);
+		ALIGN_FREE(aligned_outputs);
+	}
+
+	return NULL;
+}
+
+// ============================================================================
+// v2-4: build_coefficient_matrix NAPI binding
+// ----------------------------------------------------------------------------
+// Standalone matrix build. Allocates a Buffer of numRecovery × numInputs
+// gf64_t, fills it with the Cauchy coefficient matrix, and returns it. The
+// JS layer can call this asynchronously (in a worker thread) BEFORE the
+// kernel call, to overlap the matrix-build cost with the file-read phase.
+// The returned Buffer is opaque from JS's perspective; pass it back to
+// compute_recovery_with_coeff to use it.
+// ============================================================================
+static napi_value BuildCoefficientMatrix_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 4;
+	napi_value args[4];
+
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if (status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get callback info");
+		return NULL;
+	}
+
+	if (argc < 4) {
+		napi_throw_type_error(env, NULL, "Requires numInputs, numRecovery, firstInput, firstRecovery");
+		return NULL;
+	}
+
+	int64_t numInputs = 0, numRecovery = 0;
+	status = napi_get_value_int64(env, args[0], &numInputs);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "numInputs must be an integer"); return NULL; }
+	status = napi_get_value_int64(env, args[1], &numRecovery);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "numRecovery must be an integer"); return NULL; }
+
+	uint64_t firstInput = 0, firstRecovery = 0;
+	status = get_uint64_from_value(env, args[2], &firstInput);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "firstInput must be a Number or BigInt"); return NULL; }
+	status = get_uint64_from_value(env, args[3], &firstRecovery);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "firstRecovery must be a Number or BigInt"); return NULL; }
+
+	if (numInputs <= 0 || numRecovery <= 0) {
+		napi_throw_range_error(env, NULL, "numInputs and numRecovery must be positive");
+		return NULL;
+	}
+
+	gf64_init_dispatch();
+	gf64_t* matrix = GF64Controller::BuildCauchyMatrixAlloc(
+		(size_t)numInputs, (size_t)numRecovery, firstInput, firstRecovery);
+	if (!matrix) {
+		napi_throw_error(env, NULL, "matrix allocation failed");
+		return NULL;
+	}
+
+	// Wrap the C buffer in a NAPI Buffer; free when GC'd.
+	napi_value result;
+	status = napi_create_buffer_copy(env, (size_t)numRecovery * (size_t)numInputs * sizeof(gf64_t),
+	                                  matrix, NULL, &result);
+	free(matrix);
+	if (status != napi_ok) {
+		napi_throw_error(env, NULL, "napi_create_buffer_copy failed");
+		return NULL;
+	}
+	return result;
+}
+
+// ============================================================================
+// v2-4: compute_recovery_with_coeff NAPI binding
+// ----------------------------------------------------------------------------
+// Same args as compute_recovery_full, plus a pre-computed coefficient
+// matrix Buffer as the first arg (replacing the inputs buffer slot — the
+// inputs are passed in arg 5, see below). Layout:
+//   coeffMatrix (Buffer), inputs (Buffer), outputs (Buffer),
+//   numInputs, numRecovery, blockSize, firstInput, firstRecovery [, numThreads]
+// Note: firstInput / firstRecovery are accepted for API consistency with
+// compute_recovery_full but are NOT used by the kernel path; the matrix
+// has been pre-built and the kernel just reads it.
+// ============================================================================
+static napi_value ComputeRecoveryWithCoeff_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 9;
+	napi_value args[9];
+
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if (status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get callback info");
+		return NULL;
+	}
+
+	if (argc < 8) {
+		napi_throw_type_error(env, NULL, "Requires coeffMatrix, inputs, outputs, numInputs, numRecovery, blockSize, firstInput, firstRecovery [, numThreads]");
+		return NULL;
+	}
+
+	const gf64_t* coeff = NULL;
+	size_t coeffLen = 0;
+	status = napi_get_buffer_info(env, args[0], (void**)&coeff, &coeffLen);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "coeffMatrix must be a Buffer"); return NULL; }
+
+	gf64_t* inputs = NULL;
+	size_t inputsLen = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&inputs, &inputsLen);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "inputs must be a Buffer"); return NULL; }
+	void* aligned_inputs = (void*)inputs;
+	bool needs_inputs_temp = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+		void* tmp = nullptr;
+		if (ALIGN_ALLOC(tmp, inputsLen, 64)) {
+			memcpy(tmp, inputs, inputsLen);
+			aligned_inputs = tmp;
+			needs_inputs_temp = true;
+		} else {
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed");
+			return NULL;
+		}
+	}
+
+	gf64_t* outputs = NULL;
+	size_t outputsLen = 0;
+	status = napi_get_buffer_info(env, args[2], (void**)&outputs, &outputsLen);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "outputs must be a Buffer"); return NULL; }
+	void* aligned_outputs = (void*)outputs;
+	bool needs_outputs_temp = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+		void* tmp = nullptr;
+		size_t needed = outputsLen;
+		if (ALIGN_ALLOC(tmp, needed, 64)) {
+			aligned_outputs = tmp;
+			needs_outputs_temp = true;
+		} else {
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed");
+			return NULL;
+		}
+	}
+
+	int64_t numInputs = 0, numRecovery = 0;
+	status = napi_get_value_int64(env, args[3], &numInputs);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "numInputs must be an integer"); return NULL; }
+	status = napi_get_value_int64(env, args[4], &numRecovery);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "numRecovery must be an integer"); return NULL; }
+
+	int64_t blockSize = 0;
+	status = napi_get_value_int64(env, args[5], &blockSize);
+	if (status != napi_ok) { napi_throw_type_error(env, NULL, "blockSize must be an integer"); return NULL; }
+
+	// args[6] and args[7] (firstInput, firstRecovery) are accepted but unused
+	// in the pre-computed matrix path.
+
+	int32_t numThreads = 0;
+	if (argc >= 9) {
+		status = napi_get_value_int32(env, args[8], &numThreads);
+		if (status != napi_ok) { napi_throw_type_error(env, NULL, "numThreads must be an integer"); return NULL; }
+	}
+
+	if (numInputs <= 0) { napi_throw_range_error(env, NULL, "numInputs must be positive"); return NULL; }
+	if (numRecovery <= 0) { napi_throw_range_error(env, NULL, "numRecovery must be positive"); return NULL; }
+	if (blockSize <= 0 || blockSize % 8 != 0) { napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8"); return NULL; }
+
+	size_t blockSize64 = (size_t)(blockSize / 8);
+	gf64_init_dispatch();
+
+	GF64Controller::ComputeRecoveryBlocksWithCoeff(
+		(gf64_t*)aligned_inputs, (size_t)numInputs,
+		(gf64_t*)aligned_outputs, (size_t)numRecovery,
+		blockSize64, coeff, (int)numThreads);
 
 	if (needs_inputs_temp) {
 		memcpy(inputs, aligned_inputs, (size_t)numInputs * blockSize);
@@ -2011,6 +2373,44 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "compute_recovery_full", compute_recovery_full_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set compute_recovery_full property");
+		return NULL;
+	}
+
+	// T10: barycentric-form recovery variant (subproduct-tree path).
+	napi_value compute_recovery_barycentric_fn;
+	status = napi_create_function(env, NULL, 0, ComputeRecoveryBarycentric_NAPI, NULL, &compute_recovery_barycentric_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create compute_recovery_barycentric function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "compute_recovery_barycentric", compute_recovery_barycentric_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set compute_recovery_barycentric property");
+		return NULL;
+	}
+
+	// v2-4: standalone matrix build + kernel-with-precomputed-matrix.
+	napi_value build_coeff_fn;
+	status = napi_create_function(env, NULL, 0, BuildCoefficientMatrix_NAPI, NULL, &build_coeff_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create build_coefficient_matrix function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "build_coefficient_matrix", build_coeff_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set build_coefficient_matrix property");
+		return NULL;
+	}
+
+	napi_value compute_with_coeff_fn;
+	status = napi_create_function(env, NULL, 0, ComputeRecoveryWithCoeff_NAPI, NULL, &compute_with_coeff_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create compute_recovery_with_coeff function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "compute_recovery_with_coeff", compute_with_coeff_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set compute_recovery_with_coeff property");
 		return NULL;
 	}
 

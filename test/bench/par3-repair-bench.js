@@ -25,17 +25,18 @@ var e2eHelpers = require('../e2e/helpers'); // for hashFile, deleteRandomSlices
 var par3 = require('../../lib/par3gen.js');
 
 var DEFAULT_SIZE = helpers.parseSize(); // 1 GiB
-var REPAIR_BYTES = 1 * 1024 * 1024 * 1024; // 1GB of recovery
+var RECOVERY_BYTES = 100 * 1024 * 1024; // 100 MiB of recovery (configurable via --repair-bytes)
 var ALLOWED_SLICES = [10000, 100000, 1000000];
 
 function parseArgs() {
   var args = process.argv.slice(2);
-  var opts = { size: DEFAULT_SIZE, slices: 10000, deletion: 5, keep: false };
+  var opts = { size: DEFAULT_SIZE, slices: 10000, deletion: 5, keep: false, repairBytes: RECOVERY_BYTES };
   for (var i = 0; i < args.length; i++) {
     var a = args[i];
     if (a === '--keep') opts.keep = true;
     else if (a.indexOf('--slices=') === 0) opts.slices = parseInt(a.substring('--slices='.length), 10);
     else if (a.indexOf('--deletion=') === 0) opts.deletion = parseInt(a.substring('--deletion='.length), 10);
+    else if (a.indexOf('--repair-bytes=') === 0) opts.repairBytes = helpers.parseSize(a.substring('--repair-bytes='.length));
     else if (a.indexOf('--size=') === 0) opts.size = helpers.parseSize(a.substring('--size='.length));
     else if (a === '--help' || a === '-h') opts.help = true;
   }
@@ -51,14 +52,16 @@ function parseArgs() {
 }
 
 function printHelp() {
-  console.log('Usage: node test/bench/par3-repair-bench.js --size=<size> --slices=<N> --deletion=<5|10>');
+  console.log('Usage: node test/bench/par3-repair-bench.js --size=<size> --slices=<N> --deletion=<5|10> [--repair-bytes=<bytes>]');
   console.log('');
-  console.log('Workload: <size> source, 1GB repair data, delete X% of source, repair.');
+  console.log('Workload: <size> source, <repair-bytes> of recovery data (default 100 MiB), delete X% of source, repair.');
   console.log('');
   console.log('Options:');
   console.log('  --size=<size>  Source size, e.g. 1G, 10G, 1073741824 (default: 1G)');
   console.log('  --slices=N     Slice count: 10000 | 100000 | 1000000');
   console.log('  --deletion=N   Deletion percent: 5 | 10');
+  console.log('  --repair-bytes=N  How many bytes of recovery to allocate (default: 100 MiB).');
+  console.log('                    MUST be <= 512 MiB to stay in-memory (lib/par3gen.js:1313 MAX_IN_MEMORY).');
   console.log('  --keep         Keep files after run');
   console.log('  --help, -h     Show this help');
 }
@@ -67,8 +70,8 @@ function runScenario(opts, scenario) {
   var sliceCount = opts.slices;
   var sliceSize = Math.ceil(opts.size / sliceCount);
   var actualSize = sliceSize * sliceCount;
-  // 1GB repair data = recoverySlices * sliceSize
-  var recoverySlices = Math.max(1, Math.floor(REPAIR_BYTES / sliceSize));
+  // opts.repairBytes of recovery data = recoverySlices * sliceSize
+  var recoverySlices = Math.max(1, Math.floor(opts.repairBytes / sliceSize));
   if (recoverySlices > sliceCount) recoverySlices = sliceCount;
   var totalDataSlices = Math.ceil(actualSize / sliceSize);
   var slicesToDelete = Math.floor(totalDataSlices * opts.deletion / 100);

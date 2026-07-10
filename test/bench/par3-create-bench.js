@@ -206,6 +206,10 @@ function run(opts) {
     console.log('Average throughput over ' + validRuns + ' run(s): ' + avgThroughput.toFixed(2) + ' MB/s');
 
     if (!opts.keep) helpers.cleanup(tmpDir);
+    // v2: explicit exit so the bench terminates instead of waiting for
+    // pending writeStream / cleanup I/O. The profile dump file is written
+    // synchronously before this point, so an abrupt exit is safe.
+    setImmediate(function() { process.exit(0); });
   });
 }
 
