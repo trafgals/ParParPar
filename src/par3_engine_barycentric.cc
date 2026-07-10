@@ -85,7 +85,9 @@ extern "C" {
  * the barycentric kernel's correctness contract is "matches the JS reference
  * at the bit level", which is what gf64_mul_reference gives us.
  */
+extern "C" {
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
+}
 
 /*
  * GF(2^64) is the field of characteristic 2, so subtraction equals XOR
