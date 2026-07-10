@@ -135,7 +135,7 @@
       "target_name": "gf64_avx512_arr",
       "type": "static_library",
       "defines": ["NDEBUG"],
-      "sources": ["gf64/gf64_region_avx512_arr.c", "gf64/gf64_invert_avx512.c", "gf64/gf64_mul_avx512.c", "gf64/gf64_square.c", "gf64/gf64_invert_ita.c", "gf64/gf64_additive_fft.c", "gf64/gf64_subproduct.c"],
+      "sources": ["gf64/gf64_region_avx512_arr.c", "gf64/gf64_invert_avx512.c", "gf64/gf64_mul_avx512.c", "gf64/gf64_square.c", "gf64/gf64_invert_ita.c", "gf64/gf64_additive_fft.c", "gf64/gf64_subproduct.c", "gf64/gf64_barycentric.c"],
       "include_dirs": ["gf64"],
       "conditions": [
         ['target_arch in "ia32 x64" and OS=="win"', {
