@@ -10,6 +10,9 @@
 #include <v8.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/time.h>
+#endif
 #include <uv.h>
 #include <js_native_api.h>
 #include <node_api.h>
@@ -1532,9 +1535,6 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 	size_t blockSize64 = (size_t)(blockSize / 8);
 
 	gf64_init_dispatch();
-#ifndef _WIN32
-	#include <sys/time.h>
-#endif
 	long long t0 = 0, t1 = 0;
 	if (getenv("PAR3_PROFILE")) {
 #ifndef _WIN32
