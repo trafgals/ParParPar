@@ -1,0 +1,558 @@
+/*
+ * ============================================================================
+ * gf64/test/test_gf64_mpe.c — Tests for the multi-point evaluation stack
+ *
+ * T8 of the par3-cauchy-fft-kernel plan. The four tests below exercise:
+ *
+ *   1. multi_point_eval (random deg-100 poly, N=1024 random points):
+ *      outputs match independent Horner eval at every point.
+ *   2. multi_point_eval (random deg-10 poly, N=64 random points):
+ *      same correctness contract on a smaller workload (verifies the
+ *      function doesn't degenerate for small N or small degrees).
+ *   3. poly_divmod: f = g*q + r reconstruction. Pick random deg_f > deg_g
+ *      (and one deg_f < deg_g case), divide, reconstruct, and verify
+ *      equivalence bit-for-bit.
+ *   4. poly_invmod: g * (1/g) ≡ 1 mod x^n. Multiply g (truncated to n)
+ *      with the n-coefficient inverse, then assert the product's first n
+ *      coefficients are [1, 0, 0, ..., 0].
+ *
+ * Build & run from gf64/test/:
+ *   $(CC) -O2 -march=native -I.. test_gf64_mpe.c \
+ *         ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c \
+ *         ../gf64_additive_fft.c ../gf64_mul_avx512.c \
+ *         ../gf64_square.c ../gf64_single.c \
+ *         -o test_gf64_mpe && ./test_gf64_mpe
+ *
+ * Output is plain text so it can be piped to
+ * .omo/evidence/task-8-par3-cauchy-fft-kernel.log.
+ *
+ * Exits 0 on full pass; non-zero on any failure.
+ * ============================================================================
+ */
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "../gf64_mpe.h"
+#include "../gf64_subproduct.h"
+#include "../gf64_invert_ita.h"
+#include "../gf64_additive_fft.h"
+#include "../gf64_global.h"
+
+extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
+
+/* ----------------------------------------------------------------------------
+ * splitmix64 PRNG. Single source of randomness for all four tests; the seed
+ * is set per-test with put_seed() so different tests get independent streams
+ * without sharing state.
+ * ---------------------------------------------------------------------------- */
+static uint64_t g_splitmix_state = 0;
+
+static uint64_t splitmix64_next(void) {
+	uint64_t z = (g_splitmix_state += 0x9E3779B97F4A7C15ULL);
+	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+	z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+	return z ^ (z >> 31);
+}
+
+static void put_seed(uint64_t s) {
+	g_splitmix_state = s;
+}
+
+/* ----------------------------------------------------------------------------
+ * Test framework
+ * ---------------------------------------------------------------------------- */
+static int g_passed = 0;
+static int g_failed = 0;
+
+static void pass(const char *name) {
+	printf("  PASS: %s\n", name);
+	g_passed++;
+}
+
+static void fail(const char *name) {
+	printf("  FAIL: %s\n", name);
+	g_failed++;
+}
+
+/*
+ * Reference Horner evaluation. Independent of gf64_mpe.c (so the test
+ * catches a Horner bug that the implementation copies). Constant-first
+ * coefficients [c_0, ..., c_deg], constant 1 is the multiplicative identity
+ * in the field.
+ */
+static gf64_t horner_eval_reference(const gf64_t *c, size_t deg, gf64_t r) {
+	if (deg == (size_t)(-1)) {
+		return 0;
+	}
+	gf64_t acc = c[deg];
+	for (size_t i = deg; i > 0; i--) {
+		acc = gf64_mul_reference(acc, r) ^ c[i - 1];
+	}
+	return acc;
+}
+
+/* ----------------------------------------------------------------------------
+ * Test 1: random deg-100 poly, N=1024 random points.
+ *
+ * Build a subproduct tree on 1024 random points, evaluate the random
+ * polynomial f at every leaf using gf64_multi_point_eval, and compare each
+ * output to a from-scratch Horner evaluation of f at the same point.
+ * ---------------------------------------------------------------------------- */
+static void test_mpe_deg100_n1024(void) {
+	printf("Test 1: multi_point_eval — random deg=100, N=1024 random points\n");
+
+	const size_t deg_f = 100;
+	const size_t N     = 1024;
+	const size_t f_len = deg_f + 1;
+
+	gf64_t *f      = (gf64_t *)malloc(f_len * sizeof(gf64_t));
+	gf64_t *points = (gf64_t *)malloc(N     * sizeof(gf64_t));
+	gf64_t *out    = (gf64_t *)calloc(N,    sizeof(gf64_t));
+	gf64_t *ref    = (gf64_t *)calloc(N,    sizeof(gf64_t));
+
+	if (!f || !points || !out || !ref) {
+		printf("    alloc failed\n");
+		fail("alloc test 1");
+		free(f); free(points); free(out); free(ref);
+		return;
+	}
+
+	/* Build f (random deg_f polynomial). */
+	put_seed(0xDEADBEEFFEEDCAFEULL);
+	for (size_t i = 0; i < f_len; i++) {
+		f[i] = splitmix64_next();
+	}
+	/* Ensure leading coefficient is non-zero so deg(f) == deg_f. */
+	if (f[deg_f] == 0) {
+		f[deg_f] = 1ULL;
+	}
+
+	/* Build the 1024 random points. */
+	put_seed(0xCAFEBABE5EED1234ULL);
+	for (size_t i = 0; i < N; i++) {
+		/* Points MUST be non-zero for the subproduct tree's leaves
+		 * (x + x_i with x_i == 0 collapses to x, not x_i; this is a
+		 * non-trivial structural requirement of Bostan-Schost, not a
+		 * limitation of gf64_subproduct_tree_build). The engine
+		 * guarantees x_i = firstInput + c >= 1, so we do the same. */
+		gf64_t v;
+		do {
+			v = splitmix64_next();
+		} while (v == 0);
+		points[i] = v;
+	}
+
+	/* Build the subproduct tree. */
+	SubproductTree tree;
+	gf64_subproduct_tree_build(points, N, &tree);
+
+	/* MPE call. */
+	gf64_multi_point_eval(f, deg_f, &tree, out);
+
+	/* Independent reference. */
+	gf64_t *last_level = tree.level_data[tree.num_levels - 1];
+	int ok = 1;
+	int first_mismatch = -1;
+	for (size_t j = 0; j < N; j++) {
+		gf64_t xj = last_level[2 * j];
+		ref[j] = horner_eval_reference(f, deg_f, xj);
+		if (out[j] != ref[j]) {
+			if (first_mismatch < 0) first_mismatch = (int)j;
+			ok = 0;
+		}
+	}
+
+	if (ok) {
+		pass("MPE(deg=100, N=1024) == independent Horner (1024/1024)");
+	} else {
+		printf("    first mismatch at j=%d: out=0x%016llx ref=0x%016llx\n",
+		       first_mismatch,
+		       (unsigned long long)out[first_mismatch],
+		       (unsigned long long)ref[first_mismatch]);
+		fail("MPE(deg=100, N=1024) bit-exact match");
+	}
+
+	gf64_subproduct_tree_free(&tree);
+	free(f); free(points); free(out); free(ref);
+}
+
+/* ----------------------------------------------------------------------------
+ * Test 2: random deg-10 poly, N=64 random points.
+ *
+ * Same contract on a small workload to catch any off-by-one in the leaf
+ * indexing that a larger N might mask.
+ * ---------------------------------------------------------------------------- */
+static void test_mpe_deg10_n64(void) {
+	printf("Test 2: multi_point_eval — random deg=10, N=64 random points\n");
+
+	const size_t deg_f = 10;
+	const size_t N     = 64;
+	const size_t f_len = deg_f + 1;
+
+	gf64_t *f      = (gf64_t *)malloc(f_len * sizeof(gf64_t));
+	gf64_t *points = (gf64_t *)malloc(N     * sizeof(gf64_t));
+	gf64_t *out    = (gf64_t *)calloc(N,    sizeof(gf64_t));
+
+	if (!f || !points || !out) {
+		printf("    alloc failed\n");
+		fail("alloc test 2");
+		free(f); free(points); free(out);
+		return;
+	}
+
+	put_seed(0x12345678ABCDEF01ULL);
+	for (size_t i = 0; i < f_len; i++) {
+		f[i] = splitmix64_next();
+	}
+	if (f[deg_f] == 0) f[deg_f] = 1ULL;
+
+	put_seed(0x9876543210FEDCBAULL);
+	for (size_t i = 0; i < N; i++) {
+		gf64_t v;
+		do {
+			v = splitmix64_next();
+		} while (v == 0);
+		points[i] = v;
+	}
+
+	SubproductTree tree;
+	gf64_subproduct_tree_build(points, N, &tree);
+
+	gf64_multi_point_eval(f, deg_f, &tree, out);
+
+	gf64_t *last_level = tree.level_data[tree.num_levels - 1];
+	int ok = 1;
+	int first_mismatch = -1;
+	for (size_t j = 0; j < N; j++) {
+		gf64_t xj = last_level[2 * j];
+		gf64_t ref = horner_eval_reference(f, deg_f, xj);
+		if (out[j] != ref) {
+			if (first_mismatch < 0) first_mismatch = (int)j;
+			ok = 0;
+		}
+	}
+
+	if (ok) {
+		pass("MPE(deg=10, N=64) == independent Horner (64/64)");
+	} else {
+		printf("    first mismatch at j=%d: out=0x%016llx\n",
+		       first_mismatch, (unsigned long long)out[first_mismatch]);
+		fail("MPE(deg=10, N=64) bit-exact match");
+	}
+
+	gf64_subproduct_tree_free(&tree);
+	free(f); free(points); free(out);
+}
+
+/* ----------------------------------------------------------------------------
+ * Test 3: gf64_poly_divmod f = g*q + r reconstruction.
+ *
+ * Pick random f (deg_f=50), random g (deg_g=10), divide; reconstruct
+ * (g*q + r) and assert element-by-element equality with f.
+ *
+ * Also exercise the deg_f < deg_g edge case: r = f, q = 0.
+ * ---------------------------------------------------------------------------- */
+static void test_divmod_reconstruction(void) {
+	printf("Test 3: gf64_poly_divmod — f = g*q + r reconstruction\n");
+
+	/* Case A: deg_f > deg_g. */
+	const size_t deg_f = 50;
+	const size_t deg_g = 10;
+	const size_t f_len = deg_f + 1;
+	const size_t g_len = deg_g + 1;
+	const size_t q_size = deg_f - deg_g + 1;
+
+	gf64_t *f      = (gf64_t *)malloc(f_len * sizeof(gf64_t));
+	gf64_t *g      = (gf64_t *)malloc(g_len * sizeof(gf64_t));
+	gf64_t *q      = (gf64_t *)calloc(q_size, sizeof(gf64_t));
+	/* r must hold at least deg_f + 1 coefficients (working buffer). */
+	gf64_t *r      = (gf64_t *)calloc(deg_f + 1, sizeof(gf64_t));
+	gf64_t *recon  = (gf64_t *)calloc(f_len,    sizeof(gf64_t));
+
+	if (!f || !g || !q || !r || !recon) {
+		printf("    alloc failed (case A)\n");
+		fail("alloc test 3A");
+		goto case_b;
+	}
+
+	put_seed(0xA1A2A3A4A5A6A7A8ULL);
+	for (size_t i = 0; i < f_len; i++) f[i] = splitmix64_next();
+	for (size_t i = 0; i < g_len; i++) g[i] = splitmix64_next();
+	if (g[deg_g] == 0) g[deg_g] = 1ULL; /* required */
+
+	gf64_poly_divmod(f, deg_f, g, deg_g, q, r);
+
+	/* Reconstruct: g*q + r.
+	 *
+	 * Note: r only has deg_g coefficients valid (degree < deg_g). r was
+	 * overwritten in place by gf64_poly_divmod, so the "extension"
+	 * coefficients r[deg_g..deg_f] are unspecified by the contract; we
+	 * ignore them.
+	 */
+	gf64_poly_mul(recon, g, deg_g, q, deg_f - deg_g);
+	/* Add r via element-wise XOR for the first deg_g coefficients; the
+	 * deg_g slot (if q has nonzero there) is not used because deg(r) <
+	 * deg_g. */
+	for (size_t i = 0; i < deg_g; i++) {
+		recon[i] ^= r[i];
+	}
+
+	int ok = 1;
+	for (size_t i = 0; i < f_len; i++) {
+		if (recon[i] != f[i]) {
+			printf("    case A: i=%zu recon=0x%016llx f=0x%016llx\n",
+			       i, (unsigned long long)recon[i],
+			       (unsigned long long)f[i]);
+			ok = 0;
+			break;
+		}
+	}
+	if (ok) {
+		pass("divmod (deg_f=50, deg_g=10): g*q + r == f bit-exact");
+	} else {
+		fail("divmod (deg_f=50, deg_g=10) reconstruction");
+	}
+
+	free(f); free(g); free(q); free(r); free(recon);
+
+	/* Case B: deg_f < deg_g. r = f, q = 0. */
+case_b: {
+	const size_t fB_deg = 5;
+	const size_t gB_deg = 10;
+	gf64_t *fB   = (gf64_t *)malloc((fB_deg + 1) * sizeof(gf64_t));
+	gf64_t *gB   = (gf64_t *)malloc((gB_deg + 1) * sizeof(gf64_t));
+	gf64_t *qB   = (gf64_t *)calloc(1, sizeof(gf64_t));
+	gf64_t *rB   = (gf64_t *)calloc(gB_deg, sizeof(gf64_t));
+	if (!fB || !gB || !qB || !rB) {
+		printf("    alloc failed (case B)\n");
+		fail("alloc test 3B");
+		goto case_c;
+	}
+	put_seed(0xB1B2B3B4B5B6B7B8ULL);
+	for (size_t i = 0; i <= fB_deg; i++) fB[i] = splitmix64_next();
+	for (size_t i = 0; i <= gB_deg; i++) gB[i] = splitmix64_next();
+	if (gB[gB_deg] == 0) gB[gB_deg] = 1ULL;
+
+	gf64_poly_divmod(fB, fB_deg, gB, gB_deg, qB, rB);
+
+	int okB = 1;
+	if (qB[0] != 0) {
+		printf("    case B: q[0] = 0x%016llx, want 0\n",
+		       (unsigned long long)qB[0]);
+		okB = 0;
+	}
+	for (size_t i = 0; i <= fB_deg; i++) {
+		if (rB[i] != fB[i]) {
+			printf("    case B: r[%zu] = 0x%016llx, want f[%zu] = 0x%016llx\n",
+			       i, (unsigned long long)rB[i], i,
+			       (unsigned long long)fB[i]);
+			okB = 0;
+			break;
+		}
+	}
+	for (size_t i = fB_deg + 1; i <= gB_deg - 1; i++) {
+		if (rB[i] != 0) {
+			printf("    case B: r[%zu] = 0x%016llx, want 0\n",
+			       i, (unsigned long long)rB[i]);
+			okB = 0;
+			break;
+		}
+	}
+
+	if (okB) {
+		pass("divmod (deg_f < deg_g): r == f, q == 0");
+	} else {
+		fail("divmod (deg_f < deg_g) edge case");
+	}
+
+	free(fB); free(gB); free(qB); free(rB);
+}
+
+	/* Case C: deg_f == deg_g (just slightly over to ensure single-step
+	 * divmod). q has 1 nonzero coefficient. */
+case_c: {
+	const size_t degC = 20;
+	gf64_t *fC  = (gf64_t *)malloc((degC + 1) * sizeof(gf64_t));
+	gf64_t *gC  = (gf64_t *)malloc((degC + 1) * sizeof(gf64_t));
+	gf64_t *qC  = (gf64_t *)calloc(1, sizeof(gf64_t));
+	gf64_t *rC  = (gf64_t *)calloc(degC + 1, sizeof(gf64_t));
+	gf64_t *rec = (gf64_t *)calloc(degC + 1, sizeof(gf64_t));
+	if (!fC || !gC || !qC || !rC || !rec) {
+		printf("    alloc failed (case C)\n");
+		fail("alloc test 3C");
+		free(fC); free(gC); free(qC); free(rC); free(rec);
+		return;
+	}
+	put_seed(0xC1C2C3C4C5C6C7C8ULL);
+	for (size_t i = 0; i <= degC; i++) fC[i] = splitmix64_next();
+	for (size_t i = 0; i <= degC; i++) gC[i] = splitmix64_next();
+	if (gC[degC] == 0) gC[degC] = 1ULL;
+
+	gf64_poly_divmod(fC, degC, gC, degC, qC, rC);
+
+	gf64_poly_mul(rec, gC, degC, qC, 0); /* degree of qC is 0 */
+	for (size_t i = 0; i < degC; i++) rec[i] ^= rC[i];
+
+	int okC = 1;
+	for (size_t i = 0; i <= degC; i++) {
+		if (rec[i] != fC[i]) {
+			printf("    case C: i=%zu rec=0x%016llx f=0x%016llx\n",
+			       i, (unsigned long long)rec[i],
+			       (unsigned long long)fC[i]);
+			okC = 0;
+			break;
+		}
+	}
+	if (okC) {
+		pass("divmod (deg_f == deg_g): g*q + r == f bit-exact");
+	} else {
+		fail("divmod (deg_f == deg_g) reconstruction");
+	}
+
+	free(fC); free(gC); free(qC); free(rC); free(rec);
+}
+}
+
+/* ----------------------------------------------------------------------------
+ * Test 4: gf64_poly_invmod g * (1/g) ≡ 1 mod x^n.
+ *
+ * Strategy: pick a random polynomial g with g[0] != 0. Compute
+ * `inv_g = gf64_poly_invmod(g, deg_g, n)`. Multiply g (truncated to n
+ * coefficients) by inv_g and verify the product's first n coefficients
+ * are [1, 0, 0, ..., 0].
+ *
+ * The check is element-by-element so it does not rely on Horner at x=0;
+ * any coefficient x^k for k >= 1 of (g * inv_g mod x^n) must be 0.
+ * ---------------------------------------------------------------------------- */
+static void test_invmod(void) {
+	printf("Test 4: gf64_poly_invmod — g * (1/g) ≡ 1 mod x^n (multiple n)\n");
+
+	const size_t n_cases[] = { 1, 2, 3, 4, 7, 8, 16, 32, 64, 128 };
+	const size_t num_n = sizeof(n_cases) / sizeof(n_cases[0]);
+	int all_ok = 1;
+
+	for (size_t ci = 0; ci < num_n; ci++) {
+		size_t n = n_cases[ci];
+		const size_t deg_g = (n < 8) ? (n - 1) : 7;
+
+		gf64_t *g     = (gf64_t *)malloc((deg_g + 1) * sizeof(gf64_t));
+		gf64_t *inv   = (gf64_t *)calloc(n,           sizeof(gf64_t));
+		gf64_t *prod  = (gf64_t *)calloc(2 * n - 1,   sizeof(gf64_t));
+		if (!g || !inv || !prod) {
+			printf("    n=%zu alloc failed\n", n);
+			all_ok = 0;
+			free(g); free(inv); free(prod);
+			continue;
+		}
+
+		put_seed(0xD0D0D0D0D0D0D0D0ULL ^ (uint64_t)ci);
+		for (size_t i = 0; i <= deg_g; i++) g[i] = splitmix64_next();
+		/* g[0] must be non-zero for the inverse to exist. */
+		if (g[0] == 0) g[0] = 1ULL;
+
+		gf64_poly_invmod(g, deg_g, n, inv);
+
+		/* prod = g * inv. Use gf64_poly_mul; the result has up to
+		 * (deg_g + (n - 1)) coefficients. The product is exactly
+		 * 1 + x * (something) when restricted mod x^n. */
+		gf64_poly_mul(prod, g, deg_g, inv, n - 1);
+
+		int okN = 1;
+		/* Check the first n coefficients of prod. */
+		if (prod[0] != 1ULL) {
+			printf("    n=%zu: prod[0] = 0x%016llx, want 1\n",
+			       n, (unsigned long long)prod[0]);
+			okN = 0;
+		}
+		for (size_t k = 1; k < n; k++) {
+			if (prod[k] != 0) {
+				printf("    n=%zu: prod[%zu] = 0x%016llx, want 0\n",
+				       n, k, (unsigned long long)prod[k]);
+				okN = 0;
+				break;
+			}
+		}
+
+		if (okN) {
+			pass("invmod: g * inv_g == 1 mod x^n (n varying)");
+		} else {
+			fail("invmod product check");
+			all_ok = 0;
+		}
+
+		free(g); free(inv); free(prod);
+	}
+
+	(void)all_ok; /* The per-n pass/fail already accumulates. */
+}
+
+/* ----------------------------------------------------------------------------
+ * Test 5 (bonus, not in the spec but cheap): n == 0 must be a no-op.
+ * ---------------------------------------------------------------------------- */
+static void test_invmod_zero_n(void) {
+	printf("Test 5: gf64_poly_invmod(n=0) is a no-op\n");
+	gf64_t g = 0xCAFEBABE;
+	gf64_t dst = 0xDEADBEEF;
+	gf64_poly_invmod(&g, 0, 0, &dst);
+	if (dst == 0xDEADBEEF) {
+		pass("invmod(n=0) leaves dst untouched");
+	} else {
+		printf("    dst=0x%016llx, want 0xDEADBEEF\n",
+		       (unsigned long long)dst);
+		fail("invmod(n=0) no-op contract");
+	}
+}
+
+/* ----------------------------------------------------------------------------
+ * Test 6 (bonus): gf64_multi_point_eval on an empty / NULL tree returns
+ * without writing.
+ * ---------------------------------------------------------------------------- */
+static void test_mpe_empty(void) {
+	printf("Test 6: multi_point_eval on empty / NULL tree returns immediately\n");
+
+	gf64_t f[2] = {0x1ULL, 0x2ULL};
+	gf64_t out[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+
+	/* NULL tree */
+	gf64_multi_point_eval(f, 1, NULL, out);
+	if (out[0] == 0xAA && out[3] == 0xDD) {
+		pass("MPE(NULL tree) leaves out untouched");
+	} else {
+		fail("MPE(NULL tree) no-op contract");
+	}
+
+	/* Empty tree. */
+	SubproductTree empty;
+	gf64_subproduct_tree_build(NULL, 0, &empty);
+	gf64_multi_point_eval(f, 1, &empty, out);
+	gf64_subproduct_tree_free(&empty);
+	if (out[0] == 0xAA && out[3] == 0xDD) {
+		pass("MPE(empty tree) leaves out untouched");
+	} else {
+		fail("MPE(empty tree) no-op contract");
+	}
+}
+
+/* ----------------------------------------------------------------------------
+ * main
+ * ---------------------------------------------------------------------------- */
+int main(void) {
+	printf("GF64 multi-point evaluation tests (T8 of par3-cauchy-fft-kernel)\n");
+	printf("=================================================================\n\n");
+
+	test_mpe_deg100_n1024();
+	test_mpe_deg10_n64();
+	test_divmod_reconstruction();
+	test_invmod();
+	test_invmod_zero_n();
+	test_mpe_empty();
+
+	printf("\n=== Summary ===\n");
+	printf("Passed: %d\n", g_passed);
+	printf("Failed: %d\n", g_failed);
+
+	return g_failed > 0 ? 1 : 0;
+}

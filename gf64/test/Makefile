@@ -20,10 +20,11 @@ TEST_GF64_INVERT_ITA_SOURCES := test_gf64_invert_ita.c
 TEST_GF64_ADDITIVE_FFT_SOURCES := test_gf64_additive_fft.c
 TEST_GF64_SUBPRODUCT_TREE_SOURCES := test_gf64_subproduct_tree.c
 TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
+TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -75,5 +76,14 @@ test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subprodu
 test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
+# Multi-point evaluation test (par3-cauchy-fft-kernel T8). gf64_mpe.c (T8)
+# depends on the subproduct tree (T6) for its evaluation entry point, the
+# Itoh-Tsujii batched inversion (T5) for the polynomial inverse seed, and
+# the additive FFT's gf64_poly_mul (T3) for the Newton-iteration squaring.
+# In turn, those primitives depend on gf64_mul_avx512.c (T1) and
+# gf64_square.c (T2). Needs AVX-512F + VPCLMULQDQ at runtime.
+test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe
