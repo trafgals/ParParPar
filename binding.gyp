@@ -154,6 +154,7 @@
             "src/gf64_addon.cc",
             "src/gf64_create_streaming.cc",
             "src/par3_engine.cc",
+            "src/par3_engine_barycentric.cc",
             "gf64/gf64_single.c",
             "gf64/gf64_region_scalar.c",
             "gf64/gf64_region_ssse3.c",
