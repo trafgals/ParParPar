@@ -68,14 +68,13 @@ test_gf64_additive_fft: $(TEST_GF64_ADDITIVE_FFT_SOURCES) ../gf64_additive_fft.c
 test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
-# Barycentric weight extraction test (par3-cauchy-fft-kernel T7).
-# gf64_barycentric.c (T7) depends on the subproduct tree (T6) and the
-# Itoh-Tsujii batched inversion (T5). The ITA batch in turn depends on the
-# AVX-512 scalar multiply (T1) and the Frobenius squaring (T2). The full
-# additive FFT (T3) is needed because gf64_subproduct.c calls gf64_poly_mul.
-# Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# Barycentric weight extraction test (par3-cauchy-fft-kernel T7). Since
+# PR-3 the barycentric step 2 delegates to gf64_multi_point_eval (T8), so
+# gf64_mpe.c is now in the dependency set as well. The same chain of TUs
+# powers gf64_subproduct.c's call into gf64_poly_mul. Needs AVX-512F +
+# VPCLMULQDQ at runtime.
+test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Multi-point evaluation test (par3-cauchy-fft-kernel T8). gf64_mpe.c (T8)
 # depends on the subproduct tree (T6) for its evaluation entry point, the

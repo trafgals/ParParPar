@@ -22,28 +22,27 @@
  *         deriv[j] = 0             if j is odd   (for j = 0..N-1)
  *
  *      P' has degree N - 1 (N odd) or N - 2 (N even), so passing degree
- *      N - 1 to Horner is always safe — the leading zero just propagates
- *      and one extra iteration is wasted.
+ *      N - 1 to the MPE is always safe — the leading zero just propagates.
  *
- *   2. Evaluate P'(x_j) at each input point. The naive O(N^2) Horner loop
- *      below is the T7 stop-gap. The plan describes a Bostan-Schost
- *      multi-point evaluation that drives the root's evaluation in
- *      O(N log^2 N) using the pre-built subproduct tree — that is T8
- *      (gf64_mpe.{c,h}) and not yet implemented.
+ *   2. Evaluate P'(x_j) at each input point via gf64_multi_point_eval
+ *      (T8 — gf64_mpe.{c,h}). The subproduct tree is built over the
+ *      input points {x_j}; MPE walks its leaves and writes P'(x_j)
+ *      directly into deriv_at_points. No local Horner loop here.
  *
  *   3. Invert the N values in one shot via Itoh-Tsujii batched inversion
  *      (gf64_invert_ita_batch from T5).
  *
- * Allocation strategy: the derivative (N coefficients) and the
- * deriv-at-points buffer (N values) are temporary scratch — both are
- * heap-allocated and freed before return. (Future T8 will be free of the
- * second allocation as well.)
+ * Allocation strategy: deriv (N coefficients) and deriv_at_points (N values)
+ * are still temporary scratch — both heap-allocated and freed before return.
+ * When PR-2 lands an FFT-based MPE the second allocation may be moveable
+ * into a caller-provided buffer; until then the malloc churn stays.
  * ============================================================================
  */
 
 #include "gf64_barycentric.h"
 #include "gf64_global.h"
 #include "gf64_invert_ita.h"
+#include "gf64_mpe.h"
 #include "gf64_subproduct.h"
 
 #include <stdint.h>
@@ -58,29 +57,7 @@ HEDLEY_BEGIN_C_DECLS
  * problem with the build target's ISA gating. */
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
-/*
- * Horner evaluation of a constant-first polynomial c[0..deg] at x = r.
- * Returns 0 when the polynomial is empty (deg == (size_t)(-1) sentinel).
- *
- * For characteristic 2 the "addition" step is XOR. This is the same
- * evaluation loop that T8 (Bostan-Schost MPE) will need internally; the
- * helper is kept static here and T8 may either lift it to its own TU or
- * share it via the header.
- */
-static gf64_t horner_eval_poly(const gf64_t *c, size_t deg, gf64_t r) {
-	if (deg == (size_t)(-(intptr_t)1)) {
-		/* Empty polynomial sentinel. Not expected in T7 because the root
-		 * of any non-empty subproduct tree has degree N >= 1, so P' has
-		 * degree N-1 >= 0. Guarded defensively. */
-		return 0;
-	}
-
-	gf64_t acc = c[deg];
-	for (size_t i = deg; i > 0; i--) {
-		acc = gf64_mul_reference(acc, r) ^ c[i - 1];
-	}
-	return acc;
-}
+extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
 void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	if (tree == NULL || tree->num_points == 0) {
@@ -128,15 +105,19 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	/*
 	 * Step 2: Evaluate P'(x_j) at each input point x_j.
 	 *
-	 * TODO(gf64-mpe, T8): replace this naive O(N^2) Horner loop with the
-	 * Bostan-Schost multi-point evaluation that walks the subproduct tree
-	 * from leaves to root in O(N log^2 N). The Horner loop here is the T7
-	 * stop-gap agreed in the plan; the existing subproduct-tree layout is
-	 * exactly what T8 will consume.
+	 * Now delegated to gf64_multi_point_eval (T8) — the subproduct tree
+	 * was built over the input points {x_j}, so MPE walks its leaves and
+	 * writes P'(x_j) directly into deriv_at_points.
+	 *
+	 * The current implementation in gf64_multi_point_eval is a naive
+	 * Horner per leaf (O(N * deg_f)) — bit-equivalent to the T7 stop-gap.
+	 * PR-2 will replace that body with a top-down Bostan-Schost walk once
+	 * the FFT-multiply primitive is available. The public signature of
+	 * gf64_multi_point_eval is stable, so this swap here is permanent.
 	 *
 	 * Input points are stored at the leaves (level_data[num_levels-1]):
-	 * leaf j has coefficients [x_j, 1] (constant-first). We read only
-	 * the constant term, leaf_j[0] = x_j.
+	 * leaf j has coefficients [x_j, 1] (constant-first). MPE consumes
+	 * this layout directly — no manual leaf walk needed at this call site.
 	 */
 	gf64_t *deriv_at_points = (gf64_t *)malloc(N * sizeof(gf64_t));
 	if (deriv_at_points == NULL) {
@@ -144,18 +125,13 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 		abort();
 	}
 
-	{
-		const gf64_t *HEDLEY_RESTRICT leaves = tree->level_data[tree->num_levels - 1];
-		const size_t deriv_degree = (N == 0) ? (size_t)(-(intptr_t)1) : (N - 1);
-		/*
-		 * N == 0 is short-circuited above; for N >= 1 the derivative has
-		 * degree N - 1, so deriv_degree is well-defined and >= 0.
-		 */
-		for (size_t j = 0; j < N; j++) {
-			const gf64_t xj = leaves[2 * j];
-			deriv_at_points[j] = horner_eval_poly(deriv, deriv_degree, xj);
-		}
-	}
+	/*
+	 * deriv has degree at most N - 1 (formal derivative of a degree-N P).
+	 * For N >= 1 this is well-defined and >= 0; N == 0 is short-circuited
+	 * at function entry.
+	 */
+	const size_t deriv_degree = (N == 0) ? (size_t)(-(intptr_t)1) : (N - 1);
+	gf64_multi_point_eval(deriv, deriv_degree, tree, deriv_at_points);
 
 	/*
 	 * Step 3: Batch invert via Itoh-Tsujii (T5).
