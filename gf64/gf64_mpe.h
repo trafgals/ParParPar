@@ -9,9 +9,13 @@
  *
  *   - gf64_poly_divmod:    polynomial division f = g*q + r (schoolbook O(n^2)).
  *   - gf64_poly_invmod:    1/g(x) mod x^n via Newton iteration (single seed +
- *                          doubling). This is a STUB using cubic-time
- *                          schoolbook multiplication; an FFT-based follow-up
- *                          is the deferred optimization.
+ *                          doubling). The squaring and the multiplication
+ *                          both delegate to gf64_poly_mul_padded (PR-1),
+ *                          which is currently schoolbook O(len_a * len_b)
+ *                          per call. The deferred optimization is to swap
+ *                          the schoolbook poly_mul for the Gao-Mateer
+ *                          tower-of-extensions FFT multiply; the public
+ *                          API stays the same.
  *   - gf64_multi_point_eval: top-down Bostan-Schost tree-walking evaluator
  *                          (currently falling back to naive Horner per point,
  *                          O(N * deg_f) total). Correct but not optimal.
@@ -111,12 +115,10 @@ void gf64_poly_divmod(
  * Aborts on n == 0 (no-op would be a cleaner contract but the function
  * explicitly returns instead for n == 0; see the .c file).
  *
- * Implementation note: this is a STUB that uses cubic-time schoolbook
- * gf64_poly_mul for both `result^2` and `g * result^2`. The asymptotic cost
- * is O(n^2 log n) instead of the proper O(n log n) of an FFT-based
- * Newton iteration. The TODO is to swap the schoolbook poly_mul call for
- * the existing gf64_poly_mul_fft (T3/T4) once the optimized path is
- * needed in the engine.
+ * Implementation note: the squaring and the multiplication both delegate
+ * to gf64_poly_mul_padded (PR-1). The current implementation is schoolbook
+ * O(n^2) per call; a future FFT-multiply primitive (Gao-Mateer tower-of-
+ * extensions or subfield NTT) drops in here without any signature change.
  */
 void gf64_poly_invmod(
 	const gf64_t *g, size_t deg_g,

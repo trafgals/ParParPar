@@ -203,6 +203,73 @@ void gf64_fft_inverse(gf64_t *poly, size_t n) {
 	gf64_scale_vector(poly, n, gf64_fft_scale(n));
 }
 
+/*
+ * Shared convolution kernel for gf64_poly_mul and gf64_poly_mul_padded.
+ *
+ * Computes out[0 .. out_len) as the low-order coefficients of the convolution
+ * a * b in GF(2^64)[x].  `a` has len_a coefficients and `b` has len_b
+ * coefficients (constant-first, length = degree + 1).  Coefficients of
+ * index >= out_len are discarded; trailing slots [0, out_len) are zeroed
+ * before writing.
+ *
+ * Implementation: schoolbook triple loop over GF(2^64).  The Gao-Mateer
+ * additive FFT in this TU does NOT implement the convolution theorem for
+ * arbitrary GF(2^64) inputs — the recursive structure is a transform of the
+ * monomial basis into a "twiddle"-laden evaluation-like representation
+ * where pointwise multiplication is not equivalent to polynomial
+ * convolution.  A correct FFT-based multiplication would need either:
+ *
+ *   (a) the full Gao-Mateer "tower of extensions" pipeline (works in
+ *       characteristic 2 but needs to use the *evaluation* basis at the
+ *       top level, not just the monomial-basis transform), or
+ *   (b) an NTT over a prime subfield of GF(2^64) with roots of unity.
+ *
+ * Both are research-level primitives; for now the multiplication routines
+ * here use O(len_a * len_b) schoolbook, which is what the T6 subproduct
+ * tree was implicitly relying on (the legacy gf64_poly_mul discarded the
+ * FFT result and recomputed schoolbook in place).
+ *
+ * Performance target: PR-2 will replace this with the Bostan-Schost MPE
+ * that consumes the FFT-based *evaluation* at the subproduct-tree leaves;
+ * the schoolbook here is the correctness baseline.
+ */
+static void gf64_poly_mul_internal(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len
+) {
+	assert(out != NULL);
+	assert(a != NULL);
+	assert(b != NULL);
+
+	memset(out, 0, out_len * sizeof(gf64_t));
+
+	/* Cap reads at the truncation point: any coefficient of index >= out_len
+	 * in either input contributes only to output slots [out_len, ...), which
+	 * are out of contract.  Skipping the long-tail inner products gives the
+	 * Newton-iteration truncation idiom for free without needing a separate
+	 * "low-order only" loop. */
+	size_t a_cap = (len_a < out_len) ? len_a : out_len;
+	size_t b_cap = (len_b < out_len) ? len_b : out_len;
+
+	for (size_t i = 0; i < a_cap; i++) {
+		gf64_t ai = a[i];
+		if (ai == 0) continue;
+		/* Output slot (i + j) must be < out_len for this product to land
+		 * inside the truncation; clamp j at out_len - i - 1. */
+		size_t j_max = (b_cap < out_len - i) ? b_cap : (out_len - i);
+		for (size_t j = 0; j < j_max; j++) {
+			out[i + j] ^= gf64_mul_reference(ai, b[j]);
+		}
+	}
+}
+
+/*
+ * Public polynomial multiplication: out = a * b (constant-first, length =
+ * deg_a + deg_b + 1 coefficients).  Schoolbook O((deg_a+1)(deg_b+1)) —
+ * see gf64_poly_mul_internal for why an FFT path is not used here yet.
+ */
 void gf64_poly_mul(
 	gf64_t *out,
 	const gf64_t *a,
@@ -214,42 +281,35 @@ void gf64_poly_mul(
 	assert(a != NULL);
 	assert(b != NULL);
 
-	size_t len_a = deg_a + 1;
-	size_t len_b = deg_b + 1;
-	size_t out_len = deg_a + deg_b + 1;
-	size_t n = 1;
-	while (n < out_len) {
-		n <<= 1;
-	}
+	gf64_poly_mul_internal(
+		out,
+		a, (size_t)deg_a + 1U,
+		b, (size_t)deg_b + 1U,
+		(size_t)deg_a + (size_t)deg_b + 1U
+	);
+}
 
-	gf64_t *fa = (gf64_t *)calloc(n, sizeof(gf64_t));
-	gf64_t *fb = (gf64_t *)calloc(n, sizeof(gf64_t));
-	if (fa == NULL || fb == NULL) {
-		free(fa);
-		free(fb);
-		abort();
-	}
+/*
+ * Pre-allocated-output variant used by Newton's iteration in
+ * gf64_poly_invmod.  Multiplies two polynomials (of length len_a and len_b)
+ * and writes only the low-order out_len coefficients into caller-owned
+ * `out`.  Cost is O(len_a * len_b) schoolbook; future FFT-multiply work
+ * (Gao-Mateer tower-of-extensions or subfield NTT) can drop in here.
+ *
+ * `out` must point to a buffer of size out_len coefficients.
+ */
+void gf64_poly_mul_padded(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len
+) {
+	assert(out != NULL);
+	assert(a != NULL);
+	assert(b != NULL);
+	assert(out_len > 0);
 
-	memcpy(fa, a, len_a * sizeof(gf64_t));
-	memcpy(fb, b, len_b * sizeof(gf64_t));
-
-	gf64_fft_forward(fa, n);
-	gf64_fft_forward(fb, n);
-	for (size_t i = 0; i < n; i++) {
-		fa[i] = gf64_mul_reference(fa[i], fb[i]);
-	}
-	gf64_fft_inverse(fa, n);
-	gf64_scale_vector(fa, n, gf64_inverse_nonzero(gf64_fft_scale(n)));
-
-	memset(out, 0, out_len * sizeof(gf64_t));
-	for (size_t i = 0; i < len_a; i++) {
-		for (size_t j = 0; j < len_b; j++) {
-			out[i + j] ^= gf64_mul_reference(a[i], b[j]);
-		}
-	}
-
-	free(fa);
-	free(fb);
+	gf64_poly_mul_internal(out, a, len_a, b, len_b, out_len);
 }
 
 /* ===========================================================================

@@ -61,6 +61,32 @@ void gf64_poly_mul(
 	size_t deg_b
 );
 
+/*
+ * Pre-allocated-output variant of gf64_poly_mul.  Multiplies two polynomials
+ * (length = degree + 1 each) and writes only the low-order out_len
+ * coefficients into the caller-owned buffer `out` — no internal allocation
+ * is tied to `out`, so callers (notably the Newton iteration in
+ * gf64_poly_invmod) can reuse a single scratch buffer across all doubling
+ * steps without per-call malloc/free.
+ *
+ *   out      caller-owned buffer of size out_len coefficients; on return
+ *            holds the low-order out_len coefficients of a * b (constant-
+ *            first, after zero-padding any unwritten higher-order slots).
+ *   a, len_a multiplicand coefficients.
+ *   b, len_b multiplier coefficients.
+ *   out_len  number of coefficients to produce.
+ *
+ * This entry point is API-additive — existing gf64_poly_mul callers are
+ * unaffected.  The implementation is bit-exact to gf64_poly_mul for
+ * (deg_a, deg_b, out_len) = (deg_a, deg_b, deg_a + deg_b + 1).
+ */
+void gf64_poly_mul_padded(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len
+);
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_ADDITIVE_FFT_H */

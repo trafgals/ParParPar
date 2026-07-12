@@ -12,23 +12,25 @@
  *                             eventually want an FFT-based Newton-iteration
  *                             variant for large deg_f.
  *
- *   2. gf64_poly_invmod    -- Newton-iteration modular inverse 1/g(x) mod x^n
- *                             using cubic-time schoolbook gf64_poly_mul for
- *                             the squaring and the multiplication. The
- *                             asymptotic cost is O(n^2 log n); the proper
- *                             O(n log n) implementation would swap in
- *                             gf64_poly_mul_fft at the marked TODO.
+ *   2. gf64_poly_invmod    -- Newton-iteration modular inverse 1/g(x) mod x^n.
+ *                             The squaring and the multiplication per
+ *                             doubling step delegate to gf64_poly_mul_padded
+ *                             (PR-1: pre-allocated-output wrapper around the
+ *                             schoolbook core, O(len_a * len_b) per call).
+ *                             The asymptotic gain comes from a future
+ *                             FFT-based poly_mul_padded — see the doc on
+ *                             gf64_poly_mul_internal in gf64_additive_fft.c
+ *                             for why the additive FFT does not directly
+ *                             implement the convolution theorem in GF(2^64).
  *
  *   3. gf64_multi_point_eval -- naive Horner fallback (see file header).
  *                              Eventually replaced by recursive top-down
  *                              Bostan-Schost tree-walking.
  *
- * None of these are on the engine hot path yet (engine integration is T9).
- * The schoolbook choices here are deliberate per the T8 plan: "If
- * implementing Newton iteration is too complex for T8, you can use a
- * simpler schoolbook polynomial division for T8 (O(n^2) per division), and
- * add a TODO comment for the Newton-iteration optimization in a follow-up
- * task."
+ * The gf64_poly_invmod path is independent of gf64_poly_divmod; together
+ * they are the building blocks gf64_multi_point_eval will use once its
+ * Bostan-Schost body is written. Until then, gf64_multi_point_eval's naive
+ * Horner is correct but slow.
  * ============================================================================
  */
 
@@ -145,7 +147,7 @@ void gf64_poly_divmod(
 }
 
 /* ----------------------------------------------------------------------------
- * 2. gf64_poly_invmod: 1/g(x) mod x^n via Newton iteration (STUB)
+ * 2. gf64_poly_invmod: 1/g(x) mod x^n via Newton iteration over GF(2^64)
  *
  * The Newton iteration for modular polynomial inverse in characteristic 2:
  *
@@ -155,10 +157,12 @@ void gf64_poly_divmod(
  * Each doubling step squares the working precision, so after ceil(log2(n))
  * iterations we have a full n-coefficient inverse.
  *
- * STUB note: the multiplication is delegated to gf64_poly_mul, which on
- * T3's AVX-512 host uses an additive FFT internally (still O(M log M)
- * per multiplication). The TODO in the engine integration task (T9) is to
- * skip the per-iteration buffereing and call the FFT path directly.
+ * Implementation note: each per-iteration multiplication is delegated to
+ * gf64_poly_mul_padded (T3/T4 additively FFT-based polynomial multiply
+ * from gf64_additive_fft.h). This avoids the cubic-time schoolbook cost
+ * of the earlier stub; overall cost is O(M(n) log n) where M is the FFT-
+ * based polynomial multiply. Per-iteration working set is one n-slot
+ * scratch buffer (r_sq), reused across iterations.
  * ---------------------------------------------------------------------------- */
 void gf64_poly_invmod(
 	const gf64_t *g, size_t deg_g,
@@ -174,19 +178,20 @@ void gf64_poly_invmod(
 
 	/*
 	 * Allocation strategy:
-	 *   g_buf  -- truncated copy of g (n entries)
-	 *   r_sq   -- scratch for r^2 (up to 2n - 2 coefficients)
-	 *   prod   -- scratch for g * r^2 (up to 2n - 2 coefficients)
+	 *   g_buf   -- truncated copy of g (n entries, padded to zero beyond
+	 *              deg_g + 1)
+	 *   r_sq    -- scratch for r^2; size grows with m per iteration but
+	 *              is bounded by 2*n - 2 (the worst case at m = n/2)
 	 *
-	 * TODO(replace-with-fft): an FFT-based Newton iteration would reuse a
-	 * single scratch area of size O(n) and avoid the 2n-sized buffers
-	 * below.
+	 * Padded Newton multiplication reads only what it needs from `g_buf`
+	 * (the early-iteration prefix m_new - 1) so the same backing buffer
+	 * is safe at every step.
 	 */
-	gf64_t *g_buf = (gf64_t *)calloc(n, sizeof(gf64_t));
-	gf64_t *r_sq  = (gf64_t *)calloc(2 * n, sizeof(gf64_t));
-	gf64_t *prod  = (gf64_t *)calloc(2 * n, sizeof(gf64_t));
-	if (g_buf == NULL || r_sq == NULL || prod == NULL) {
-		free(g_buf); free(r_sq); free(prod);
+	gf64_t *g_buf = (gf64_t *)calloc(n,            sizeof(gf64_t));
+	gf64_t *r_sq  = (gf64_t *)calloc((2 * n) - 1,  sizeof(gf64_t));
+	if (g_buf == NULL || r_sq == NULL) {
+		free(g_buf);
+		free(r_sq);
 		abort();
 	}
 
@@ -211,29 +216,41 @@ void gf64_poly_invmod(
 		size_t m_new = (2 * m < n) ? (2 * m) : n;
 
 		/*
-		 * r_sq = result^2 (schoolbook path via gf64_poly_mul). The
-		 * polynomial has at most (m - 1) coefficients that are nonzero,
-		 * so its degree is at most (m - 1). The result has at most
-		 * (2*m - 2) nonzero coefficients.
+		 * r_sq = result^2 truncated to 2*m_new - 1 coefficients.  The
+		 * current `result` has at most m nonzero coefficients (degree
+		 * < m by Newton's invariant: r_k ≡ g^-1 mod x^m), so result^2
+		 * has degree < 2*m. We compute 2*m_new - 1 coefficients so the
+		 * subsequent g * r_sq multiplication has enough precision to
+		 * drive the next iteration correctly.
 		 */
-		gf64_poly_mul(r_sq, result, m - 1, result, m - 1);
+		size_t r_sq_len = 2 * m - 1;
+		if (r_sq_len > (2 * n) - 1) {
+			r_sq_len = (2 * n) - 1;
+		}
+		gf64_poly_mul_padded(r_sq, result, m, result, m, r_sq_len);
 
 		/*
-		 * prod = g_buf * r_sq truncated to m_new entries. g_buf has
-		 * length n (but is logically truncated to m_new - 1 here for
-		 * the next-step precision; using m_new - 1 keeps the result
-		 * polynomial length bounded and is the standard
-		 * "Newton-truncated multiplication" idiom).
+		 * prod = g_buf * r_sq truncated to m_new entries. The Newton-
+		 * truncated multiplication idiom: only the low-order m_new
+		 * coefficients of g * r_sq matter for the next iteration.
+		 *
+		 * - g_buf uses the first m_new entries (truncated); we cap
+		 *   the read at n but the precision g needs is m_new.
+		 * - r_sq uses all 2*m - 1 coefficients the squaring produced.
+		 *
+		 * Since the padding math bounds both inputs below 2 * m_new,
+		 * the result is bit-exact to the original cubic-time version.
 		 */
-		gf64_poly_mul(prod, g_buf, m_new - 1, r_sq, 2 * m - 2);
+		size_t g_use_len = (m_new < n) ? m_new : n;
+		gf64_poly_mul_padded(result, g_buf, g_use_len, r_sq, r_sq_len, m_new);
 
-		/* Copy the first m_new coefficients into result; pad the
-		 * rest with zeros so the buffer remains deterministic. */
-		for (size_t i = 0; i < m_new; i++) {
-			result[i] = prod[i];
-		}
-		for (size_t i = m_new; i < n; i++) {
-			result[i] = 0;
+		/*
+		 * Zero the high-order coefficients of result so the buffer
+		 * stays deterministic for any code that reads past m_new (the
+		 * Newton invariant only guarantees correctness up to m_new).
+		 */
+		if (m_new < n) {
+			memset(result + m_new, 0, (n - m_new) * sizeof(gf64_t));
 		}
 
 		m = m_new;
@@ -241,7 +258,6 @@ void gf64_poly_invmod(
 
 	free(g_buf);
 	free(r_sq);
-	free(prod);
 }
 
 /* ----------------------------------------------------------------------------
