@@ -20,25 +20,36 @@
  * earlier version of this file implemented the Lagrange form by mistake;
  * that was wrong and has been replaced by this direct formula.
  *
- * WHY THE SUBPRODUCT TREE / BARYCENTRIC WEIGHTS / MPE ARE NOT USED HERE
- * --------------------------------------------------------------------
- * The Barycentric kernel name is preserved for compatibility with the
- * existing NAPI binding (`compute_recovery_barycentric`) and its dispatch
- * chain in the engine header. The library primitives built in earlier
- * plan tasks remain available for future "Bostan-Schost fast-path"
- * optimizations (subproduct tree → multi-point evaluation → near-linear
- * Cauchy recovery). They are deliberately *not* invoked here because:
+ * PR-4 NOTE — why the subproduct-tree / barycentric-weight / MPE chain
+ * (T6 / T7 / T8, including the Bostan-Schost top-down evaluator from
+ * PR-2) does NOT apply here, despite sharing the "Barycentric kernel"
+ * name with this entry point:
  *
- *   - gf64_subproduct_tree_build (T6) requires N to be a power of two,
- *     forcing padding logic that buys nothing for the direct formula.
- *   - gf64_barycentric_weights (T7) computes W_j = 1/P'(x_j), which is
- *     a Lagrange-interpolation primitive with no role in the Cauchy
- *     matrix-vector product.
- *   - gf64_multi_point_eval (T8) provides multi-point polynomial
- *     evaluation; it reduces the *polynomial* evaluation cost from
- *     O(N*R) to O((N+R) log²(N+R)), but only when the inputs are the
- *     polynomial coefficients — for the raw Cauchy matrix product the
- *     reduction is applied via batched Itoh-Tsujii inversion below.
+ *   - gf64_subproduct_tree_build (T6) requires N to be a power of two.
+ *     numInputs in real-world PAR3 is rarely a power of two (it is the
+ *     slice count + recovery count from the create pipeline), forcing
+ *     padding logic that buys nothing for the direct formula.
+ *   - gf64_barycentric_weights (T7) computes W_j = 1/P'(x_j), the
+ *     weights of Lagrange interpolation. The Cauchy matrix product is
+ *     NOT Lagrange interpolation — there is no polynomial whose values
+ *     at the input points {x_j} equal the input data in[j][*]; the
+ *     weights would diverge at every input block.
+ *   - gf64_multi_point_eval (T8, with PR-2's Bostan-Schost body)
+ *     evaluates a single polynomial at all leaves of a subproduct tree.
+ *     The Cauchy kernel has blockSize independent Cauchy sums
+ *     per row, NOT a single polynomial evaluated at the recovery points
+ *     — different math.
+ *
+ * The asymptotic FFT-based fast-path for THIS kernel is the **Gao-Mateer
+ * tower-of-extensions Cauchy product**, which is research-grade code
+ * (and the same FFT convolution-primitive gap that motivates the future
+ * PR on `gf64_poly_mul_padded`). PR-4 of the T8 plan is therefore a
+ * micro-optimization: pre-compute x_c[] once per call (instead of
+ * numRecovery times per call) and document why the subproduct-tree /
+ * MPE route is unavailable. The full algorithmic speedup requires
+ * either (a) an FFT polynomial-multiplication primitive in
+ * `gf64_poly_mul_padded`, or (b) a direct Toeplitz-decomposition of the
+ * Cauchy matrix (Fenger 2009) — both future work.
  *
  * IMPLEMENTATION
  * --------------
@@ -57,16 +68,11 @@
  *      Cauchy coefficient. n_coeff = 1: each call multiplies a single
  *      input block by a single scalar and XOR-accumulates into the row.
  *
- * Cost per kernel call: O(numInputs) inversions per row,
- * O(numInputs * blockSize64) scalar-region muladds per row, numRecovery
- * rows. Same asymptotic cost as the legacy 2D-muladd path
- * (O(N*R*B)); the algorithmic speedup from subproduct-tree MPE is a
- * future TODO.
- *
- * TODO(bostan-schost-fast-path): see the file header doc. The future
- * fast-path replaces step 3 above with a single polynomial evaluation
- * via gf64_multi_point_eval, driving the kernel from O(N*R*B) to
- * O((N+R)*B + (D+N)*log²(D+N)) where D = N.
+ * Cost per kernel call: O(numInputs * numRecovery) inversions (one
+ * row of inverts at a time), O(numInputs * numRecovery * blockSize64)
+ * scalar-region muladds (in the worst case). Same asymptotic cost as
+ * the legacy 2D-muladd path (O(N*R*B)); the algorithmic speedup from
+ * a future FFT-multiply is a future TODO.
  * ============================================================================
  */
 
@@ -112,10 +118,22 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 	 *   (a) before invert: holds x_c ^ y_r (raw Cauchy denominators)
 	 *   (b) after invert: holds 1 / (x_c ^ y_r) (Cauchy coefficients)
 	 * In-place aliasing is supported by gf64_invert_ita_batch.
+	 *
+	 * Also pre-compute x_c = firstInput + c ONCE per call (PR-4 micro-opt).
+	 * The original code re-derived x = firstInput + c inside the per-row
+	 * `c` loop, costing numInputs additions per row of a numRecovery-row
+	 * pass. For the canonical 1 GiB / 10K workload that's 10K * 1000 =
+	 * 10M integer adds to compute exponents that never change across rows.
 	 */
 	static thread_local std::vector<gf64_t> denoms_tls;
+	static thread_local std::vector<gf64_t> x_c_tls;
 	if (denoms_tls.size() < numInputs) denoms_tls.resize(numInputs);
+	if (x_c_tls.size() < numInputs) x_c_tls.resize(numInputs);
 	gf64_t* denoms = denoms_tls.data();
+	gf64_t* x_c = x_c_tls.data();
+	for (size_t c = 0; c < numInputs; c++) {
+		x_c[c] = (gf64_t)(firstInput + (uint64_t)c);
+	}
 
 	/*
 	 * For each recovery row r:
@@ -134,8 +152,7 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 
 		/* Step 1: raw denominators. */
 		for (size_t c = 0; c < numInputs; c++) {
-			const uint64_t x = firstInput + (uint64_t)c;
-			const uint64_t d = x ^ y;
+			const uint64_t d = x_c[c] ^ (gf64_t)y;
 			denoms[c] = (d == 0) ? (gf64_t)1 : (gf64_t)d;
 		}
 
