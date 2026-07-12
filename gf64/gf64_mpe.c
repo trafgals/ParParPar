@@ -261,46 +261,144 @@ void gf64_poly_invmod(
 }
 
 /* ----------------------------------------------------------------------------
- * 3. gf64_multi_point_eval: naive-Horner fallback for multi-point evaluation
+ * 3. gf64_multi_point_eval: Bostan-Schost top-down multi-point evaluation
  *
- * Reads the N leaf entries from the last level of `tree`, evaluates f at
- * each one via Horner (linear in deg_f per point), and stores the results
- * in `out`.
+ * Tree layout: the SubproductTree stores levels in BFS order.
+ *   level_data[0]              = root polynomial of degree N
+ *   level_data[1]              = 2 polynomials of degree N/2
+ *   ...
+ *   level_data[num_levels - 1] = N leaves, each [x_j, 1] (degree 1)
  *
- * TODO(replace-with-bostan-schost): once gf64_poly_divmod is integrated and
- * its modular-truncation correctness is verified against this naive path,
- * replace the body with the recursive top-down tree walk:
+ * Each level_data[lev] holds `level_lens[lev]` polynomials in BFS order,
+ * each polynomial of degree `level_degs[lev]`.  Children of the polynomial
+ * at level `lev` index `i` sit at level `lev + 1` indices `2i` and `2i + 1`.
  *
- *   eval_rem(f, deg_f, node, out_buf):
- *     if node is leaf i:
- *       out_buf[i] = horner(f, deg_f, x_i)
+ * Recursion (Bostan-Schost 2003, top-down):
+ *
+ *   eval_at_subtree(f, deg_f, lev, out_offset):
+ *     if lev == num_levels - 1:           # leaf
+ *       x = leaf[0]
+ *       out[out_offset] = horner(f, deg_f, x)
  *       return
- *     let g_L, g_R be the two children
- *     r_L = divmod(f, g_R)         # remainder of deg < deg(g_R)
- *     r_R = divmod(f - r_L, g_L)    # conceptually; actual schema differs
- *     eval_rem(r_L, node_left, out_buf)
- *     eval_rem(r_R, node_right, out_buf)
+ *     P_parent = level_data[lev][0 .. deg_parent]
+ *     q, r = divmod(f, P_parent)          # f = P_parent * q + r
+ *     eval_at_subtree(r,           lev + 1, out_offset)        # left half
+ *     q_left, _ = divmod(q, P_left)       # q mod P_left
+ *     eval_at_subtree(q_left,     lev + 1, out_offset + N/2^(lev+1))
  *
- * That recursion gives the O((D + N) log^2(D + N)) contract the plan
- * promises. For now we accept O(N * D).
+ * Correctness: at every recursive step the inputs to the children are
+ * polynomials whose values at the children's leaves coincide with f at
+ * those leaves (because r ≡ f (mod P_parent), and q_left ≡ q ≡ f*P_parent^-1
+ * ≡ f (mod P_left) — since P_parent = P_left * P_right, q mod P_left =
+ * f / P_parent mod P_left).
+ *
+ * Cost: O(M(n) log n) per level, summed across log N levels = O((D + N)
+ * log^2(D + N)) when paired with an FFT-based divmod / multiply.  Current
+ * gf64_poly_divmod is O(n^2) schoolbook, so this implementation has the
+ * right CALL SHAPE but the same overall cost as the naive-Horner fallback
+ * — the asymptotic win comes when divmod is upgraded to FFT (the same
+ * FFT-multiply primitive PR-1 establishes the call shape for). Once that
+ * FFT lands, no signature change here is needed.
  * ---------------------------------------------------------------------------- */
 
+/*
+ * Horner evaluation of a constant-first polynomial c[0..deg] at x = r.
+ * Returns 0 when the polynomial is empty (deg == (size_t)(-1) sentinel).
+ */
 static gf64_t horner_eval_poly(const gf64_t *c, size_t deg, gf64_t r) {
-	/*
-	 * Edge case: deg == (size_t)(-1) means the polynomial is the zero
-	 * polynomial; Horner evaluates it to 0 trivially. This lets
-	 * multi_point_eval pass a constant-zero remainder into recursive
-	 * calls without a separate guard.
-	 */
 	if (deg == (size_t)(-1)) {
 		return 0;
 	}
-
 	gf64_t acc = c[deg];
 	for (size_t i = deg; i > 0; i--) {
 		acc = gf64_mul_reference(acc, r) ^ c[i - 1];
 	}
 	return acc;
+}
+
+/*
+ * Top-down Bostan-Schost walker.
+ *
+ * Recursion contract: at the current node (level `lev`, index `node_idx`
+ * within that level, covering leaves [out_offset, out_offset +
+ * 2^(num_levels - 1 - lev))), the polynomial whose leaves we are
+ * evaluating is `f`. We compute
+ *
+ *     f_L = f mod P_left
+ *     f_R = f mod P_right
+ *
+ * and recurse on each side with the matching subtree. At the leaves,
+ * f(x_j) = f_L(x_j) (resp. f_R) by construction, and a single Horner
+ * per leaf writes the result.
+ *
+ * Subproduct tree indexing (BFS): at level_data[lev], polynomial i lives
+ * at offset i * (level_degs[lev] + 1). Children of i at level lev + 1 are
+ * at indices 2i and 2i + 1. So for a non-root call we MUST pass the
+ * node_idx so the function can locate the right P_left / P_right at the
+ * children's level.
+ *
+ * Scratch discipline: every recursive call needs (r_L, r_R, q) backed by
+ * three disjoint regions, AND r_R must remain valid until the right
+ * recursion consumes it. The simplest correct layout is a single per-call
+ * scratch of size (deg_f + 1) for f itself plus three slots of size
+ * (deg_parent + 1) for r_L, r_R, q; cross-frame aliasing is benign because
+ * we copy `f` into scratch up front, so left-recursion's writes never
+ * touch the parent's f_in.
+ */
+static void gf64_mpe_recurse(
+	const gf64_t *f_in, size_t deg_f,
+	const SubproductTree *tree,
+	size_t lev, size_t node_idx, size_t out_offset,
+	gf64_t *out, gf64_t *HEDLEY_RESTRICT scratch
+) {
+	const size_t last_lev = tree->num_levels - 1;
+
+	if (lev == last_lev) {
+		/* Leaf: node_idx is the leaf index directly. */
+		const gf64_t *leaf = tree->level_data[last_lev] + 2 * node_idx;
+		out[out_offset] = horner_eval_poly(f_in, deg_f, leaf[0]);
+		return;
+	}
+
+	const size_t deg_parent = tree->level_degs[lev];
+	const size_t deg_child  = tree->level_degs[lev + 1];
+	const size_t slot       = (deg_f + 1 > deg_parent + 1) ? (deg_f + 1) : (deg_parent + 1);
+
+	/*
+	 * Copy f_in into the first slot of scratch so the two divmod calls
+	 * below operate on owned memory. divmod may freely overwrite its
+	 * own scratch buffers without aliasing the caller's `f_in`.
+	 */
+	gf64_t *f_copy = scratch;
+	gf64_t *rL     = scratch + slot;
+	gf64_t *rR     = scratch + 2 * slot;
+	gf64_t *q      = scratch + 3 * slot;
+	(void)q;
+
+	for (size_t i = 0; i <= deg_f; i++) {
+		f_copy[i] = f_in[i];
+	}
+
+	/*
+	 * Children of (lev, node_idx) sit at level_data[lev + 1] indices
+	 * 2*node_idx and 2*node_idx + 1.
+	 */
+	const gf64_t *P_left  = tree->level_data[lev + 1]
+	                        + (2 * node_idx)     * (deg_child + 1);
+	const gf64_t *P_right = tree->level_data[lev + 1]
+	                        + (2 * node_idx + 1) * (deg_child + 1);
+
+	gf64_poly_divmod(f_copy, deg_f, P_left,  deg_child, q, rL);
+	gf64_poly_divmod(f_copy, deg_f, P_right, deg_child, q, rR);
+
+	const size_t child_count = tree->num_points >> (lev + 1);
+
+	gf64_mpe_recurse(rL, deg_child - 1, tree, lev + 1,
+	                 2 * node_idx,     out_offset,
+	                 out, scratch);
+	gf64_mpe_recurse(rR, deg_child - 1, tree, lev + 1,
+	                 2 * node_idx + 1, out_offset + child_count,
+	                 out, scratch);
 }
 
 void gf64_multi_point_eval(
@@ -312,13 +410,27 @@ void gf64_multi_point_eval(
 		return;
 	}
 
-	size_t N = tree->num_points;
-	gf64_t *last_level = tree->level_data[tree->num_levels - 1];
+	const size_t N = tree->num_points;
 
-	for (size_t j = 0; j < N; j++) {
-		gf64_t xj = last_level[2 * j]; /* leaf j is [x_j, 1] */
-		out[j] = horner_eval_poly(f, deg_f, xj);
+	/*
+	 * Worst-case scratch at the root: f has deg_f coefficients; the
+	 * remainder slots need deg_parent + 1 = N + 1 entries at the root
+	 * (and shrink at every deeper level, so once-size-fits-all at the
+	 * root is correct). Four slots, each of size max(deg_f + 1, N + 1).
+	 */
+	const size_t slot =
+		(deg_f + 1 > N + 1) ? (deg_f + 1) : (N + 1);
+	const size_t scratch_words = 4 * slot;
+	gf64_t *scratch = (gf64_t *)malloc(scratch_words * sizeof(gf64_t));
+	if (scratch == NULL) {
+		abort();
 	}
+
+	gf64_mpe_recurse(f, deg_f, tree,
+	                 /* lev */ 0, /* node_idx */ 0, /* out_offset */ 0,
+	                 out, scratch);
+
+	free(scratch);
 }
 
 HEDLEY_END_C_DECLS
