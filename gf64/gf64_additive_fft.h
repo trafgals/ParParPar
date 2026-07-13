@@ -53,6 +53,20 @@ void gf64_fft_forward_lch14(gf64_t *arr, size_t n);
 void gf64_fft_inverse_lch14(gf64_t *arr, size_t n);
 
 /*
+ * Vandermonde-matrix additive FFT over GF(2^64). Correct by
+ * construction: forward(p)[i] = sum_j p[j] * v_i^j, which satisfies
+ * the convolution theorem (pointwise-multiply in evaluation form =
+ * poly convolution in monomial form). Asymptotic cost O(N^2) per call;
+ * the matrix and its inverse are pre-computed and cached per n. This
+ * is the drop-in "guaranteed correct" FFT for downstream consumers
+ * like Fenger Toeplitz; consumers that need O(N log N) should swap in
+ * a faster transform (e.g. the Gao-Mateer tower form). See
+ * gf64_additive_fft_vandermonde.c.
+ */
+void gf64_fft_forward_vandermonde(gf64_t *out, const gf64_t *in, size_t n);
+void gf64_fft_inverse_vandermonde(gf64_t *out, const gf64_t *in, size_t n);
+
+/*
  * AVX-512 vectorized forward / inverse Gao-Mateer-style additive FFT.
  *
  *   void gf64_fft_forward_avx512(gf64_t *poly, size_t n)
@@ -111,6 +125,29 @@ void gf64_poly_mul_padded(
 	const gf64_t *a, size_t len_a,
 	const gf64_t *b, size_t len_b,
 	size_t out_len
+);
+
+/*
+ * Vandermonde-FFT-based polynomial multiplication.
+ *
+ * Computes a * b in GF(2^64)[x] via:
+ *   1. Pad a, b to length n (next power of 2 above deg_a + deg_b + 1).
+ *   2. Vandermonde-FFT each (O(n^2) each via cached matrix).
+ *   3. Pointwise-multiply.
+ *   4. Inverse Vandermonde-FFT.
+ *
+ * Bit-exact to gf64_poly_mul for (deg_a, deg_b, out_len) =
+ * (deg_a, deg_b, deg_a + deg_b + 1). Asymptotic cost O(n^2) per call;
+ * the matrices are cached per n. Use the schoolbook via
+ * gf64_poly_mul_padded for small n where it wins; use this entry for
+ * testing the additive-FFT pipeline end to end.
+ *
+ * Buffer requirements: `out` must hold at least out_len coefficients.
+ */
+void gf64_poly_mul_vandermonde(
+	gf64_t *out,
+	const gf64_t *a, size_t deg_a,
+	const gf64_t *b, size_t deg_b
 );
 
 HEDLEY_END_C_DECLS

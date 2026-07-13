@@ -25,10 +25,11 @@ TEST_GF64_POLY_INVMOD_FFT_SOURCES := test_gf64_poly_invmod_fft.c
 TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 TEST_GF64_FFT_POLY_MUL_SOURCES := test_gf64_fft_poly_mul.c
 TEST_GF64_POLY_MUL_TOOM3_SOURCES := test_gf64_poly_mul_toom3.c
+TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES := test_gf64_poly_mul_vandermonde.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -66,10 +67,11 @@ test_gf64_additive_fft: $(TEST_GF64_ADDITIVE_FFT_SOURCES) ../gf64_additive_fft.c
 
 # FFT-based bottom-up subproduct tree test (par3-cauchy-fft-kernel T6).
 # gf64_subproduct.c (T6) depends on gf64_additive_fft.c (T3) for gf64_poly_mul,
-# which in turn depends on gf64_mul_avx512.c (T1) and gf64_square.c (T2).
+# which in turn depends on gf64_mul_avx512.c (T1), gf64_square.c (T2), and
+# gf64_poly_mul_karatsuba.c (Phase 2a Karatsuba dispatch).
 # Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Barycentric weight extraction test (par3-cauchy-fft-kernel T7). Since
 # PR-3 the barycentric step 2 delegates to gf64_multi_point_eval (T8), so
@@ -107,13 +109,13 @@ test_gf64_poly_invmod_fft: $(TEST_GF64_POLY_INVMOD_FFT_SOURCES) ../gf64_mpe.c ..
 test_gf64_poly_mul_karatsuba: $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
-# Phase 2b probe: does the LCH14 additive FFT satisfy the convolution
-# theorem (pointwise-multiply in evaluation basis = polynomial convolution)?
-# If yes, poly_mul via FFT is a drop-in. The new LCH14 transform in
-# gf64_additive_fft_lch14.c implements the Lin-Chung-Han (2014) novel
-# polynomial basis with the correct butterfly coefficients.
-test_gf64_fft_poly_mul: $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_lch14.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_lch14.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# Phase 2b probe: does the Vandermonde-matrix additive FFT satisfy the
+# convolution theorem (pointwise-multiply in evaluation basis = polynomial
+# convolution)? The Vandermonde FFT is correct by construction; the LCH14
+# attempt in gf64_additive_fft_lch14.c is kept for reference but is no
+# longer the focus.
+test_gf64_fft_poly_mul: $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Phase 2a+ parity test: Toom-Cook 3 (Toom 2.3) poly_mul against schoolbook.
 # Char-2 safe evaluation points {0, 1, 2, 3, inf} since -1 = 1 in char 2.
@@ -123,5 +125,11 @@ test_gf64_fft_poly_mul: $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c
 test_gf64_poly_mul_toom3: $(TEST_GF64_POLY_MUL_TOOM3_SOURCES) ../gf64_poly_mul_toom3.c ../gf64_poly_mul_karatsuba.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_TOOM3_SOURCES) ../gf64_poly_mul_toom3.c ../gf64_poly_mul_karatsuba.c ../gf64_single.c
 
+# Phase 2b Vandermonde-FFT poly_mul parity test. Correctness-only
+# (bit-exact to schoolbook), tests 11 random cases across degrees up to
+# 511. The Vandermonde FFT is correct by construction but O(N^2).
+test_gf64_poly_mul_vandermonde: $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba

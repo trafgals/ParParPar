@@ -2,19 +2,22 @@
  * ============================================================================
  * gf64/test/test_gf64_fft_poly_mul.c
  *
- * Phase 2b FFT convolution-theorem probe.
+ * Phase 2b FFT convolution-theorem probe — Vandermonde variant.
  *
- * Tests whether the LCH14 additive FFT in gf64_additive_fft_lch14.c
- * satisfies the convolution theorem: forward-FFT + pointwise-multiply +
- * inverse-FFT should compute polynomial convolution in GF(2^64)[x].
+ * Tests whether the Vandermonde-matrix additive FFT in
+ * gf64_additive_fft_vandermonde.c satisfies the convolution theorem:
+ * forward-FFT + pointwise-multiply + inverse-FFT should compute polynomial
+ * convolution in GF(2^64)[x].
  *
- * The convolution theorem (LCH14) holds when deg(a) + deg(b) < n, where
- * n is the transform length. So this test uses inputs of length n/2
- * each (so deg sum < n).
+ * The Vandermonde FFT is correct by construction (forward(p)[i] = sum_j
+ * p[j] * v_i^j for v_i ∈ W_m), so this test should pass at all sizes.
+ *
+ * The convolution theorem holds when deg(a) + deg(b) < n. This test
+ * uses inputs of length n/2 each (so deg sum < n).
  *
  * Build & run from gf64/test/:
  *   $(CC) -O2 -march=native -I.. test_gf64_fft_poly_mul.c \
- *         ../gf64_additive_fft.c ../gf64_additive_fft_lch14.c \
+ *         ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c \
  *         ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c \
  *         ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c \
  *         ../gf64_single.c -o test_gf64_fft_poly_mul && ./test_gf64_fft_poly_mul
@@ -31,8 +34,8 @@
 
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
-extern void gf64_fft_forward_lch14(gf64_t *arr, size_t n);
-extern void gf64_fft_inverse_lch14(gf64_t *arr, size_t n);
+extern void gf64_fft_forward_vandermonde(gf64_t *out, const gf64_t *in, size_t n);
+extern void gf64_fft_inverse_vandermonde(gf64_t *out, const gf64_t *in, size_t n);
 
 static uint64_t g_rng = 0xC0DEBA5EFACE0001ULL;
 static uint64_t splitmix64_next(void) {
@@ -82,12 +85,29 @@ static int test_one(const char *name, size_t n, uint64_t seed) {
     memcpy(A, a, a_len * sizeof(gf64_t));
     memcpy(B, b, b_len * sizeof(gf64_t));
 
-    gf64_fft_forward_lch14(A, n);
-    gf64_fft_forward_lch14(B, n);
+    /* Allocate a separate buffer for the forward output; the in-place
+     * signatures (forward_vandermonde(out, in, n) with non-aliasing) need
+     * us to forward into a scratch first, then pointwise-multiply into
+     * a second scratch, then inverse back into the original buffer. */
+    gf64_t *FA = (gf64_t *)malloc(n * sizeof(gf64_t));
+    gf64_t *FB = (gf64_t *)malloc(n * sizeof(gf64_t));
+    if (FA == NULL || FB == NULL) abort();
+    gf64_fft_forward_vandermonde(FA, A, n);
+    gf64_fft_forward_vandermonde(FB, B, n);
     for (size_t i = 0; i < n; i++) {
-        A[i] = gf64_mul_reference(A[i], B[i]);
+        A[i] = gf64_mul_reference(FA[i], FB[i]);
     }
-    gf64_fft_inverse_lch14(A, n);
+    free(FA); free(FB);
+    {
+        /* Round-trip: forward into scratch, inverse into A's original buffer.
+         * But A now holds the pointwise product; we need to invert it in
+         * place. Use a scratch for the inverse's source. */
+        gf64_t *src = (gf64_t *)malloc(n * sizeof(gf64_t));
+        if (src == NULL) abort();
+        memcpy(src, A, n * sizeof(gf64_t));
+        gf64_fft_inverse_vandermonde(A, src, n);
+        free(src);
+    }
 
     int mismatches = 0;
     size_t check = a_len + b_len - 1;
@@ -115,11 +135,11 @@ static int test_one(const char *name, size_t n, uint64_t seed) {
 }
 
 int main(void) {
-    printf("Phase 2b FFT convolution-theorem probe (LCH14)\n");
-    printf("================================================\n\n");
+    printf("Phase 2b FFT convolution-theorem probe (Vandermonde)\n");
+    printf("===================================================\n\n");
     printf("Inputs of length n/2 each (so deg sum < n, satisfying the\n");
-    printf("LCH14 convolution theorem). If the additive FFT satisfies the\n");
-    printf("convolution theorem, all PASS.\n\n");
+    printf("convolution theorem). The Vandermonde additive FFT satisfies\n");
+    printf("the theorem by construction, so all PASS is expected.\n\n");
 
     test_one("n=2",   2,   0xA1A1A1A1A1A1A1A1ULL);
     test_one("n=4",   4,   0xA2A2A2A2A2A2A2A2ULL);
@@ -134,10 +154,13 @@ int main(void) {
     printf("Passed: %d\n", g_passed);
     printf("Failed: %d\n", g_failed);
     printf("\nInterpretation:\n");
-    printf("  - All PASS: the LCH14 additive FFT does implement the convolution\n");
-    printf("    theorem (FFT poly_mul is a drop-in), giving Phase 2b O(n log n)\n");
-    printf("    for free. Proceed to Fenger Toeplitz (Phase 3).\n");
-    printf("  - Some FAIL: the LCH14 transform is not yet correct; debug the\n");
-    printf("    butterfly multipliers s_i(v_j)/s_i(v_i).\n");
+    printf("  - All PASS: the Vandermonde additive FFT does implement the\n");
+    printf("    convolution theorem, so FFT-based poly_mul is a drop-in. The\n");
+    printf("    asymptotic complexity is O(N^2) per forward/inverse (one\n");
+    printf("    matrix-vector multiply), not O(N log N) — the Fenger Toeplitz\n");
+    printf("    pipeline (Phase 3) consuming this FFT gets the structural\n");
+    printf("    decomposition but not the asymptotic speedup.\n");
+    printf("  - Some FAIL: the Vandermonde implementation has a bug; check\n");
+    printf("    the matrix build or the inverse via Gaussian elimination.\n");
     return g_failed > 0 ? 1 : 0;
 }
