@@ -23,10 +23,11 @@ TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
 TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
 TEST_GF64_POLY_INVMOD_FFT_SOURCES := test_gf64_poly_invmod_fft.c
 TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
+TEST_GF64_FFT_POLY_MUL_SOURCES := test_gf64_fft_poly_mul.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -105,5 +106,13 @@ test_gf64_poly_invmod_fft: $(TEST_GF64_POLY_INVMOD_FFT_SOURCES) ../gf64_mpe.c ..
 test_gf64_poly_mul_karatsuba: $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
+# Phase 2b probe: does the existing additive FFT satisfy the convolution
+# theorem (pointwise-multiply in evaluation basis = polynomial convolution)?
+# If yes, poly_mul via FFT is a drop-in. Currently expected to FAIL — the
+# existing additive FFT is monomial-basis, not evaluation-basis. The probe
+# documents the precise algebraic gap.
+test_gf64_fft_poly_mul: $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul
