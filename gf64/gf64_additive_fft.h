@@ -79,6 +79,12 @@ void gf64_poly_mul(
  * This entry point is API-additive — existing gf64_poly_mul callers are
  * unaffected.  The implementation is bit-exact to gf64_poly_mul for
  * (deg_a, deg_b, out_len) = (deg_a, deg_b, deg_a + deg_b + 1).
+ *
+ * Phase 2a: above GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN the implementation
+ * dispatches into Karatsuba (O(n^1.585), see gf64_poly_mul_karatsuba.h) for
+ * a real algorithmic speedup on the polynomial-heavy T6/T7/T8 primitives.
+ * Below the threshold the original O(n^2) schoolbook runs. Both are
+ * bit-exact at every input size.
  */
 void gf64_poly_mul_padded(
 	gf64_t *out,

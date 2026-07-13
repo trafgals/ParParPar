@@ -22,10 +22,11 @@ TEST_GF64_SUBPRODUCT_TREE_SOURCES := test_gf64_subproduct_tree.c
 TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
 TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
 TEST_GF64_POLY_INVMOD_FFT_SOURCES := test_gf64_poly_invmod_fft.c
+TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -71,26 +72,38 @@ test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subprodu
 # Barycentric weight extraction test (par3-cauchy-fft-kernel T7). Since
 # PR-3 the barycentric step 2 delegates to gf64_multi_point_eval (T8), so
 # gf64_mpe.c is now in the dependency set as well. The same chain of TUs
-# powers gf64_subproduct.c's call into gf64_poly_mul. Needs AVX-512F +
-# VPCLMULQDQ at runtime.
-test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# powers gf64_subproduct.c's call into gf64_poly_mul. Since PR-2a the
+# Karatsuba dispatch in gf64_poly_mul_internal must also be linked.
+# Needs AVX-512F + VPCLMULQDQ at runtime.
+test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Multi-point evaluation test (par3-cauchy-fft-kernel T8). gf64_mpe.c (T8)
 # depends on the subproduct tree (T6) for its evaluation entry point, the
 # Itoh-Tsujii batched inversion (T5) for the polynomial inverse seed, and
 # the additive FFT's gf64_poly_mul (T3) for the Newton-iteration squaring.
 # In turn, those primitives depend on gf64_mul_avx512.c (T1) and
-# gf64_square.c (T2). Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# gf64_square.c (T2). Since PR-2a gf64_poly_mul_karatsuba.c must be linked
+# too. Needs AVX-512F + VPCLMULQDQ at runtime.
+test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # PR-1 of the T8 follow-up: cross-check gf64_poly_mul (now FFT-based),
 # gf64_poly_mul_padded (new), and gf64_poly_invmod (now FFT-delegating)
 # across a wider grid than test_gf64_mpe.c exercises. Built against the same
-# TUs as test_gf64_mpe.
-test_gf64_poly_invmod_fft: $(TEST_GF64_POLY_INVMOD_FFT_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_INVMOD_FFT_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# TUs as test_gf64_mpe. Since PR-2a, gf64_additive_fft.c references
+# gf64_poly_mul_karatsuba (the Karatsuba dispatch in
+# gf64_poly_mul_internal), so the Karatsuba TU must be linked here too.
+test_gf64_poly_invmod_fft: $(TEST_GF64_POLY_INVMOD_FFT_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_INVMOD_FFT_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
+# Phase 2a of the "beat PAR2" plan: cross-check the Karatsuba
+# polynomial-multiplication primitive (gf64_poly_mul_karatsuba.c) against
+# the schoolbook reference, including the dispatch path through
+# gf64_poly_mul_internal in gf64_additive_fft.c. Built against the same
+# TUs as test_gf64_poly_invmod_fft.
+test_gf64_poly_mul_karatsuba: $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba

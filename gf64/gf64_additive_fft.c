@@ -204,6 +204,25 @@ void gf64_fft_inverse(gf64_t *poly, size_t n) {
 }
 
 /*
+ * Forward declaration for the Karatsuba drop-in (see
+ * gf64_poly_mul_karatsuba.c). Defined in its own TU to keep this file's
+ * focus on the additive FFT primitive. Phase 2a of the "beat PAR2" plan.
+ */
+extern void gf64_poly_mul_karatsuba(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len
+);
+
+/* Karatsuba crossover. Below this size, schoolbook wins on constant overhead.
+ * Above it (and the operands being at-or-above this size after truncation),
+ * Karatsuba wins asymptotically at O(n^1.585) vs O(n^2). The threshold is
+ * also the schoolbook base case inside gf64_poly_mul_karatsuba's recursion,
+ * so the two stay in sync. */
+#define GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN ((size_t)128)
+
+/*
  * Shared convolution kernel for gf64_poly_mul and gf64_poly_mul_padded.
  *
  * Computes out[0 .. out_len) as the low-order coefficients of the convolution
@@ -212,26 +231,24 @@ void gf64_fft_inverse(gf64_t *poly, size_t n) {
  * index >= out_len are discarded; trailing slots [0, out_len) are zeroed
  * before writing.
  *
- * Implementation: schoolbook triple loop over GF(2^64).  The Gao-Mateer
- * additive FFT in this TU does NOT implement the convolution theorem for
- * arbitrary GF(2^64) inputs — the recursive structure is a transform of the
- * monomial basis into a "twiddle"-laden evaluation-like representation
- * where pointwise multiplication is not equivalent to polynomial
- * convolution.  A correct FFT-based multiplication would need either:
+ * Implementation: dispatches to either the schoolbook triple loop (below
+ * GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN) or to gf64_poly_mul_karatsuba
+ * (above). The Gao-Mateer additive FFT in this TU does NOT implement the
+ * convolution theorem for arbitrary GF(2^64) inputs — the recursive
+ * structure is a transform of the monomial basis into a "twiddle"-laden
+ * evaluation-like representation where pointwise multiplication is not
+ * equivalent to polynomial convolution.  A correct FFT-based multiplication
+ * would need either:
  *
  *   (a) the full Gao-Mateer "tower of extensions" pipeline (works in
  *       characteristic 2 but needs to use the *evaluation* basis at the
  *       top level, not just the monomial-basis transform), or
  *   (b) an NTT over a prime subfield of GF(2^64) with roots of unity.
  *
- * Both are research-level primitives; for now the multiplication routines
- * here use O(len_a * len_b) schoolbook, which is what the T6 subproduct
- * tree was implicitly relying on (the legacy gf64_poly_mul discarded the
- * FFT result and recomputed schoolbook in place).
- *
- * Performance target: PR-2 will replace this with the Bostan-Schost MPE
- * that consumes the FFT-based *evaluation* at the subproduct-tree leaves;
- * the schoolbook here is the correctness baseline.
+ * Both are research-level primitives. Karatsuba (Phase 2a) is the
+ * pragmatic, immediately useful intermediate that gets the
+ * polynomial-heavy T6/T7/T8 primitives to O(n^1.585) without the
+ * research-grade FFT work.
  */
 static void gf64_poly_mul_internal(
 	gf64_t *out,
@@ -242,6 +259,21 @@ static void gf64_poly_mul_internal(
 	assert(out != NULL);
 	assert(a != NULL);
 	assert(b != NULL);
+
+	if (out_len == 0) {
+		return;
+	}
+
+	/* Karatsuba above the threshold. We require ALL of (len_a, len_b,
+	 * out_len) to be at-or-above the crossover so we don't pay Karatsuba's
+	 * malloc/scratch overhead when the operands are small (the schoolbook
+	 * base case would fire immediately anyway, but with extra setup cost). */
+	if (len_a >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
+	    len_b >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
+	    out_len >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN) {
+		gf64_poly_mul_karatsuba(out, a, len_a, b, len_b, out_len);
+		return;
+	}
 
 	memset(out, 0, out_len * sizeof(gf64_t));
 
