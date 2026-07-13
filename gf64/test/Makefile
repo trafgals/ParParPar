@@ -107,13 +107,13 @@ test_gf64_poly_invmod_fft: $(TEST_GF64_POLY_INVMOD_FFT_SOURCES) ../gf64_mpe.c ..
 test_gf64_poly_mul_karatsuba: $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
-# Phase 2b probe: does the existing additive FFT satisfy the convolution
+# Phase 2b probe: does the LCH14 additive FFT satisfy the convolution
 # theorem (pointwise-multiply in evaluation basis = polynomial convolution)?
-# If yes, poly_mul via FFT is a drop-in. Currently expected to FAIL — the
-# existing additive FFT is monomial-basis, not evaluation-basis. The probe
-# documents the precise algebraic gap.
-test_gf64_fft_poly_mul: $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# If yes, poly_mul via FFT is a drop-in. The new LCH14 transform in
+# gf64_additive_fft_lch14.c implements the Lin-Chung-Han (2014) novel
+# polynomial basis with the correct butterfly coefficients.
+test_gf64_fft_poly_mul: $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_lch14.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FFT_POLY_MUL_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_lch14.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Phase 2a+ parity test: Toom-Cook 3 (Toom 2.3) poly_mul against schoolbook.
 # Char-2 safe evaluation points {0, 1, 2, 3, inf} since -1 = 1 in char 2.

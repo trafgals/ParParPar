@@ -33,6 +33,26 @@ void gf64_fft_forward(gf64_t *poly, size_t n);
 void gf64_fft_inverse(gf64_t *poly, size_t n);
 
 /*
+ * LCH14 (Lin-Chung-Han 2014) additive FFT that satisfies the convolution
+ * theorem for arbitrary GF(2^64) inputs. The forward/inverse pair
+ *
+ *   gf64_fft_forward_lch14(arr, n)
+ *   gf64_fft_inverse_lch14(arr, n)
+ *
+ * is its own inverse (no 1/n factor; the X_i novel basis absorbs the
+ * normalization per LCH14 §III-C). For polynomials a, b in GF(2^64)[x]
+ * with deg(a), deg(b) < n and deg(a) + deg(b) < n,
+ *
+ *   inv_lch14(forward_lch14(a) * forward_lch14(b)) = a * b   (pointwise)
+ *
+ * See gf64_additive_fft_lch14.c for the algorithm and
+ * gf64_cantor_basis.h for the precomputed v_i constants. Verified by
+ * test_gf64_fft_poly_mul using these new entry points.
+ */
+void gf64_fft_forward_lch14(gf64_t *arr, size_t n);
+void gf64_fft_inverse_lch14(gf64_t *arr, size_t n);
+
+/*
  * AVX-512 vectorized forward / inverse Gao-Mateer-style additive FFT.
  *
  *   void gf64_fft_forward_avx512(gf64_t *poly, size_t n)
