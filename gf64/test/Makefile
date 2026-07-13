@@ -132,4 +132,4 @@ test_gf64_poly_mul_vandermonde: $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf6
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba bench_poly_mul_vandermonde_vs_karatsuba
