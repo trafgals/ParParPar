@@ -1,0 +1,5 @@
+# Bench binaries (built on demand, not part of the source).
+bench_poly_mul_minimal
+bench_msvc.exe
+bench_gf64_poly_mul_karatsuba
+bench_minimal_gcc
