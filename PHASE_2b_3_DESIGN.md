@@ -271,3 +271,36 @@ options:
 
 Either path is multi-week focused work but is the only algorithmic
 route from ~270 MB/s to PAR2's ~622 MB/s on the canonical workload.
+
+### Status update — 2026-07-13 (Vandermonde-FFT milestone, commit ddfdbfd)
+
+A VANDERMONDE-MATRIX additive FFT was shipped as a correctness-grounded
+drop-in (gf64_additive_fft_vandermonde.c + gf64_poly_mul_vandermonde
+in gf64_additive_fft.h). The forward transform is the evaluation
+matrix F[i][j] = v_i^j where v_i are the W_m elements; the inverse is
+the matrix inverse via Gaussian elimination. Both F and F^{-1} are
+cached per n.
+
+* Conv-theorem probe (n=2..256): **8/8 PASS** (was 1/8 with LCH14).
+* Vandermonde poly_mul parity: 11/11 random degrees (up to 511).
+* T6/T7/T8 tests still pass after linking the new TU.
+
+The Vandermonde FFT is O(N²) per forward/inverse (matrix-vector multiply
+against the cached matrix). This satisfies correctness but NOT the
+asymptotic O(N log N) requirement for the Fenger Toeplitz pipeline:
+
+* The Fenger pipeline computes out[r] = F(y_r) / V(y_r) where F is the
+  Lagrange interpolant of in[c] * w_c at points x_c.
+* T8 (existing) handles the EVALUATE step (F at y_r).
+* INTERPOLATE is missing: it requires Bostan-Schost top-down
+  reconstruction (or Vandermonde * h, which is O(N²) per slice =
+  Cauchy-equivalent).
+* With only the Vandermonde FFT, Fenger stays at the same asymptotic
+  cost as Cauchy.
+
+Closing the 13.5× gap (per BENCH_RESULTS_PHASE2_2026-07-13) to PAR2's
+622 MB/s requires either:
+  * an O(N log N) additive FFT (the current Vandermonde is too slow),
+  * OR an O(N²) O(N log² N) Bostan-Schost interpolator using
+    schoolbook-style divide-and-conquer, OR
+  * dropping the FFT path and shipping a constant-factor fix instead.
