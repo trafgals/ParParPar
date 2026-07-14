@@ -1,5 +1,19 @@
 # Phase 2b and Phase 3 — design notes for closing the PAR2 gap
 
+> **Status (2026-07-15): the design recommendations in this document are
+> now partly stale.** The Phase 2b work to build a real FFT over GF(2^64)
+> has a known fix in the sibling research repo
+> [`trafgals/gf64-fft-research`](https://github.com/trafgals/gf64-fft-research)
+> — see that repo's `README.md` and `RESEARCH_SYNTHESIS.md`. The
+> algorithm is the LCH14 / HQC 2026 TCHES §2.3 Algorithm 2 family
+> (functionally identical across LCH14, Chen 2018, hamil 2016, and the
+> HQC reference). **Path A effort estimate is now 2–5 days, not 2–4
+> weeks.** See `PHASE_2B_RESEARCH_2026-07-15.md §Resolution` at the end
+> of that document for the bug-by-bug analysis (the three "approaches"
+> below all had independent probing bugs, none structural). **Do not
+> re-attempt Phase 2b from this design doc without reading the
+> resolution first.**
+
 > Context. PAR2 achieves ~622 MB/s on the canonical 1 GiB / 10 000-slice
 > / 1 000-recovery kernel; PAR3-create currently sits at ~270 MB/s (the
 > legacy 2D-muladd Cauchy recovery, post-Phase 1A cache integration and
@@ -68,12 +82,28 @@ The existing `gf64_fft_forward` / `gf64_fft_inverse` are the right
 wise operations and the butterfly's multiplication constant, keeping
 the scalar/AVX-512 code structure intact.
 
-Estimated effort: a careful implementation plus verification against
-the existing probe (extended to multiple polynomial degrees and random
-seeds) is realistic in **2–4 weeks** of focused work for someone
-already familiar with the algebra; longer from cold. The reward is
-O(n log n) polynomial multiplication, which cascades through the
-T6/T7/T8 pipeline as a drop-in.
+Estimated effort (HISTORICAL — pre-resolution estimate): a careful
+implementation plus verification against the existing probe (extended
+to multiple polynomial degrees and random seeds) is realistic in
+**2–4 weeks** of focused work for someone already familiar with the
+algebra; longer from cold.
+
+**2026-07-15 update — Path A collapses to "implement HQC Algorithm 2
+verbatim".** The canonical algorithm is published in
+[HQC 2026 (TCHES) §2.3 Algorithm 2](https://tches.iacr.org/index.php/TCHES/article/download/12898/12525/16697)
+(Chen/Chiu/Peng/Yang, "Accelerating HQC with Additive FFT"); the
+sibling repo [`trafgals/gf64-fft-research`](https://github.com/trafgals/gf64-fft-research)
+(`C:\code\trafgals\gf64-fft-research\`) has three independent
+cross-checked implementations at 100% pass rate over GF(2^4) and a
+port path to GF(2^64) over `gf64_mul_avx512.c`. **Estimated port
+effort: 2–5 days** for a C engineer with PCLMULQDQ. The reward is O(n
+log n) polynomial multiplication, which cascades through the T6/T7/T8
+pipeline as a drop-in. See `PHASE_2B_RESEARCH_2026-07-15.md §Resolution`
+for the bug analysis (this design doc's Path A described the WRONG
+multiplier formula — `s_i(v_j) / s_i(v_i)` — which collapses to the
+constant 1 by Cantor recurrence; the correct formula is
+`s_{i-1}(a)` where `a` is an affine shift chosen outside
+`V_{i-1}`).
 
 #### Path B — subfield NTT via CRT
 
@@ -166,16 +196,17 @@ Phase 3 cannot begin in earnest until Phase 2b delivers a working FFT.
 
 ## Summary
 
-* **Phase 2b** is the gating work item. Two viable algorithmic paths
-  (Gao-Mateer evaluation-basis transform; subfield NTT via CRT). Both
-  are multi-week research-grade implementations. The probe at
-  `test_gf64_fft_poly_mul.c` documents the precise gap.
+* **Phase 2b** is the gating work item, but the algorithm is no longer
+  research-grade. Canonical algorithm is HQC 2026 TCHES §2.3 Algorithm
+  2 — implementable in 2–5 days. See sibling repo for verified
+  implementations.
 * **Phase 2a** (Karatsuba) and **Phase 2c** (Barycentric front-end)
   are completed and shipped; they don't close the parity-vs-PAR2 gap
   on the bench but they keep the polynomial primitives and the engine
   architecture ready for the FFT swap-in.
-* **Phase 3** (Fenger Toeplitz) becomes a 1-2 week implementation
-  once Phase 2b is in place.
+* **Phase 3** (Fenger Toeplitz) becomes a 3-5 day implementation once
+  Phase 2b lands; the Fenger pipeline needs T8a (eval) + T8b (interp)
+  + a real FFT (HQC Alg 2) — all three must be in tree.
 
 ---
 
@@ -258,19 +289,39 @@ on the canonical 1 GiB / 10 000-slice workload (vs PAR2's 622 MB/s).
 
 ### Recommended next step
 
-Re-attempt Phase 2b with a known-good reference implementation. Two
-options:
+**Updated 2026-07-15.** The "re-attempt Phase 2b with a known-good
+reference implementation" recommendation above has been carried out in
+the sibling research repo. Do **not** re-derive; instead, follow these
+steps:
 
-1. **Worked-example verification.** Take a small-field instance
-   (e.g. GF(2^4)) where the LCH14 transform can be checked by hand,
-   verify the multiplier formula and indexing, port the corrected
-   algorithm to GF(2^64), and re-run the convolution probe.
-2. **Use the Cantor-basis NTT (Path B).** Lift the modulus
-   x^{2^64} + x over GF(2)[x] and run an NTT via CRT in a subfield
-   like GF(2^8). The smaller field gives a manageable debug target.
+1. **Cross-reference** the sibling repo [`trafgals/gf64-fft-research`](https://github.com/trafgals/gf64-fft-research)
+   (in particular `README.md`, `RESEARCH_SYNTHESIS.md`, and the three
+   probes in `probes/`).
+2. **Port HQC 2026 §2.3 Algorithm 2** to GF(2^64) in C. The correct
+   multiplier is `s_{i-1}(a)` where `a` is the affine shift parameter
+   passed into the recursive butterfly (NOT `s_i(v_j)` — see the bug
+   analysis in `PHASE_2B_RESEARCH_2026-07-15.md §Resolution`).
+3. **Use existing primitives:** `gf64_mul_avx512.c` (8-lane
+   PCLMULQDQ) for field multiplication, `gf64_square.c` for Frobenius,
+   `gf64_cantor_basis.h` (and the new generators
+   `gf64/test/gen_cantor_basis.c` / `gen_cantor_basis2.c`) for the
+   basis table.
+4. **Verify with the convolution-theorem probe** at n ∈ {2, 4, 8, 16,
+   …, 4096}. Mirrors the sibling repo's probes but over GF(2^64).
+5. **Bench the canonical workload** (1 GiB / 10K-slice / 1K-recovery
+   on Zen4 + AVX-512 with `PAR3_GF64_USE_AVX512=1`); gate is
+   ≥ 100 MB/s (issue #27). Expected ~622 MB/s (matches PAR2).
 
-Either path is multi-week focused work but is the only algorithmic
-route from ~270 MB/s to PAR2's ~622 MB/s on the canonical workload.
+Path B (subfield NTT via CRT) is **unchanged from the original
+recommendation** — still multi-week focused work, still the only
+algorithmic alternative if Path A's port encounters unforeseen GF(2^64)
+subtleties (Chen 2018 §4.3 PCLMULQDQ reduction, in particular). Both
+paths stay algorithmic routes from ~270 MB/s to PAR2's ~622 MB/s.
+
+**Do not** fall back to either Path B or the original Gao-Mateer
+re-derivation without exhausting the HQC Algorithm 2 port first; the
+sibling repo's three independent retypings at 100% pass rate give
+strong prior evidence the algorithm is correct as written.
 
 ### Status update — 2026-07-13 (Vandermonde-FFT milestone, commit ddfdbfd)
 
