@@ -72,6 +72,11 @@ set(GF64_C_SOURCES
 	${GF64_DIR}/gf64_invert_ssse3.c
 	${GF64_DIR}/gf64_invert_avx2.c
 	${GF64_DIR}/gf64_invert_avx512.c
+	# cpu_detect.c provides gf64_detect_method_internal (the SIGILL-probe-first
+	# detection in issue #17's fix) that gf64_dispatch.c now references. Without
+	# this, the bench build (and any other consumer of gf64_dispatch.c) fails
+	# to link with `undefined reference to gf64_detect_method_internal`.
+	${GF64_DIR}/cpu_detect.c
 )
 
 # Don't add ${SRC_DIR} to the include path here — it would let `#include <stdint.h>`
