@@ -3,3 +3,33 @@ bench_poly_mul_minimal
 bench_msvc.exe
 bench_gf64_poly_mul_karatsuba
 bench_minimal_gcc
+bench_poly_mul_toom3_vs_karatsuba
+bench_poly_mul_vandermonde_vs_karatsuba
+
+# Per-test regression test binaries (built from sources via the Makefile's
+# per-test rules at lines 36-153; rebuild with `make <name>`).
+test_gf64_mul_avx512
+test_gf64_square
+test_gf64_invert_ita
+test_gf64_additive_fft
+test_gf64_subproduct_tree
+test_gf64_barycentric
+test_gf64_mpe
+test_gf64_mpe_interp
+test_gf64_invmod_mod
+test_gf64_poly_invmod_fft
+test_gf64_poly_mul_karatsuba
+test_gf64_fft_poly_mul
+test_gf64_poly_mul_toom3
+test_gf64_poly_mul_vandermonde
+test_lch14_gf16
+test_lch14_roundtrip
+test_lch14_variants
+test_tower_fft_gf16
+test_gf64_gao_mateer
+test_avx2
+
+# One-shot helper generators (Cantor basis lookup, etc.).
+gen_cantor_basis
+gen_cantor_basis2
+gen_toom3_constants
