@@ -76,4 +76,6 @@ These are in `C:\Users\dimit\.claude\projects\C--Users-dimit\memory\` and constr
 - `parparpar-repo.md` — fork of `animetosho/ParPar`; `gf64/` native + `lib/` Node + `src/` NAPI; issue #23 working branch.
 - `wsl-from-windows-host.md` — WSL Ubuntu 2 is installed; gcc/make live there; AVX-512 benchmarks run both inside and outside WSL.
 - `gf64-poly-mul-padded-inplace-footgun.md` — `gf64_poly_mul_padded` memsets `out` before reading inputs; `out == a` breaks the result.
-- `gf64-additive-fft-research.md` — additive FFT primitive **was an open research problem** in this fork. **Resolution (2026-07-15):** sibling repo `trafgals/gf64-fft-research` proves the algorithm is settled — HQC 2026 TCHES §2.3 Algorithm 2 (LCH14 addFFT). The memory file is stale; cross-reference the sibling repo before any FFT work.
+- `gf64-additive-fft-research.md` — additive FFT primitive is **resolved** (HQC 2026 §2.3 Algorithm 2). See also the sibling research repo pointer below.
+- `lch14-degenerate-in-gf2-4.md` — the "degenerate in GF(2^4)" finding was a *probe bug* (basis-element input to `s_i`), not a structural obstruction. Correct multiplier is `s_{i-1}(a)` with `a ∉ V_{i-1}`.
+- `trafgals-gf64-fft-research-repo.md` — pointer to the sibling research repo with the three verified GF(2^4) probes + `RESEARCH_SYNTHESIS.md`. Cross-reference this before any FFT work in the fork.
