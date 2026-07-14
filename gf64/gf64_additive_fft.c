@@ -214,6 +214,10 @@ extern void gf64_poly_mul_karatsuba(
 	const gf64_t *b, size_t len_b,
 	size_t out_len
 );
+extern void gf64_poly_mul_toom3(
+	gf64_t *out, const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b, size_t out_len
+);
 
 /* Karatsuba crossover. Below this size, schoolbook wins on constant overhead.
  * Above it (and the operands being at-or-above this size after truncation),
@@ -221,6 +225,15 @@ extern void gf64_poly_mul_karatsuba(
  * also the schoolbook base case inside gf64_poly_mul_karatsuba's recursion,
  * so the two stay in sync. */
 #define GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN ((size_t)128)
+
+/* Toom-Cook 3 (2.3): O(n^1.465), beats Karatsuba's O(n^1.585) above
+ * a measured crossover. DISABLED by default — the existing
+ * gf64_poly_mul_toom3 implementation does per-recursion mallocs for
+ * 6 limb buffers × 5 recursive sub-products, which costs more than
+ * Karatsuba at all sizes measured (n=64..4096; bench log in commit).
+ * Set to a non-SIZE_MAX value to enable once a thread_local scratch
+ * pool is added (or once the malloc overhead is otherwise amortized). */
+#define GF64_POLY_MUL_INTERNAL_TOOM3_MIN ((size_t)SIZE_MAX)
 
 /*
  * Shared convolution kernel for gf64_poly_mul and gf64_poly_mul_padded.
@@ -268,6 +281,12 @@ static void gf64_poly_mul_internal(
 	 * out_len) to be at-or-above the crossover so we don't pay Karatsuba's
 	 * malloc/scratch overhead when the operands are small (the schoolbook
 	 * base case would fire immediately anyway, but with extra setup cost). */
+	if (len_a >= GF64_POLY_MUL_INTERNAL_TOOM3_MIN &&
+	    len_b >= GF64_POLY_MUL_INTERNAL_TOOM3_MIN &&
+	    out_len >= GF64_POLY_MUL_INTERNAL_TOOM3_MIN) {
+		gf64_poly_mul_toom3(out, a, len_a, b, len_b, out_len);
+		return;
+	}
 	if (len_a >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
 	    len_b >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
 	    out_len >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN) {
