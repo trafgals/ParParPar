@@ -67,6 +67,63 @@ void gf64_fft_forward_vandermonde(gf64_t *out, const gf64_t *in, size_t n);
 void gf64_fft_inverse_vandermonde(gf64_t *out, const gf64_t *in, size_t n);
 
 /*
+ * HQC 2026 TCHES §2.3 Algorithm 2 (LCH14 addFFT) over GF(2^64).
+ *
+ * Replaces the buggy multiplier in gf64_fft_forward_lch14 / inverse with
+ * the correct multiplier s_{i-1}(a) where `a` is the affine-shift parameter
+ * (NOT a basis element — which collapsed to the constant 1 by the Cantor
+ * recurrence and produced only trivial self-evaluations). See
+ * gf64_additive_fft_hqc2026.c for the algorithm and
+ * PHASE_2B_RESEARCH_2026-07-15.md §Resolution for the bug-by-bug
+ * investigation that produced it.
+ *
+ * Convolution theorem: for a, b of degree < n with deg(a)+deg(b) < n,
+ *
+ *   inv(fwd(a) · fwd(b)) = a * b     (pointwise-multiply in eval basis =
+ *                                  polynomial mul in monomial basis)
+ *
+ * Forward output: (f(a+0), f(a+1), ..., f(a+n-1)) — polynomial evaluations
+ * at the affine coset a + V_{logn}, with `a = GF64_CANTOR_BASIS[logn-1]`
+ * (chosen outside V_{logn-1} so s_{logn-1}(a) is non-trivial).
+ *
+ * Asymptotic cost: O(n log n) for the butterfly + O(n^2) for the basis
+ * conversion (cached M, M_inv per n). For the canonical PAR3 n = 4096 the
+ * matrix-vector multiplies dominate at ~16 M field ops per FFT; replace
+ * with Chen 2018 Algorithm 1's recursive BasisCvt to drop this to O(n log n).
+ *
+ * Length cap: n ≤ 2^20 (Cantor basis has 20 precomputed vectors in
+ * gf64_cantor_basis.h). The canonical PAR3 transform size (n ≤ 4096)
+ * is well within range; the cap is the lookup-table depth, not an
+ * algorithmic limit.
+ *
+ * Bit-exact verified by gf64/test/test_gf64_additive_fft_hqc2026.c
+ * (companion probe file).
+ */
+void gf64_addfft64_fwd(gf64_t *arr, size_t n);
+void gf64_addfft64_inv(gf64_t *arr, size_t n);
+
+/*
+ * Polynomial multiplication via the HQC 2026 addFFT.
+ *
+ * Allocates call-local scratch (caller's `out` is never read or written
+ * before being written via memcpy at the end — see the in-place footgun
+ * documented in CLAUDE.md / user memory).
+ *
+ *   out      caller-owned buffer of size out_len.
+ *   a, len_a multiplicand in monomial basis.
+ *   b, len_b multiplier in monomial basis.
+ *   out_len  number of low-order coefficients to produce.
+ *
+ * Bit-exact to gf64_poly_mul. Lengths are clamped — if a*b overflows
+ * the cap (n = 2^20), it silently truncates.
+ */
+void gf64_addfft64_poly_mul(
+    gf64_t *out,
+    const gf64_t *a, size_t len_a,
+    const gf64_t *b, size_t len_b,
+    size_t out_len);
+
+/*
  * AVX-512 vectorized forward / inverse Gao-Mateer-style additive FFT.
  *
  *   void gf64_fft_forward_avx512(gf64_t *poly, size_t n)

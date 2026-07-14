@@ -28,10 +28,11 @@ TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 TEST_GF64_FFT_POLY_MUL_SOURCES := test_gf64_fft_poly_mul.c
 TEST_GF64_POLY_MUL_TOOM3_SOURCES := test_gf64_poly_mul_toom3.c
 TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES := test_gf64_poly_mul_vandermonde.c
+TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES := test_gf64_additive_fft_hqc2026.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -146,6 +147,17 @@ test_gf64_poly_mul_toom3: $(TEST_GF64_POLY_MUL_TOOM3_SOURCES) ../gf64_poly_mul_t
 test_gf64_poly_mul_vandermonde: $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
+# HQC 2026 TCHES §2.3 Algorithm 2 (LCH14 addFFT) over GF(2^64). Replaces
+# the buggy multiplier in gf64_additive_fft_lch14.c with the correct
+# affine-shift multiplier from the HQC paper. Convolution-theorem probe at
+# n ∈ {2, 4, 8, 16, 32, 64}: forward-output, round-trip, and convolution.
+# Uses gf64_mul_reference (scalar SSE2 PCLMULQDQ) + gf64_inverse (T5). The
+# AVX-512 entrypoint can be wired in later by replacing the field-mul call
+# site with gf64_mul_avx512 once the working n exceeds the SIMD setup
+# overhead.
+test_gf64_additive_fft_hqc2026: $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c ../gf64_invert.c ../gf64_invert_avx512.c ../gf64_dispatch.c ../cpu_detect.c ../gf64_region_scalar.c ../gf64_region_ssse3.c ../gf64_region_ssse3_arr.c ../gf64_region_avx2.c ../gf64_region_avx2_arr.c ../gf64_region_avx512.c ../gf64_region_avx512_arr.c ../gf64_invert_ita.c ../gf64_invert_ssse3.c ../gf64_invert_avx2.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c ../gf64_invert.c ../gf64_invert_avx512.c ../gf64_dispatch.c ../cpu_detect.c ../gf64_region_scalar.c ../gf64_region_ssse3.c ../gf64_region_ssse3_arr.c ../gf64_region_avx2.c ../gf64_region_avx2_arr.c ../gf64_region_avx512.c ../gf64_region_avx512_arr.c ../gf64_invert_ita.c ../gf64_invert_ssse3.c ../gf64_invert_avx2.c
+
 # Standalone polynomial modular-inverse test (Phase A3 of issue #27).
 # Verifies that gf64_poly_invmod_mod computes inv such that g * inv ≡ 1
 # (mod f) at degrees (1,1), (3,3), (5,5), (1,2), (2,1).
@@ -153,4 +165,4 @@ test_gf64_invmod_mod: $(TEST_GF64_INVMOD_MOD_SOURCES) ../gf64_mpe.c ../gf64_subp
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVMOD_MOD_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba bench_poly_mul_vandermonde_vs_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba bench_poly_mul_vandermonde_vs_karatsuba
