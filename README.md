@@ -143,6 +143,25 @@ refactored to 2D-tile loop.
   2× frequency drop on small workloads
 - **PD3**: `BLOCK_SIZE` autotune (env-gated)
 
+**PE1 — CoeffCache auto-bypass (`PAR3_GF64_NO_COEFF_CACHE`)**: at canonical
+1 GiB / 10K-slice workloads the LRU cache for the (R × N) coefficient matrix
+holds up to 8 × ~80 MiB = ~640 MiB of pinned DRAM, competing with the muladd
+working set for memory bandwidth. The cache provides zero benefit for the
+single-archive-creation use case (one entry per `(N, R, fi, fr)` tuple,
+touched once). Default behavior: bypass the cache and allocate the matrix
+in a call-local buffer when the matrix footprint is ≥ 32 MiB; otherwise keep
+the LRU cache warm for repeated small calls. Env override:
+`PAR3_GF64_NO_COEFF_CACHE=0` forces the cache on; `=1` forces bypass. See
+issue #27 §auxiliary constant-factor paths.
+
+**PE2 — Small-R single-output kernel shortcut**: when `numRecovery ≤ 32`,
+`WorkerThread` switches from the fused K=12 2D muladd kernel to the simpler
+`gf64_region_muladd_arr` 1D loop (the same shape `ComputeRepairBlocks`
+uses). The 2D kernel's per-call setup (outs_ptr / in_blocks_ptr arrays, the
+K-tile outer loop, the Kk clamp) costs more than the work it saves when the
+output count is small. Threshold is hardcoded at 32 (matching issue #27
+§auxiliary guidance); no env gate.
+
 ### Proof of correctness
 
 The kernel-parity test

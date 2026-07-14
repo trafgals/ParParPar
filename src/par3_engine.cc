@@ -588,6 +588,23 @@ struct WorkerRange {
 // for the (unreachable) case where either exceeds the stack cap, fall back to
 // heap vectors.
 // ============================================================================
+// ============================================================================
+// Phase C2: small-R single-output kernel shortcut
+// ----------------------------------------------------------------------------
+// When numRecovery is small (≤ kSmallRThreshold), the fused K=12 2D muladd
+// kernel's per-call setup (outs_ptr / in_blocks_ptr heap-or-stack
+// allocations, the k-tile outer loop, the Kk clamp) costs more than the
+// actual work it does. A direct per-block `gf64_region_muladd_arr` loop —
+// the same shape ComputeRepairBlocks uses — avoids the fused-output machinery
+// and wins the constant-factor cost back.
+//
+// The threshold matches the issue #27 §auxiliary "small numRecovery (<32)"
+// guidance. Below it we drop straight to the 1D kernel; at and above it we
+// keep the fused K-fused path because the AVX-512 register pressure win
+// starts to dominate.
+// ============================================================================
+static constexpr size_t kSmallRThreshold = 32;
+
 static void WorkerThread(const WorkerRange& range) {
 	EnsureDispatch();
 	const int K = GetKGroupSize();
@@ -597,6 +614,23 @@ static void WorkerThread(const WorkerRange& range) {
 	const size_t B = range.block_size64;
 	const size_t MAX_STACK_K = 256;  // matches kDefaultKGroupSize cap
 	const size_t MAX_STACK_G = 256;  // matches kDefaultGroupSize cap
+
+	// Phase C2: small-R shortcut. The ComputeRepairBlocks-style 1D muladd
+	// loop wins at R ≤ kSmallRThreshold because the 2D kernel's setup
+	// overhead exceeds the per-output work it would otherwise save.
+	if (num_out <= kSmallRThreshold) {
+		for (size_t k = 0; k < num_out; k++) {
+			gf64_t* out_k = range.out_start + k * B;
+			memset(out_k, 0, B * sizeof(gf64_t));
+
+			const gf64_t* row = range.coeff_row_start + k * num_in;
+			for (size_t j = 0; j < num_in; j++) {
+				gf64_region_muladd_arr(out_k, range.in + j * B,
+				                       &row[j], B, 1);
+			}
+		}
+		return;
+	}
 
 	// Storage for the K × G inner-loop pointer arrays. Lives in
 	// WorkerThread's stack frame so its addresses remain valid across each
@@ -866,6 +900,53 @@ int GF64Controller::SolveAndReconstruct(
 }
 
 // ============================================================================
+// Phase C1: CoeffCache bypass (PAR3_GF64_NO_COEFF_CACHE)
+// ----------------------------------------------------------------------------
+// The legacy 80 MiB coefficient-matrix cache (8 LRU slots → up to 640 MiB of
+// pinned DRAM at canonical 1G/10K workloads) is pure overhead for the
+// single-archive-creation use case: the cache only ever has one entry per
+// (N, R, fi, fr) tuple, and creation calls into ComputeRecoveryBlocks exactly
+// once per archive with those parameters. Pinning that 640 MiB in DRAM
+// competes with the muladd working set for the L3 / memory-bandwidth budget
+// and is the dominant DRAM-pressure contributor for canonical workloads
+// (issue #27 §auxiliary constant-factor paths).
+//
+// When bypass is in effect, ComputeRecoveryBlocks builds a temporary matrix
+// in a call-local allocation, dispatches the muladd, then frees the matrix
+// before returning. The cache is left untouched so any subsequent callers
+// still benefit from the warmed entry. Trade:
+//   ~0.25 s inverse recompute cost (sub-second for 1G/10K) for
+//   ~640 MiB DRAM pressure relief (LRU bypass).
+//
+// Expected throughput delta: +1.5-2× on canonical 1G/10K per issue #27.
+//
+// Env override (highest priority):
+//   PAR3_GF64_NO_COEFF_CACHE=1 → force bypass
+//   PAR3_GF64_NO_COEFF_CACHE=0 → force cache
+//   unset                      → auto: bypass when matrix ≥ kAutoBypassMinBytes
+//                                (canonical 1G/10K is well above this; small
+//                                 matrices still use the cache as a warm-start
+//                                 benefit for repeated calls)
+// ============================================================================
+static constexpr size_t kAutoBypassMinBytes = 32 * 1024 * 1024; // 32 MiB
+
+static bool ShouldBypassCoeffCache(size_t numInputs, size_t numRecovery) {
+	static int env_override = -1; // -1 = unset, 0 = force cache, 1 = force bypass
+	if (env_override < 0) {
+		const char* env = std::getenv("PAR3_GF64_NO_COEFF_CACHE");
+		if (env != nullptr && *env != '\0') {
+			env_override = (std::atoi(env) == 1) ? 1 : 0;
+		}
+	}
+	if (env_override == 1) return true;
+	if (env_override == 0) return false;
+	// Auto: bypass when the matrix footprint is large enough that pinning
+	// it in DRAM dominates the muladd working set.
+	const size_t bytes = numRecovery * numInputs * sizeof(gf64_t);
+	return bytes >= kAutoBypassMinBytes;
+}
+
+// ============================================================================
 // GF64Controller::ComputeRecoveryBlocks
 // ----------------------------------------------------------------------------
 // High-level entry point:
@@ -875,6 +956,9 @@ int GF64Controller::SolveAndReconstruct(
 //
 // Embarrassingly parallel — recovery blocks are independent because each
 // output region is written by exactly one thread (no atomics needed).
+//
+// Phase C1: when PAR3_GF64_NO_COEFF_CACHE=1, step 1 allocates a call-local
+// matrix and frees it before returning. See the env-gate comment above.
 // ============================================================================
 void GF64Controller::ComputeRecoveryBlocks(
 	const gf64_t* inputs, size_t numInputs,
@@ -904,7 +988,26 @@ void GF64Controller::ComputeRecoveryBlocks(
 		if (numThreads <= 0) numThreads = 1;
 	}
 
-	// --- 1. Build coefficient matrix (via LRU cache) ---
+	// --- 1. Build coefficient matrix ---
+	if (ShouldBypassCoeffCache(numInputs, numRecovery)) {
+		// Phase C1: bypass the LRU. Allocate the matrix locally, hand it
+		// to the with-coeff entry, then free it before returning so the
+		// ~80 MiB DRAM footprint (canonical 1G/10K) is released back to
+		// the page pool. Triggered automatically when matrix ≥ 32 MiB;
+		// overridable via PAR3_GF64_NO_COEFF_CACHE={0,1}.
+		const size_t matrix_count = numRecovery * numInputs;
+		gf64_t* coeff = (gf64_t*)malloc(matrix_count * sizeof(gf64_t));
+		if (!coeff) return;
+
+		GF64Controller::BuildCauchyMatrix(coeff, numInputs, numRecovery, firstInput, firstRecovery);
+
+		ComputeRecoveryBlocksWithCoeff(inputs, numInputs, recovery, numRecovery,
+		                                blockSize64, coeff, numThreads);
+
+		free(coeff);
+		return;
+	}
+
 	gf64_t* coeff = GetOrBuildCoeffMatrix(numInputs, numRecovery, firstInput, firstRecovery);
 	if (!coeff) return;
 
