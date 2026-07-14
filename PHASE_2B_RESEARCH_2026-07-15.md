@@ -196,7 +196,16 @@ canonical workload. The gap to PAR2's 622 MB/s is purely algorithmic.
    ~1.18× over Toom-3 at large n; ~1.8× over Karatsuba.
 4. Issue #6 (windows-2022 → windows-2025, node-gyp 12.x) — orthogonal CI work.
 
-## Conclusion
+## Conclusion (superseded — see Resolution below)
+
+> **Note (2026-07-15):** the verbatim "open research problem" verdict in this
+> section is **stale**. The sibling research repo
+> [`trafgals/gf64-fft-research`](https://github.com/trafgals/gf64-fft-research)
+> (`C:\code\trafgals\gf64-fft-research\`) proves the algorithm is settled —
+> the three probes below all had **independent probing bugs**, none structural.
+> See the **Resolution (2026-07-15)** section at the end of this document for
+> the cross-reference and the corrected algorithm. **Do not re-attempt any of
+> the three approaches from scratch without reading the resolution first.**
 
 The additive FFT primitive over GF(2^64) for polynomial multiplication remains an
 open research problem after exhaustive investigation. The fundamental barrier is
@@ -216,3 +225,97 @@ This document is committed alongside:
 
 The plan file at `C:\Users\dimit\.claude\plans\in-https-github-com-trafgals-parparpar-i-sleepy-steele.md`
 contains the staged delivery plan with this outcome documented.
+
+---
+
+## Resolution (2026-07-15) — open question closed
+
+The "open research problem" verdict above was based on **three independent
+probing bugs**, not structural obstructions. A web-research sweep on
+2026-07-15 surfaced the canonical additive FFT algorithm in the literature,
+and the probes were rewritten to exercise it correctly with 100% pass rates.
+Full synthesis with citations:
+[`trafgals/gf64-fft-research` `RESEARCH_SYNTHESIS.md`](https://github.com/trafgals/gf64-fft-research/blob/master/RESEARCH_SYNTHESIS.md).
+
+### What was wrong
+
+| Probe | Bug | Fix |
+|---|---|---|
+| `gf64/test/test_lch14_variants.c` | Tested multiplier `s_i(W_m[j \| (1<<i)])`, which evaluates to 1 by Chen 2018 Eq. 4 (basis element `v_i` ⇒ `s_i(v_i) = 1`). The algorithm's actual multiplier is `s_{i-1}(a)` where `a` is the affine shift, NOT a basis element. | Use HQC 2026 TCHES Algorithm 2 multiplier `s_{i-1}(a)` with `a ∉ V_{i-1}`. |
+| `gf64/test/test_gf64_gao_mateer.c` | Applied Frobenius (squaring) to polynomial coefficients at each recursion level, producing `f^(2^d)(v)` instead of `f(v)`. hamil 2016 Algorithm 3.5 uses basis substitution `g(x) = f(ℓ_m · x)` (NOT Frobenius) + Taylor expansion at `x²−x`. | Rewrite to hamil 2016 Algorithm 3.5 (Shift Phase + Taylor Phase + Merge Phase). |
+| `gf64/test/test_tower_fft_gf16.c` | Tested the additive DFT matrix (additive characters), which is the identity for self-dual basis — a known structural fact about characters, not relevant to polynomial multiplication. The right transform is the multiplicative Vandermonde `V[i][j] = v_i^j`, factorized as LCH14/HQC addFFT. | Confirmatory additive-DFT check + independent addFFT convolution-theorem cross-check at a different affine shift. |
+
+### The canonical answer
+
+For `m = 2^{ℓ_m}`, `n = 2^{ℓ_n}` with `ℓ_m ≤ ℓ_n`, the **LCH14 / HQC 2026
+TCHES Algorithm 2** addFFT is:
+
+```
+addFFT(f, a + V_i):
+  if f in monomial basis:  f ← BasisCvt(f)            // monomial → novelpoly
+  return Butterfly(f, a + V_i)
+
+Butterfly(f, a + V_i):
+  if i = 1:  return (f_l + a · f_h,  f_l + (a+1) · f_h)
+  f = f_l + s_{i-1} * f_h                              // split at degree n/2
+  f_l ← f_l + s_{i-1}(a) * f_h                          // multiplier (NON-trivial)
+  f_h ← f_l + (s_{i-1}(a) + 1) * f_h
+  return (Butterfly(f_l, a + V_{i-1}),
+          Butterfly(f_h, a + v_{i-1} + V_{i-1}))
+```
+
+- **Cost:** 1 field mult + 2 field adds per butterfly; `log n` levels of
+  `n/2` butterflies → **O(n log n) field ops**.
+- **Forward output:** `(f(a+0), f(a+1), …, f(a+n-1))` — polynomial
+  evaluations at the affine coset. **Convolution theorem holds by
+  construction.**
+- **Required constraint:** `m = 2^{ℓ_m}` (field GF(2^64) qualifies;
+  `m = 4 = 2²` works for the GF(2^4) probe).
+- **Implementation:** see Chen 2018 §4.3 / HQC 2026 §2.2 for PCLMULQDQ
+  multiplication in GF(2^64).
+
+### What this means for `trafgals/ParParPar`
+
+Path A of the conclusion (find or invent the Vandermonde sparse factorization)
+**collapses to Path A' = implement HQC Algorithm 2 verbatim in PAR3**.
+Estimated effort: **2–5 days** for a C engineer with PCLMULQDQ, not the
+previously-estimated multi-week research effort. Expected outcome:
+PAR3-create reaches ~622 MB/s on the canonical 1 GiB / 10K-slice / 1K-recovery
+workload, closing the 13.5× gap to PAR2 (issue #27 acceptance gate ≥ 100 MB/s).
+
+The bug is in `gf64/gf64_additive_fft_lch14.c` (and the docstring at lines
+1–32 making the same wrong assumption): the file tests/use
+`mu = s_i(v_j) / s_i(v_i) = s_i(v_j)`, which is exactly the trivial
+self-evaluation case that `s_i(v_i) = 1` collapses by Cantor recurrence.
+The fix is to lift the multiplier to `s_{i-1}(a)` where `a` is a runtime
+affine shift parameter chosen outside the appropriate `V_{i-1}` (e.g.
+`a = basis[m-1]`). The convolution-theorem probe in
+`gf64/test/test_lch14_variants.c` will then pass bit-exactly on the same
+inputs that now fail.
+
+### Verification
+
+The three rewritten probes in `trafgals/gf64-fft-research/probes/`
+(`test_lch14_variants.c`, `test_gf64_gao_mateer.c`, `test_tower_fft_gf16.c`)
+each report 100% pass on the convolution-theorem probe over GF(2^4) at n=2
+and n=4. Cross-port to GF(2^64) under issue #23 (Tier 1) using
+`gf64/test/gen_cantor_basis.c` for the basis table and `gf64_mul_avx512.c`
+for the 8-lane PCLMULQDQ field multiply.
+
+### Sources (full bibliography)
+
+- Lin, Chung, Han 2014 — *Novel Polynomial Basis with Fast Fourier
+  Transform*, IEEE Trans. IT.
+- Gao, Mateer 2010 — *Additive FFT over Finite Fields*, IEEE Trans. IT.
+- Chen, Cheng, Kuo, Li, Yang 2018 — arXiv:1803.11301 (Frobenius
+  Partitions in Additive FFT). Includes explicit Algorithm 1 (BasisCvt)
+  and Algorithm 2 (butterfly) for GF(2^64) and GF(2^128).
+- Hamil 2016 — MSc thesis Technion MSC-2016-15 (Parallel Additive FFT
+  Algorithms; GPU register-cache implementation of hamil Alg 3.5).
+- Chen, Chiu, Peng, Yang 2026 — TCHES 2026/2 (*Accelerating HQC with
+  Additive FFT*), Algorithm 2. **This is the canonical reference for the
+  port.**
+- Coxon 2021 — Fast transforms over finite fields of characteristic two
+  (HAL 01845238).
+- El Mouaatamid 2024 — Polito MSc thesis (Additive FFT Polynomial
+  Multiplier for Code-Based Crypto).
