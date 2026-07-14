@@ -236,37 +236,42 @@ static int try_zmm_insn(void) {
  */
 GF64Method gf64_detect_method_internal(void) {
 	unsigned int eax, ebx, ecx, edx;
-	
-	/* Check AVX-512F (cpuid 7.0 EBX bit 16) + VPOPCNTDQ (cpuid 7.0 ECX bit 14) */
-	gf64_cpuid(7, 0, &eax, &ebx, &ecx, &edx);
-	if ((ebx & (1 << 16)) && (ecx & (1 << 14))) {
-		/* Confirm OS support: OSXSAVE (cpuid 1.0 ECX bit 27) + XCR0 ZMM/YMM/XMM (bits 5,2,1,0) */
-		gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
-		if (ecx & (1 << 27)) {
-			uint64_t xcr0 = gf64_xgetbv(0);
-			/* XCR0 bits 0 (SSE), 1 (AVX YMM), 2 (AVX-512 opmask), 5 (AVX-512 ZMM/H) must all be set */
-			if ((xcr0 & 0x27ULL) == 0x27ULL) {
-				/* CPUID+XCR0 say AVX-512 is supported. Layer 1: actually
-				 * probe ZMM execution to defeat any hypervisor that masks
-				 * CPUID only partially or fakes XCR0 without honouring
-				 * lazy XSAVE state loading. If SIGILL fires, fall through. */
-				if (try_zmm_insn()) {
-					return GF64_AVX512;
-				}
-			}
-		}
+
+	/* Layer 1 (primary): probe ZMM execution directly. On WSL2/Hyper-V
+	 * hosts, the hypervisor masks CPUID.7.0.EBX (AVX-512F bit) AFTER any
+	 * ZMM instruction runs in the calling thread. Because the binding's
+	 * other TUs are compiled with -march=native, NAPI_MODULE_INIT and
+	 * other addon-load C++ runtime prologues typically have ZMM use in
+	 * their prologue/epilogue — by the time this function is reached,
+	 * CPUID may already be masked. The CPUID branch below (Layer 2) is
+	 * therefore unreliable as a gate; we treat the SIGILL probe as the
+	 * ground-truth check and run it first.
+	 *
+	 * The probe is a single `vpaddd %zmm0,%zmm0,%zmm0` under a SIGILL
+	 * handler. If the instruction executes, return AVX-512 immediately
+	 * without consulting CPUID. If SIGILL fires, fall through to the
+	 * CPUID-based dispatch. On non-GCC builds (Windows MSVC, Clang, Intel
+	 * CC) the probe is a no-op that returns 1 on native x64 — see
+	 * try_zmm_insn's MSVC fallback. */
+	if (try_zmm_insn()) {
+		return GF64_AVX512;
 	}
-	
+
+	/* Layer 2 (fallback): CPUID+XCR0 for hosts that genuinely lack
+	 * AVX-512. We use this only to choose between AVX-2 / SSSE3 / SCALAR
+	 * when the probe definitively failed. We do NOT re-probe AVX-512 here
+	 * (the probe already failed above). */
+
 	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
 	if ((ecx & (1 << 28)) && (ecx & (1 << 12)) && (ecx & (1 << 27))) {
 		return GF64_AVX2;
 	}
-	
+
 	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
 	if ((ecx & (1 << 0)) && (ecx & (1 << 1))) {
 		return GF64_SSSE3;
 	}
-	
+
 	return GF64_SCALAR;
 }
 
