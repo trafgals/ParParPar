@@ -46,6 +46,30 @@ typedef struct {
 	size_t    num_levels; /* log2(N) + 1                                       */
 	size_t    num_points; /* N                                                 */
 	gf64_t   *storage;    /* backing buffer that level_data points into         */
+
+	/*
+	 * Cached polynomial inverses for the multi-point INTERPOLATION
+	 * direction (T8b of par3-cauchy-fft-kernel, issue #27).
+	 *
+	 * For each internal node (lev, node_idx) with lev < num_levels - 1:
+	 *   P_left  = level_data[lev+1] + (2*node_idx)     * (deg_child+1)
+	 *   P_right = level_data[lev+1] + (2*node_idx + 1) * (deg_child+1)
+	 *   inv_mod_data[lev][node_idx * (deg_child + 1) .. ]
+	 *           = P_left^(-1) mod P_right  (degree < deg(P_right))
+	 *
+	 * inv_mod_data[lev] mirrors level_data[lev]'s BFS indexing for the
+	 * internal-node levels. For lev == num_levels - 1 (the leaves, which
+	 * have no children), inv_mod_data[lev] == NULL.
+	 *
+	 * Computed at tree-build time via gf64_poly_invmod over each internal
+	 * node. Cost: O(N log^2 N) schoolbook field ops, dominated by the
+	 * Newton iteration's poly_mul cost; ~10^8 ops at N=1024.
+	 *
+	 * inv_storage is the single contiguous backing buffer that
+	 * inv_mod_data points into (same allocation discipline as `storage`).
+	 */
+	gf64_t **inv_mod_data;
+	gf64_t   *inv_storage;
 } SubproductTree;
 
 /*

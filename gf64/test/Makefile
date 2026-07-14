@@ -21,15 +21,17 @@ TEST_GF64_ADDITIVE_FFT_SOURCES := test_gf64_additive_fft.c
 TEST_GF64_SUBPRODUCT_TREE_SOURCES := test_gf64_subproduct_tree.c
 TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
 TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
+TEST_GF64_MPE_INTERP_SOURCES := test_gf64_mpe_interp.c
+TEST_GF64_INVMOD_MOD_SOURCES := test_gf64_invmod_mod.c
 TEST_GF64_POLY_INVMOD_FFT_SOURCES := test_gf64_poly_invmod_fft.c
 TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 TEST_GF64_FFT_POLY_MUL_SOURCES := test_gf64_fft_poly_mul.c
 TEST_GF64_POLY_MUL_TOOM3_SOURCES := test_gf64_poly_mul_toom3.c
 TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES := test_gf64_poly_mul_vandermonde.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -68,10 +70,15 @@ test_gf64_additive_fft: $(TEST_GF64_ADDITIVE_FFT_SOURCES) ../gf64_additive_fft.c
 # FFT-based bottom-up subproduct tree test (par3-cauchy-fft-kernel T6).
 # gf64_subproduct.c (T6) depends on gf64_additive_fft.c (T3) for gf64_poly_mul,
 # which in turn depends on gf64_mul_avx512.c (T1), gf64_square.c (T2), and
-# gf64_poly_mul_karatsuba.c (Phase 2a Karatsuba dispatch).
-# Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# gf64_poly_mul_karatsuba.c (Phase 2a Karatsuba dispatch). Since PR-2b
+# (issue #27), the subproduct build also calls gf64_poly_invmod_mod from
+# gf64_mpe.c to cache polynomial-modular inverses for multi-point
+# interpolation. gf64_mpe.c transitively calls gf64_invert_ita_one (the
+# T5 Itoh-Tsujii single-value inverse) inside gf64_poly_divmod,
+# gf64_poly_invmod, and the new gf64_poly_invmod_mod, so gf64_invert_ita.c
+# joins the link set too.
+test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_mpe.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_mpe.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Barycentric weight extraction test (par3-cauchy-fft-kernel T7). Since
 # PR-3 the barycentric step 2 delegates to gf64_multi_point_eval (T8), so
@@ -91,6 +98,14 @@ test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ..
 # too. Needs AVX-512F + VPCLMULQDQ at runtime.
 test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
+# Multi-point interpolation test (par3-cauchy-fft-kernel T8b, issue #27).
+# Same dependency chain as test_gf64_mpe (T8a's eval direction); the new
+# gf64_mpe.c now also contains gf64_multi_point_interp's Bostan-Schost
+# top-down implementation, which uses the cached inverses populated at
+# tree-build time in gf64_subproduct.c.
+test_gf64_mpe_interp: $(TEST_GF64_MPE_INTERP_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MPE_INTERP_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # PR-1 of the T8 follow-up: cross-check gf64_poly_mul (now FFT-based),
 # gf64_poly_mul_padded (new), and gf64_poly_invmod (now FFT-delegating)
@@ -131,5 +146,11 @@ test_gf64_poly_mul_toom3: $(TEST_GF64_POLY_MUL_TOOM3_SOURCES) ../gf64_poly_mul_t
 test_gf64_poly_mul_vandermonde: $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf64_additive_fft.c ../gf64_additive_fft_vandermonde.c ../gf64_poly_mul_karatsuba.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
+# Standalone polynomial modular-inverse test (Phase A3 of issue #27).
+# Verifies that gf64_poly_invmod_mod computes inv such that g * inv ≡ 1
+# (mod f) at degrees (1,1), (3,3), (5,5), (1,2), (2,1).
+test_gf64_invmod_mod: $(TEST_GF64_INVMOD_MOD_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVMOD_MOD_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba bench_poly_mul_vandermonde_vs_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba bench_poly_mul_vandermonde_vs_karatsuba

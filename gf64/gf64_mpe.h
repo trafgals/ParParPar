@@ -163,6 +163,80 @@ void gf64_multi_point_eval(
 	gf64_t *out
 );
 
+/*
+ * Multi-point INTERPOLATION (T8b of par3-cauchy-fft-kernel, issue #27):
+ * the dual of the multi-point evaluation above.
+ *
+ * Given N values defined at the N points encoded in the subproduct tree
+ * (the points themselves are not needed again — they live in tree->level_data),
+ * compute the unique polynomial `out` of degree < N such that
+ *
+ *     out(tree.points[j]) = values[j]   for j = 0 .. N-1
+ *
+ * The implementation is the Bostan-Schost top-down dual of
+ * gf64_multi_point_eval: at each internal node we have already (via the
+ * recursive calls) computed f_L and f_R, the interpolating polynomials
+ * covering the left and right halves of this node's leaves. We then
+ * reconstruct f_parent = f_L + P_left · k, where k is determined by
+ * the CRT condition f_parent ≡ f_R (mod P_right). The cached modular
+ * inverse inv = P_left^(-1) mod P_right (computed at tree-build time
+ * and stored in tree->inv_mod_data) yields
+ *
+ *     k = (f_R + f_L) · inv   (mod P_right).
+ *
+ * Cost: O((D + N) · log²(D + N)) field ops with an FFT-based poly_mul
+ * primitive, where D is the implicit degree of the recovered polynomial.
+ * Currently the underlying poly_mul is schoolbook (PR-1), so the
+ * asymptotic gains come from swapping in the Gao-Mateer / subfield-NTT
+ * primitive; the API stays the same. Even at schoolbook cost, the
+ * interpolation is dramatically faster than computing Lagrange basis
+ * polynomials for every slice, since the tree's polynomial products are
+ * shared across all slices.
+ *
+ * @param tree    Subproduct tree with cached inverses in inv_mod_data
+ *                (built by gf64_subproduct_tree_build; the inverse cache
+ *                is always populated unless N == 0 or N == 1).
+ * @param values  Array of N field elements, one per tree leaf.
+ *                Must have at least tree->num_points entries.
+ * @param out     Output buffer of size tree->num_points (degree < N).
+ *                On success, out[0..N-1] holds the unique polynomial of
+ *                degree < N with out(x_j) = values[j] for every leaf j.
+ *
+ * On a NULL tree, an empty tree (num_points == 0), or NULL values, this
+ * function returns immediately without writing to out. The caller must
+ * size out to at least tree->num_points gf64_t slots.
+ */
+void gf64_multi_point_interp(
+	const SubproductTree *tree,
+	const gf64_t *values,
+	gf64_t *out
+);
+
+/*
+ * Polynomial modular inverse: u = (1/g) mod f, with degree(u) < degree(f).
+ *
+ * Differs from gf64_poly_invmod (§2 above) which computes 1/g(x) mod x^n
+ * (the formal power series inverse). gf64_poly_invmod_mod is the actual
+ * polynomial modular inverse via half-extended GCD; it is what the
+ * SubproductTree's cached inverses demand for the Bostan-Schost
+ * interpolation (Phase A3, issue #27).
+ *
+ * @param g      Polynomial coefficients [c_0, ..., c_deg_g] (constant-first).
+ * @param deg_g  Degree of g.
+ * @param f      Modulus polynomial coefficients (must be coprime with g).
+ * @param deg_f  Degree of f. The result has degree strictly less than this.
+ * @param inv_out Output buffer of at least deg_f coefficients.
+ * @return       0 on success, -1 on alloc failure or non-coprime inputs.
+ *
+ * Cost: schoolbook O((deg_f+1)²) field ops. The Newton-iteration form
+ * (O(M(n) log n) with FFT multiply) is a deferred follow-up.
+ */
+int gf64_poly_invmod_mod(
+	const gf64_t *g, size_t deg_g,
+	const gf64_t *f, size_t deg_f,
+	gf64_t *inv_out
+);
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_MPE_H */

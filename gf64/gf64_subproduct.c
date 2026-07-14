@@ -36,6 +36,7 @@
 
 #include "gf64_subproduct.h"
 #include "gf64_additive_fft.h"
+#include "gf64_mpe.h"
 #include "gf64_global.h"
 
 #include <assert.h>
@@ -94,6 +95,17 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 	}
 
 	/*
+	 * Inverse-mod-sibling per-level metadata. Inv_mod_data has the same
+	 * num_levels indexing as level_data; inv_mod_data[num_levels - 1]
+	 * (the leaves) is set to NULL because leaves have no children.
+	 */
+	out->inv_mod_data = (gf64_t **)calloc(out->num_levels, sizeof(gf64_t *));
+	if (out->inv_mod_data == NULL) {
+		gf64_subproduct_tree_free(out);
+		abort();
+	}
+
+	/*
 	 * Populate per-level counts and degrees.
 	 *   level 0:        1 polynomial of degree N
 	 *   level ℓ:        2^ℓ polynomials of degree N / 2^ℓ
@@ -134,6 +146,36 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 	}
 
 	/*
+	 * Total coefficients for the inverse-mod-sibling storage. For each
+	 * internal level lev in 0..num_levels-2, there are 2^lev polynomials,
+	 * each of degree level_degs[lev+1] (the right-sibling degree), so
+	 * each occupies (level_degs[lev+1] + 1) coefficients.
+	 *
+	 * The leaf level (lev == num_levels - 1) contributes 0 slots; we
+	 * set inv_mod_data[last_lev] = NULL below.
+	 */
+	size_t inv_total_coeffs = 0;
+	for (size_t lev = 0; lev + 1 < out->num_levels; lev++) {
+		inv_total_coeffs += out->level_lens[lev] * (out->level_degs[lev + 1] + 1);
+	}
+
+	if (inv_total_coeffs > 0) {
+		out->inv_storage = (gf64_t *)calloc(inv_total_coeffs, sizeof(gf64_t));
+		if (out->inv_storage == NULL) {
+			gf64_subproduct_tree_free(out);
+			abort();
+		}
+		/* Set per-level inv_mod_data pointers into inv_storage. */
+		size_t offset = 0;
+		for (size_t lev = 0; lev + 1 < out->num_levels; lev++) {
+			out->inv_mod_data[lev] = out->inv_storage + offset;
+			offset += out->level_lens[lev] * (out->level_degs[lev + 1] + 1);
+		}
+	}
+	/* Leaves have no children: NULL pointer at the last level. */
+	out->inv_mod_data[out->num_levels - 1] = NULL;
+
+	/*
 	 * Initialize leaves at the highest level. Each leaf has
 	 * degree 1 and represents x + x_i with constant coefficient x_i
 	 * and x-coefficient 1.
@@ -157,6 +199,12 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 	 * The number of parent polynomials at level (child_lev - 1) is
 	 * level_lens[child_lev - 1] = level_lens[child_lev] / 2. Each
 	 * parent has degree 2 * child_deg.
+	 *
+	 * In parallel, for each internal node (parent_lev, i), we also
+	 * cache the modular inverse inv = P_left^(-1) mod P_right via
+	 * Newton iteration. These cached inverses back the multi-point
+	 * INTERPOLATION recursion (T8b, issue #27); see
+	 * gf64_subproduct.h's documentation on inv_mod_data.
 	 */
 	{
 		size_t last_lev = out->num_levels - 1;
@@ -166,14 +214,40 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 			size_t parent_deg = out->level_degs[parent_lev];   /* == 2 * child_deg */
 			size_t parent_count = out->level_lens[parent_lev]; /* == level_lens[child_lev] / 2 */
 
-			gf64_t *parent_base = out->level_data[parent_lev];
-			gf64_t *child_base  = out->level_data[child_lev];
+			gf64_t *parent_base   = out->level_data[parent_lev];
+			gf64_t *child_base    = out->level_data[child_lev];
+			gf64_t *inv_base      = out->inv_mod_data[parent_lev];
+			size_t  inv_slot_size = child_deg + 1;   /* degree < child_deg ⇒ child_deg + 1 coeffs */
 
 			for (size_t i = 0; i < parent_count; i++) {
 				gf64_t *left   = child_base + (2 * i)     * (child_deg + 1);
 				gf64_t *right  = child_base + (2 * i + 1) * (child_deg + 1);
 				gf64_t *parent = parent_base + i * (parent_deg + 1);
 				gf64_poly_mul(parent, left, child_deg, right, child_deg);
+
+				/*
+				 * Cache inv = P_left^(-1) mod P_right. Each inverse
+				 * polynomial has degree < child_deg, so it occupies
+				 * child_deg + 1 storage slots (we size the buffer for
+				 * child_deg + 1; the high-order slot has degree-index
+				 * = child_deg and is unused). The actual inverse
+				 * polynomial here is computed via the polynomial EGCD
+				 * (gf64_poly_invmod_mod) — NOT the Newton-iteration
+				 * gf64_poly_invmod, which computes 1/g(x) mod x^n (the
+				 * power-series inverse), a different quantity. The two
+				 * are equal only when the modulus IS x^n, which is not
+				 * our case (we mod by P_right, an arbitrary coprime
+				 * polynomial).
+				 *
+				 * N >= 2 forces child_deg >= 1; when child_deg == 0
+				 * (would only happen at N == 1) we have no internal
+				 * nodes and skip the invmod entirely.
+				 */
+				if (child_deg >= 1 && inv_base != NULL) {
+					gf64_t *inv_slot = inv_base + i * inv_slot_size;
+					(void)gf64_poly_invmod_mod(left, child_deg, right,
+					                            child_deg, inv_slot);
+				}
 			}
 		}
 	}
@@ -184,6 +258,8 @@ void gf64_subproduct_tree_free(SubproductTree *tree) {
 		return;
 	}
 	free(tree->storage);
+	free(tree->inv_storage);
+	free(tree->inv_mod_data);
 	free(tree->level_data);
 	free(tree->level_lens);
 	free(tree->level_degs);
