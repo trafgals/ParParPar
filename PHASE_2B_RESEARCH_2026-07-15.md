@@ -228,14 +228,31 @@ contains the staged delivery plan with this outcome documented.
 
 ---
 
-## Resolution (2026-07-15) — open question closed
+## Resolution (2026-07-15) — open question closed (at small n)
 
 The "open research problem" verdict above was based on **three independent
 probing bugs**, not structural obstructions. A web-research sweep on
 2026-07-15 surfaced the canonical additive FFT algorithm in the literature,
-and the probes were rewritten to exercise it correctly with 100% pass rates.
-Full synthesis with citations:
+and the probes were rewritten to exercise it correctly with 100% pass rates
+at small transform sizes. Full synthesis with citations:
 [`trafgals/gf64-fft-research` `RESEARCH_SYNTHESIS.md`](https://github.com/trafgals/gf64-fft-research/blob/master/RESEARCH_SYNTHESIS.md).
+
+### Subsequent implementation in the fork (T1 of issue #23)
+
+`gf64/gf64_additive_fft_hqc2026.c` implements HQC 2026 §2.3 Algorithm 2 over GF(2^64) with the corrected multiplier `s_{i-1}(a)` (where the existing `gf64_additive_fft_lch14.c` uses the broken `mu_j = s_i(v_j)` formula). Probes in `gf64/test/test_gf64_additive_fft_hqc2026.c` cover forward-output, round-trip, and convolution at n ∈ {2, 4, 8, 16, 32, ..., 4096}.
+
+**Status as of this commit:**
+
+- **n = 2, n = 4**: all three probes pass at 100%. The algorithm is correct for small transform sizes.
+- **n ≥ 8**: **round-trip is 100%** (the algorithm is internally consistent), but **forward-output and convolution FAIL**. Diagnostic pattern: positions 4-7 (upper-half recursion, a'=0) are correct; positions 0-3 (lower-half recursion, a'=basis[2]) produce values matching what the algorithm would produce for c=x at the same positions, regardless of whether the input is actually degree-7.
+
+**Root cause** (diagnosed 2026-07-15): the matrix-form BasisCvt `g = M_inv · c` does not preserve the degree-≤-n/2 property the butterfly recursion assumes. The algorithm requires Chen 2018 Algorithm 1 (recursive BasisCvt) which preserves this property via the recursive subdivision. My implementation uses the matrix form for simplicity/correctness verification, but it does not interact correctly with the butterfly at n ≥ 8.
+
+**Fix strategy (deferred, not in this commit):** replace the matrix-form BasisCvt with the recursive Chen 2018 Algorithm 1 form. This is a larger rewrite (~150 LOC, removes the matrix cache + Gauss-Jordan) but should preserve the structural property the butterfly relies on. Alternative: use the existing Bostan-Schost top-down multi-point evaluation (`gf64/gf64_mpe.c`) pipeline instead of the HQC Algorithm 2 directly — which works correctly today over GF(2^64) but with the naive-Horner schoolbook cost.
+
+### What this means for issue #23 (PAR3-create throughput)
+
+The 100 MB/s gate (issue #27) and the Fenger-Toeplitz work item (issue #27 Phase 3) **do not** depend on the matrix-form HQC Alg 2 port landing. The Bostan-Schost MPE path in `gf64/gf64_mpe.c` + subproduct tree in `gf64/gf64_subproduct.c` + T8b multi-point interpolation (commit `0cdcf7a`) provides an O((N+R)·log²(N+R)) polynomial-multiplication pipeline that **does** work in GF(2^64) today. The Fenger Toeplitz wiring is the correct next step (Task #25 in the task tracker).
 
 ### What was wrong
 

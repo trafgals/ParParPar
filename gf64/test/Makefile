@@ -155,6 +155,16 @@ test_gf64_poly_mul_vandermonde: $(TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES) ../gf6
 # AVX-512 entrypoint can be wired in later by replacing the field-mul call
 # site with gf64_mul_avx512 once the working n exceeds the SIMD setup
 # overhead.
+# HQC 2026 §2.3 Algorithm 2 (LCH14 addFFT) over GF(2^64). Status:
+# WORK-IN-PROGRESS RESEARCH ARTIFACT — not wired into the production
+# gf64_poly_mul dispatch (see PHASE_2B_RESEARCH_2026-07-15.md
+# §"Subsequent implementation in the fork (T1 of issue #23)").
+# Pass rate is 100% at n ∈ {2, 4}; round-trip is 100% at all sizes;
+# forward-output and convolution FAIL at n ≥ 8 due to a structural
+# degree-preservation bug in the matrix-form BasisCvt. The fix is to
+# switch to recursive Chen 2018 Algorithm 1 BasisCvt (deferred).
+# Test binary preserved here so future iterations can regression-check
+# the fix against the existing diagnostic state captured at n=8.
 test_gf64_additive_fft_hqc2026: $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c ../gf64_invert.c ../gf64_invert_avx512.c ../gf64_dispatch.c ../cpu_detect.c ../gf64_region_scalar.c ../gf64_region_ssse3.c ../gf64_region_ssse3_arr.c ../gf64_region_avx2.c ../gf64_region_avx2_arr.c ../gf64_region_avx512.c ../gf64_region_avx512_arr.c ../gf64_invert_ita.c ../gf64_invert_ssse3.c ../gf64_invert_avx2.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c ../gf64_invert.c ../gf64_invert_avx512.c ../gf64_dispatch.c ../cpu_detect.c ../gf64_region_scalar.c ../gf64_region_ssse3.c ../gf64_region_ssse3_arr.c ../gf64_region_avx2.c ../gf64_region_avx2_arr.c ../gf64_region_avx512.c ../gf64_region_avx512_arr.c ../gf64_invert_ita.c ../gf64_invert_ssse3.c ../gf64_invert_avx2.c
 
