@@ -294,7 +294,28 @@ static hqc_basis_cache_t *get_or_build_basis_cache(int n) {
     return c;
 }
 
-/* monomial → novelpoly. */
+/* monomial → novelpoly.
+ *
+ * CURRENT IMPLEMENTATION: explicit O(n²) matrix-vector multiply using the
+ * cached M_inv. Simple to verify bit-exactly; the working set at n = 4096
+ * is ~128 KiB and at n = 16384 is ~2 MiB (both fit comfortably in L2).
+ *
+ * DEFERRED (FIX-3, see PHASE_2c_FINDINGS_2026-07-15.md): replace with the
+ * **Chen 2018 Algorithm 1 recursive BasisCvt**, which costs O(n log n) per
+ * call by exploiting the hierarchical structure of the novelpoly basis.
+ * The recursive form factors M_inv = K^{-1} · P^T where K is a Kronecker
+ * product of small (constant-size) matrices and P is a permutation; applying
+ * K^{-1} · P^T to a vector costs O(n log n) field ops by the divide-and-
+ * conquer recursion. Until FIX-3 lands, this function dominates the
+ * additive-FFT wall-clock at large n (measured: 76 ms at n = 4096, 308 ms
+ * at n = 8192, scaling as exactly 4× per 2× n).
+ *
+ * Inputs:
+ *   g  — output buffer, length n (novelpoly coeffs)
+ *   c  — input buffer, length n (monomial coeffs)
+ *   n  — transform size (power of 2)
+ *   M_inv — n×n matrix, M_inv[k*n+j] is row k column j of M^{-1}
+ */
 static void basisCvt(gf64_t *g, const gf64_t *c, int n, const gf64_t *M_inv) {
     for (int k = 0; k < n; k++) {
         gf64_t acc = 0;
@@ -303,7 +324,7 @@ static void basisCvt(gf64_t *g, const gf64_t *c, int n, const gf64_t *M_inv) {
     }
 }
 
-/* novelpoly → monomial. */
+/* novelpoly → monomial. Same FIX-3 deferral as basisCvt above. */
 static void ibasisCvt(gf64_t *c, const gf64_t *g, int n, const gf64_t *M) {
     for (int j = 0; j < n; j++) {
         gf64_t acc = 0;
