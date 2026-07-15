@@ -29,10 +29,11 @@ TEST_GF64_FFT_POLY_MUL_SOURCES := test_gf64_fft_poly_mul.c
 TEST_GF64_POLY_MUL_TOOM3_SOURCES := test_gf64_poly_mul_toom3.c
 TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES := test_gf64_poly_mul_vandermonde.c
 TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES := test_gf64_additive_fft_hqc2026.c
+TEST_GF64_FENGER_KERNEL_SOURCES := test_gf64_fenger_kernel.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -183,4 +184,16 @@ test_gf64_invmod_mod: $(TEST_GF64_INVMOD_MOD_SOURCES) ../gf64_mpe.c ../gf64_subp
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVMOD_MOD_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba bench_poly_mul_vandermonde_vs_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel gen_toom3_constants bench_poly_mul_toom3_vs_karatsuba bench_poly_mul_vandermonde_vs_karatsuba
+
+# Phase 0 of issue #28 (Fenger Toeplitz pipeline): sanity-check that the
+# Fenger decomposition (Lagrange interpolation + subproduct polynomial
+# evaluation) produces bit-exact output against the explicit Cauchy
+# matrix-vector product at small (N, R, B). The two paths are:
+#   cauchy_reference: out[r][w] = XOR_c in[c][w] / (y_r XOR x_c)
+#   fenger_naive:     f_w(x) = sum_c in[c][w] * L_c(x);  out[r][w] = f_w(y_r) / V(y_r)
+# fenger_naive is O(N^2 * R * B) — only used at small N to verify the
+# decomposition algebra is right; the asymptotic form is Bostan-Schost
+# top-down MPE on T_R, deferred to Phase 1.
+test_gf64_fenger_kernel: $(TEST_GF64_FENGER_KERNEL_SOURCES) ../gf64_single.c ../gf64_invert.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_KERNEL_SOURCES) ../gf64_single.c ../gf64_invert.c
