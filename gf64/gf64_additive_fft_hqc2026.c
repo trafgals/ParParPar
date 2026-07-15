@@ -335,27 +335,63 @@ static void ibasisCvt(gf64_t *c, const gf64_t *g, int n, const gf64_t *M) {
     }
 }
 
-/* ----- FIX-3: Chen 2018 Algorithm 1 recursive BasisCvt (O(n log n)) -----
+/* ----- FIX-3: Chen 2018 Algorithm 1 recursive BasisCvt -----
  *
- * Reference: Li, Wang, Yang, "Frobenius Additive Fast Fourier Transform",
- * ISSAC '18 (https://homepage.iis.sinica.edu.tw/papers/byyang/21820-F.pdf)
- * Algorithm 1. Recovers monomial → novelpoly conversion in O(n log n)
- * field ops by recursively factoring out s_k(x) = x^{n/2} + x.
+ * Reference: Chen, Cheng, Kuo, Li, Yang, "Multiplying boolean Polynomials
+ * with Frobenius Partitions in Additive FFT", arXiv 1803.11301 (Apr 2018),
+ * Algorithm 1.
  *
- * Recursion structure (for n = 2^m, k = m-1 so 2^k = n/2):
- *   f(x) = a(x) + b(x) * (x^{n/2} + x),   deg a, deg b < n/2
- *   Decomposition is O(n) via back-substitution (closed form below).
- *   Then basis-convert(a, n/2), basis-convert(b, n/2), combine.
+ * CURRENT STATE (2026-07-15, post-FIX-3 attempts):
  *
- * Combine: g[i] = basisCvt(a)[i] for i < n/2,
- *          g[i] = basisCvt(b)[i - n/2] for i ≥ n/2.
+ *   - Simple 2-term recursion (k = m-1) implemented and bit-exact verified at
+ *     n in {2, 4, 8, 32, 512, 1024, 2048, 4096}, with O(n log n) at sizes
+ *     where m-1 is itself a power of 2 (i.e., n in {2, 4, 8, 32, 512, 131072}).
  *
- * Total cost T(n) = 2 T(n/2) + O(n) = O(n log n).
+ *   - For sizes where m-1 is NOT a power of 2 (n in {16, 64, 128, 256, 1024,
+ *     2048, ...}), the recursion falls back to the matrix-form O(n^2) BasisCvt
+ *     using a cached M_inv. The M_inv build is O(n^3) Gauss-Jordan.
  *
- * Scratch: each call allocates two half-size scratch arrays on the stack.
- * Recursion depth is log_2(n) ≤ 14 for our cap of 16384, total stack usage
- * bounded by 2 * 16384 * 8 = 256 KB across the deepest call chain — well
- * within the 8 MB default thread stack.
+ *   - The General Algorithm 1 (i = max pow of 2 <= log2(n-1), S = 2^i,
+ *     m = n/S, with h_j in R[x]^{<S} and a non-trivial y-domain recursion
+ *     for step 5) is NOT yet implemented. An attempt was made in this
+ *     session and reverted because step 5 (the BasisCvt(h^(y)) recursion
+ *     with the y-Cantor basis defined over R[x]^{<S}) requires a non-trivial
+ *     "polynomial-ring coefficient" semantics that the current scalar
+ *     basisCvt does not provide. See PHASE_2c_FINDINGS_2026-07-15.md and
+ *     issue #29 for the full discussion.
+ *
+ *   - The simple recursion structure is:
+ *       f(x) = a(x) + b(x) * (x^{n/2} + x),  deg a, deg b < n/2
+ *     with O(n) back-substitution and a clean triangular system (because
+ *     s_{m-1} = x^{n/2} + x has only 2 terms).
+ *
+ *   - Cost at sizes where k = m-1 IS a power of 2: T(n) = 2 T(n/2) + O(n)
+ *     = O(n log n).
+ *
+ *   - Cost at sizes where k = m-1 is NOT a power of 2: T(n) = O(n^2) per
+ *     BasisCvt call, plus O(n^3) one-time cache build. The matrix is cached
+ *     across calls; cache has 16 slots.
+ *
+ *   - For the canonical PAR3 workload (n = 10K to 16K), k = 12..13 NOT a
+ *     power of 2, so the matrix-form path is hit at the top level. M_inv
+ *     at n = 16384 is 2 GiB, build is O(4e12) field ops = ~1 hour one-time
+ *     cost. The Fenger pipeline uses multiple sizes so the cache evicts
+ *     frequently; in practice the one-time build per size is the bottleneck.
+ *
+ * TODO (FIX-3a follow-up): implement Algorithm 1 with the proper y-domain
+ * recursion. This requires:
+ *   1. A "field" of size |R|^S over R[x]^{<S} via the Cantor construction
+ *      y-v_0 = 1, y-v_i^2 + y-v_i = y-v_{i-1}. For y-v_1 this is a root of
+ *      T^2 + T + 1 = 0 in R (exists since 2 | 64). For y-v_2 etc., the
+ *      elements are in R[x]^{<S} (polynomials of degree < S) and require
+ *      explicit construction via the Cantor basis.
+ *   2. A "BasisCvt over R[x]^{<S}" that handles polynomial coefficients:
+ *      field multiplication becomes polynomial multiplication mod some ideal;
+ *      v_table lookup becomes polynomial comparison.
+ *   3. The recursion on h^(y) at size m with the y-Cantor basis.
+ *
+ * This is non-trivial; estimated 3-5 days for a C engineer with the Chen 2018
+ * paper in hand. Filed as issue #29.
  */
 
 /* Decompose f(x) = a(x) + b(x) * (x^{n/2} + x), deg(a), deg(b) < n/2.

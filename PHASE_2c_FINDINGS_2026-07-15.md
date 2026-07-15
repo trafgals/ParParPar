@@ -11,9 +11,17 @@ the matrix-form O(N²) path, and that path's O(N³) cache build is
 infeasible at large N (e.g., N=8192 takes hours).
 
 **Remaining work to clear the 100 MB/s gate at canonical N=10K:**
-extend the recursive BasisCvt to handle arbitrary k = max pow2 ≤ log₂(n)−1
-(requires h' with up to n/2^k y-terms and O(n) back-substitution on the
-resulting triangular system). Documented below as Phase 2c follow-up.
+extend the recursive BasisCvt to handle arbitrary k = max pow2 ≤ log₂(n)−1.
+
+**2026-07-15 update:** A direct implementation of Chen 2018 Algorithm 1's
+step 5 (the BasisCvt(h^(y)) recursion) was attempted in this session and
+*reverted* because the y-domain recursion requires the y-Cantor basis to
+be defined over R[x]^{<S} (the polynomial ring, not a field), which the
+current scalar-GF(2^64) BasisCvt does not support. The recursive
+decomposition (step 4) was implemented and bit-exact verified for
+arbitrary k, but step 5 requires a non-trivial polymorphic BasisCvt
+that handles polynomial-coefficient "field" elements. See
+"Algorithm 1 y-domain blocker" section below.
 
 ## Summary
 
@@ -185,3 +193,79 @@ Once that lands:
 - n = 16384 (k=8, h' has 128 terms): recursive, ~30 ms (vs current infeasible)
 
 That should clear the 100 MB/s PAR3-create gate at canonical N=10K.
+
+
+## Algorithm 1 y-domain blocker (2026-07-15)
+
+The simple 2-term recursion (k = m-1 when m-1 is a power of 2) is implemented
+and bit-exact verified. The natural extension to arbitrary k (i = max pow of 2
+<= log2(n-1)) hits a structural obstacle in Algorithm 1's step 5.
+
+### What Algorithm 1 step 5 actually does
+
+Step 5 of Chen 2018 Algorithm 1: compute h^(y) -> h(Y) via recursive BasisCvt
+on h^(y) (a polynomial in y with x-polynomial coefficients).
+
+For the recursion to work, the y-domain must have a *Cantor basis* with elements
+that are themselves elements of the coefficient ring R[x]^{<S}. Constructing
+this requires:
+
+1. **y-Cantor basis over R[x]^{<S}:**
+   y-v_0 = 1 (constant polynomial)
+   y-v_i^2 + y-v_i = y-v_{i-1}  for i >= 1
+
+   For y-v_1: T^2 + T + 1 = 0 over GF(2^64). Roots exist in GF(2^2) ⊂ GF(2^64)
+   since 2 | 64. So y-v_1 can be a constant in R = GF(2^64).
+
+   For y-v_2: y-v_2^2 + y-v_2 = y-v_1 (a known element of R). The equation
+   T^2 + T + y-v_1 = 0 has solutions in an extension of GF(2^64). For y-v_2
+   to live in R[x]^{<S}, it must be a polynomial in x of degree < S with
+   coefficients in GF(2^64). This requires *explicit* polynomial construction
+   via the Cantor recurrence over the polynomial ring.
+
+2. **Polymorphic BasisCvt over R[x]^{<S}:**
+   The current basisCvt only operates on scalars in GF(2^64). For the y-domain
+   recursion, the "field" is R[x]^{<S} (S-dim vector space over GF(2^64) with
+   polynomial multiplication mod some ideal). Every operation needs to be
+   generalized:
+     - Field multiplication -> polynomial multiplication mod ideal
+     - v_table lookup -> polynomial comparison
+     - si(a) evaluation -> polynomial evaluation
+
+3. **Recursion on h^(y) at size m:**
+   Each recursive call to basisCvt on the y-domain operates on a polynomial of
+   degree < m with R[x]^{<S} coefficients. This is the SAME shape as the outer
+   recursion but over a different ring. Without (1) and (2), this cannot run.
+
+### Why the simple per-h_j recursion (initial attempt) failed
+
+A direct implementation that simply recursed basisCvt on each h_j(x) (treating
+y-coefficients as GF(2^64) elements) was attempted and bit-exact VERIFIED at
+the round-trip level but FAILED the forward-output and convolution probes
+at sizes n >= 16. The reason: ignoring the y-domain structure means the
+recursion's combine step doesn't correctly express h^(y) in the y-novelpoly
+basis; the round-trip happens to self-cancel but the result is not the correct
+novelpoly-basis representation.
+
+The full Algorithm 1 is non-trivial; estimated 3-5 days for a C engineer with
+the Chen 2018 paper in hand. Filed as issue #29.
+
+### What IS achievable with the current code
+
+The current 2-term recursion + matrix-form fallback gives O(n^2) per BasisCvt
+call at non-pow2-k sizes, with O(n^3) one-time M_inv build. For the canonical
+PAR3 workload (n = 10K to 16K), this gives a 100-300 MB/s theoretical
+throughput, depending on M_inv build time per size. The Fenger pipeline's
+multi-size use pattern causes cache eviction, making the one-time build per
+size the practical bottleneck.
+
+Alternative optimizations to clear the gate WITHOUT implementing Algorithm 1:
+1. **Strassen-style or block Gauss-Jordan:** reduce M_inv build from O(n^3) to
+   O(n^2.81) or so. Saves the one-time cost by ~6x at n=16384.
+2. **Pre-compute M_inv offline and serialize to disk:** load on first use.
+   Avoids the in-process build entirely.
+3. **Switch to a poly_mul kernel that doesn't go through BasisCvt:** e.g.,
+   Karatsuba or Toom-3 for medium sizes, hybrid dispatching by size.
+
+These are all simpler than the general Algorithm 1 and could plausibly clear
+the 100 MB/s gate within a session. See issue #29 for the trade-off analysis.
