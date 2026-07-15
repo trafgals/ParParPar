@@ -562,3 +562,54 @@ O(N log N) BasisCvt. Option (b) is the cleanest long-term solution
 but requires a deeper refactor.
 
 Committed: a791843 on v1/wsl2-avx512-par3-vs-par2 branch.
+
+
+## FIX-3a-v5 (2026-07-16): v_i membership in GF(2^i) check
+
+Discovered the structural reason for the cross-val failure in FIX-3a-v3.
+
+Tested whether our Cantor basis vectors (v_0..v_5 in gf64_cantor_basis.h)
+satisfy v_i in GF(2^i) (i.e., v_i^{2^i} = v_i, the Frobenius-fixed
+property):
+
+    v_2^4 = 0xa181e7d66f5ff795 (off by 1 from v_2)
+    v_3^8 != v_3
+    v_4^16 != v_4
+    v_5^32 != v_5
+
+So our Cantor basis does NOT have v_i in GF(2^i). This is because
+gen_cantor_basis2.c uses an Artin-Schreier linear-algebra solver
+without enforcing the GF(2^i) subfield constraint.
+
+The subspace polynomial recurrence s_i = s_{i-1}^2 + s_{i-1} matches
+the product formula product over V_i of (x - v) ONLY when v_i is in
+GF(2^i). For other v_i choices, the two diverge by a constant term
+involving v_{k+1}^{2^k} + v_{k+1}.
+
+Implications:
+- The polyeval cvt uses the recurrence (implicitly assuming v_i in GF(2^i))
+- Our matrix-form uses the product formula (with our actual v_i)
+- They compute DIFFERENT basis conversions
+- Cross-val failure is structural, not a port bug
+
+To clear the FIX-3a gate:
+- Option (a): Compute subspace polys via product formula in cvt recursion
+  (requires deriving decomposition algorithm with multi-term s_k).
+- Option (b): Regenerate v_i to be in GF(2^i) AND port polyeval btfy.c.
+  Need a new gen_cantor_basis_tower.c that picks v_i in GF(2^i) using
+  Artin-Schreier within the tower.
+- Option (c): Hybrid — matrix-form for n <= 4096 (works), recursive
+  Algorithm 1 for larger n (still has basis issue).
+
+Conclusion: FIX-3a requires either option (a) or (b). Both are
+multi-day implementation efforts. Recommend option (b) as the
+cleaner long-term path because it preserves the polyeval/HQC
+reference structure.
+
+Bench numbers (FIX-3a-v4, current matrix-form):
+  n=4096: 0.44 MB/s fwd, 0.44 MB/s inv (M_inv build: 55s)
+  n=16384: M_inv build ~1 hour, infeasible
+  100 MB/s gate needs 250x speedup at n=4096 — matrix-form cannot.
+
+Committed: f5f55ad on v1/wsl2-avx512-par3-vs-par2 (push to public
+origin was denied by the auto-mode classifier).
