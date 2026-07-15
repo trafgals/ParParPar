@@ -489,3 +489,76 @@ arithmetic is a fresh implementation.
 Recommend Option A for the next session, with devillegna/polyeval as the
 primary reference (it's smaller and more clearly documented than the HQC
 reference).
+
+
+## FIX-3a-v3 (2026-07-15): polyeval cvt recursion port — round-trip OK, cross-val FAILS
+
+Ported polyeval'''s `cvt` function (Algorithm 1 recursive basisCvt with
+general k, from `/tmp/polyeval/bc/src/ref/bc_256.c`) to our GF(2^64)
+abstraction. The port is at `gf64/test/probe_basis_cvt_polyeval.c`.
+
+**Results:**
+
+- **Round-trip** (basisCvt_polyeval + ibasisCvt_polyeval = identity):
+  PASSES at all sizes 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096.
+
+- **Cross-validation** (gf64_addfft64_inv(basisCvt_polyeval(f)) == f):
+  FAILS at all sizes.
+
+**Root cause of cross-val failure:**
+
+The polyeval `cvt` recursion uses the SUBSPACE POLYNOMIAL RECURRENCE
+
+    s_i(x) = (s_{i-1}(x))^2 + s_{i-1}(x)     (Frobenius-based)
+
+This recurrence gives the actual subspace polynomial for i <= 2 (where
+s_2 = x^4 + x has 2 terms and matches the product formula). But for i >= 3,
+the recurrence produces a DIFFERENT polynomial than the actual subspace
+polynomial `product over V_i of (x - v)`. The two diverge because the
+recurrence "forgets" the specific v_2, v_3, ... choice — it only retains
+information about s_{i-1}, not about the full V_i.
+
+Concretely:
+
+    s_2 from recurrence: x^4 + x                     (2 terms)
+    s_2 from product:    x^4 + x                      (2 terms, matches)
+
+    s_3 from recurrence: x^8 + x^4 + x^2 + x          (4 terms)
+    s_3 from product:    x^8 + x^7 + v_1 x^4 + v_1 x^3
+                          + (v_1+1) x^2 + (v_1+1) x  (6 terms, depends on v_1)
+
+So polyeval'''s basisCvt computes change-of-basis to a novelpoly basis
+defined by the RECURRENCE s_i, while our matrix-form uses the actual
+subspace polynomials. The two are equivalent at i <= 2 and diverge at i >= 3.
+
+**Implications:**
+
+The polyeval-style basisCvt is correct as a stand-alone transform
+(round-trip passes), but it doesn'''t match the matrix-form. Wiring it
+into our pipeline requires either:
+
+  (a) Replace the recurrence s_i = s_{i-1}^2 + s_{i-1} with the actual
+      subspace polynomial `product over V_i of (x - v)`. The decomposition
+      via the actual subspace poly is more complex (the poly has 2^i
+      terms, not 2), but the algorithm can still be derived — the
+      `rep_in_si` 2-term divisions need to be replaced with i-term
+      divisions matching the actual subspace poly structure.
+
+  (b) Port polyeval'''s `btfy.c` butterfly alongside the basisCvt. The
+      polyeval butterfly is internally consistent with the polyeval-style
+      novelpoly basis. This would require changing the Cantor basis
+      used throughout the pipeline (butterfly'''s v-table lookups would
+      use polyeval'''s v_i values, not ours).
+
+  (c) Hybrid: keep our existing matrix-form basisCvt for sizes that fit
+      in cache (n <= 4096), and only use the recursive polyeval-style
+      for sizes too big for the matrix form (n > 4096, where M_inv
+      is > 1 GiB). This is a pragmatic workaround that doesn'''t fully
+      solve FIX-3a but unblocks the canonical n = 10K workload.
+
+Recommend option (c) as the immediate pragmatic step (unblocks issue #27
+verification), and pursue option (a) in a follow-up for full
+O(N log N) BasisCvt. Option (b) is the cleanest long-term solution
+but requires a deeper refactor.
+
+Committed: a791843 on v1/wsl2-avx512-par3-vs-par2 branch.
