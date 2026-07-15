@@ -162,6 +162,14 @@ int main(void) {
     bench_config(2048, 256, 256, 3, ncpu);
     bench_config(2048, 512, 256, 3, ncpu);
 
+    /* Larger-N sweep to expose the additive FFT win. Capped at N=2048
+     * because the HQC Alg 2 has GF64_HQC_MAX_N=4096 cap on its stack
+     * scratch, and N=4096 itself runs into setup overhead in the
+     * microbench. The canonical 10K-slice workload would need a
+     * bumped cap. */
+    bench_config(2048, 1024, 64, 3, ncpu);
+    bench_config(2048, 2048, 32, 2, ncpu);
+
     printf("\nDone.\n");
     return 0;
 }
