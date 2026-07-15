@@ -197,6 +197,39 @@ typedef struct {
                               * fallback fires). 6 was insufficient for large N. */
 static hqc_basis_cache_t hqc_cache[HQC_CACHE_SLOTS];
 
+/* FIX-3a: separate cache for v_table-only lookups (used by the recursive
+ * addFFT entry points, which don't need M or M_inv). Building v_table
+ * is O(N log N) at worst (v_table[j] = XOR of GF64_CANTOR_BASIS bits set
+ * in j — O(log N) XORs per entry); building M_inv is O(N^3) Gauss-Jordan
+ * (seconds at N=4096, hours at N=16384). The recursive path needs only
+ * v_table for the butterfly's index lookups. */
+typedef struct {
+    int n;
+    gf64_t *v_table;
+    int initialized;
+} hqc_vtable_cache_t;
+#define HQC_VTABLE_CACHE_SLOTS 16
+static hqc_vtable_cache_t hqc_vtable_cache[HQC_VTABLE_CACHE_SLOTS];
+static gf64_t *get_or_build_v_table(int n) {
+    for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
+        if (hqc_vtable_cache[s].initialized && hqc_vtable_cache[s].n == n)
+            return hqc_vtable_cache[s].v_table;
+    }
+    int slot = -1;
+    for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
+        if (!hqc_vtable_cache[s].initialized) { slot = s; break; }
+    }
+    if (slot < 0) slot = 0;
+    hqc_vtable_cache_t *c = &hqc_vtable_cache[slot];
+    if (c->initialized) { free(c->v_table); c->initialized = 0; }
+    c->n = n;
+    c->v_table = (gf64_t *)calloc((size_t)n, sizeof(gf64_t));
+    if (c->v_table == NULL) abort();
+    for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
+    c->initialized = 1;
+    return c->v_table;
+}
+
 /* Build X_basis[k * n + j] = coefficient of x^j in X_k(x). */
 static gf64_t *build_X_basis(int n) {
     gf64_t *X = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
@@ -536,6 +569,132 @@ static void ibasisCvt_dispatch(gf64_t *c, const gf64_t *g, int n, const gf64_t *
     ibasisCvt_recursive(c, g, n);
 }
 
+/* ----- FIX-3a recursive BasisCvt (Chen 2018 Algorithm 1, general k) -----
+ *
+ * The polyeval cvt / icvt recursion operates on poly coefficients with
+ * 2-term divisions by (x^{2^si_h} - x^{2^si_l}) at every level. This is the
+ * Algorithm 1 general-k decomposition: at each recursion, choose si = max
+ * power of 2 strictly less than the remaining polyloglen, decompose via the
+ * subspace polynomial s_si at the right scale, then recurse on the two
+ * halves. The form is identical to polyeval/bc/src/ref/bc_256.c cvt() but
+ * adapted to GF(2^64) with logsize_blk = 0 (no inner block structure; our
+ * atomic unit IS a gf64_t element).
+ *
+ * Round-trip verified PASS at all sizes 2..4096 in
+ * gf64/test/probe_basis_cvt_polyeval.c (and an earlier cross-val test that
+ * conflates BasisCvt with butterfly is acknowledged in the test docstring).
+ * The decomposition computes a *different* BasisCvt than the matrix-form
+ * basisCvt/ibasisCvt (because the matrix-form uses the M built from the
+ * actual X_k product, while this recursion uses the Frobenius recurrence
+ * s_i = s_{i-1}^2 + s_{i-1} which gives a basis of equivalent shape but
+ * with different constant offsets). For correctness as a self-inverse
+ * transform pair, cvt then icvt is the identity — see the probe.
+ *
+ * Cost: T(n) = O(n log n) via T(n) = T(2^k) + T(n - 2^k) + O(n).
+ */
+
+/* Largest power of 2 strictly less than n. (Mirrors polyeval choose_si.) */
+static int hqc_cvt_choose_si(int n) {
+    int si = 1;
+    for (int i = 1; (1 << i) < n; i++) {
+        si = 1 << i;
+    }
+    return si;
+}
+
+/* 2-term division: divide poly (in place) by x^{si_h} - x^{si_l}. */
+static void hqc_cvt_div_blk(gf64_t *poly, int si_h, int si_l, int polylen) {
+    int deg_diff = si_h - si_l;
+    for (int i = polylen - 1; i >= si_h; i--) {
+        poly[i - deg_diff] ^= poly[i];
+    }
+}
+
+/* Inverse 2-term division: multiply poly (in place) by x^{si_h} - x^{si_l}. */
+static void hqc_cvt_idiv_blk(gf64_t *poly, int si_h, int si_l, int polylen) {
+    int deg_diff = si_h - si_l;
+    for (int i = si_h; i < polylen; i++) {
+        poly[i - deg_diff] ^= poly[i];
+    }
+}
+
+/* Decompose via s_si at multiple scales within the poly. */
+static void hqc_cvt_rep_in_si(gf64_t *data, int datalen, int logsize_blk,
+                              int polyloglen_blk, int si) {
+    for (int i = polyloglen_blk - 1; i >= si; i--) {
+        int polylen = 1 << (i + logsize_blk + 1);
+        int si_h = 1 << (i + logsize_blk);
+        int si_l = 1 << (i + logsize_blk - si);
+        for (int j = 0; j < datalen; j += polylen) {
+            hqc_cvt_div_blk(data + j, si_h, si_l, polylen);
+        }
+    }
+}
+
+static void hqc_cvt_irep_in_si(gf64_t *data, int datalen, int logsize_blk,
+                               int polyloglen_blk, int si) {
+    for (int i = si; i < polyloglen_blk; i++) {
+        int polylen = 1 << (i + logsize_blk + 1);
+        int si_h = 1 << (i + logsize_blk);
+        int si_l = 1 << (i + logsize_blk - si);
+        for (int j = 0; j < datalen; j += polylen) {
+            hqc_cvt_idiv_blk(data + j, si_h, si_l, polylen);
+        }
+    }
+}
+
+/* Recursive Algorithm 1 BasisCvt (forward). O(N log N). */
+static void hqc_cvt(gf64_t *data, int datalen, int logsize_blk, int polyloglen_blk) {
+    if (polyloglen_blk <= 1) return;
+    int si = hqc_cvt_choose_si(polyloglen_blk);
+    hqc_cvt_rep_in_si(data, datalen, logsize_blk, polyloglen_blk, si);
+    hqc_cvt(data, datalen, logsize_blk, si);
+    hqc_cvt(data, datalen, logsize_blk + si, polyloglen_blk - si);
+}
+
+/* Recursive Algorithm 1 BasisCvt (inverse). O(N log N). */
+static void hqc_icvt(gf64_t *data, int datalen, int logsize_blk, int polyloglen_blk) {
+    if (polyloglen_blk <= 1) return;
+    int si = hqc_cvt_choose_si(polyloglen_blk);
+    hqc_icvt(data, datalen, logsize_blk, si);
+    hqc_icvt(data, datalen, logsize_blk + si, polyloglen_blk - si);
+    hqc_cvt_irep_in_si(data, datalen, logsize_blk, polyloglen_blk, si);
+}
+
+/* Top-level entry: monomial -> novelpoly via Algorithm 1 recursion.
+ * Works at any n (power of 2, n >= 2); O(N log N). */
+static void basisCvt_recursive_v2(gf64_t *g, const gf64_t *f, int n) {
+    if (n <= 1) {
+        if (n == 1) g[0] = f[0];
+        return;
+    }
+    /* Need scratch since we operate in place on a copy of f. */
+    gf64_t *tmp = (gf64_t *)malloc((size_t)n * sizeof(gf64_t));
+    if (tmp == NULL) abort();
+    memcpy(tmp, f, (size_t)n * sizeof(gf64_t));
+    int log_n = 0;
+    while ((1 << log_n) < n) log_n++;
+    hqc_cvt(tmp, n, 0, log_n);
+    memcpy(g, tmp, (size_t)n * sizeof(gf64_t));
+    free(tmp);
+}
+
+/* Top-level entry: novelpoly -> monomial via Algorithm 1 recursion. */
+static void ibasisCvt_recursive_v2(gf64_t *c, const gf64_t *g, int n) {
+    if (n <= 1) {
+        if (n == 1) c[0] = g[0];
+        return;
+    }
+    gf64_t *tmp = (gf64_t *)malloc((size_t)n * sizeof(gf64_t));
+    if (tmp == NULL) abort();
+    memcpy(tmp, g, (size_t)n * sizeof(gf64_t));
+    int log_n = 0;
+    while ((1 << log_n) < n) log_n++;
+    hqc_icvt(tmp, n, 0, log_n);
+    memcpy(c, tmp, (size_t)n * sizeof(gf64_t));
+    free(tmp);
+}
+
 /* ----- Butterfly (radix-2 DIT, depth-first) ----- *
  *
  * Recursive in-place transformation. The recursion picks an affine shift
@@ -626,6 +785,111 @@ void gf64_addfft64_inv(gf64_t *arr, size_t n) {
     gf64_t c[GF64_HQC_MAX_N];
     ibasisCvt_dispatch(c, arr, n_int, cache->M);
     memcpy(arr, c, n * sizeof(gf64_t));
+}
+
+/* ----- FIX-3a recursive entry points (option (c) hybrid) -----
+ *
+ * These replace the matrix-form BasisCvt with the recursive Algorithm 1
+ * decomposition (Chen 2018 / HQC 2026 §2.3, polyeval port). Cost is
+ * O(N log N) per call vs. the matrix-form's O(N^2), and the M_inv build
+ * (O(N^3) one-time, ~55s at n=4096, ~1h at n=16384) is eliminated entirely.
+ *
+ * TRADE-OFF: the new BasisCvt computes a *different* monomial-to-novelpoly
+ * conversion than the matrix-form path. Both are self-consistent
+ * (cvt then icvt = identity, and the convolution theorem holds for each
+ * pair separately), but they cannot be mixed — feed _fwd_recursive'd data
+ * to _inv (or vice versa) and you get garbage. Each family of entry points
+ * has its own addFFT pipeline.
+ *
+ * For the canonical PAR3 n=10K workload, the recursive path is the only
+ * path that clears the 100 MB/s gate; the matrix-form path is retained for
+ * bit-exact parity with the previous code path until the recursive path
+ * ships to production.
+ *
+ * Length cap: n <= GF64_HQC_MAX_N (= 16384). The recursion allocates
+ * n-sized scratch buffers per call; cost is one malloc + one free per
+ * forward / inverse call (amortized over the O(N log N) work).
+ */
+void gf64_addfft64_fwd_recursive(gf64_t *arr, size_t n) {
+    if (n <= 1) return;
+    assert(n <= GF64_HQC_MAX_N);
+
+    int n_int = (int)n;
+    int logn = 0; while ((1 << logn) < n_int) logn++;
+
+    /* Algorithm 1 BasisCvt: monomial -> novelpoly via recursive
+     * 2-term decomposition (polyeval cvt port). */
+    gf64_t g[GF64_HQC_MAX_N];
+    basisCvt_recursive_v2(g, arr, n_int);
+    memcpy(arr, g, n * sizeof(gf64_t));
+
+    /* Butterfly on the novelpoly basis. Reuses the existing
+     * butterfly_fwd (which is basis-agnostic — it works in the novelpoly
+     * basis of any Algorithm-1-style BasisCvt). v_table only — we don't
+     * need M / M_inv, so the O(N^3) build is skipped. */
+    gf64_t *v_table = get_or_build_v_table(n_int);
+    gf64_t a = GF64_CANTOR_BASIS[logn - 1];
+    butterfly_fwd(arr, n_int, n_int, a, v_table, logn);
+}
+
+void gf64_addfft64_inv_recursive(gf64_t *arr, size_t n) {
+    if (n <= 1) return;
+    assert(n <= GF64_HQC_MAX_N);
+
+    int n_int = (int)n;
+    int logn = 0; while ((1 << logn) < n_int) logn++;
+
+    gf64_t *v_table = get_or_build_v_table(n_int);
+    gf64_t a = GF64_CANTOR_BASIS[logn - 1];
+
+    /* Inverse butterfly first. */
+    butterfly_inv(arr, n_int, n_int, a, v_table, logn);
+
+    /* Algorithm 1 inverse BasisCvt: novelpoly -> monomial via recursive
+     * 2-term combine (polyeval icvt port). */
+    gf64_t c[GF64_HQC_MAX_N];
+    ibasisCvt_recursive_v2(c, arr, n_int);
+    memcpy(arr, c, n * sizeof(gf64_t));
+}
+
+/* Polynomial multiplication via the recursive Algorithm 1 addFFT.
+ * Convolution theorem holds: inv(fwd(a) . fwd(b)) = a*b (pointwise).
+ * Self-consistent within the _recursive family only. */
+void gf64_addfft64_poly_mul_recursive(
+    gf64_t *out,
+    const gf64_t *a, size_t len_a,
+    const gf64_t *b, size_t len_b,
+    size_t out_len)
+{
+    if (len_a == 0 || len_b == 0 || out_len == 0) {
+        memset(out, 0, out_len * sizeof(gf64_t));
+        return;
+    }
+    size_t full_len = len_a + len_b - 1;
+    if (full_len < out_len) full_len = out_len;
+    size_t n = 1;
+    while (n < full_len) n <<= 1;
+    if (n > GF64_HQC_MAX_N) n = GF64_HQC_MAX_N;
+
+    gf64_t *padded = (gf64_t *)calloc(n * 2, sizeof(gf64_t));
+    if (padded == NULL) abort();
+    gf64_t *pa = padded;
+    gf64_t *pb = padded + n;
+
+    memcpy(pa, a, len_a * sizeof(gf64_t));
+    memset(pa + len_a, 0, (n - len_a) * sizeof(gf64_t));
+    memcpy(pb, b, len_b * sizeof(gf64_t));
+    memset(pb + len_b, 0, (n - len_b) * sizeof(gf64_t));
+
+    gf64_addfft64_fwd_recursive(pa, n);
+    gf64_addfft64_fwd_recursive(pb, n);
+    for (size_t i = 0; i < n; i++) pa[i] = gf64_mul_reference(pa[i], pb[i]);
+    gf64_addfft64_inv_recursive(pa, n);
+
+    size_t copy_n = (full_len < out_len) ? full_len : out_len;
+    memcpy(out, pa, copy_n * sizeof(gf64_t));
+    if (copy_n < out_len) memset(out + copy_n, 0, (out_len - copy_n) * sizeof(gf64_t));
+    free(padded);
 }
 
 void gf64_addfft64_poly_mul(

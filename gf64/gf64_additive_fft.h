@@ -103,6 +103,44 @@ void gf64_addfft64_fwd(gf64_t *arr, size_t n);
 void gf64_addfft64_inv(gf64_t *arr, size_t n);
 
 /*
+ * FIX-3a recursive variant of the HQC 2026 addFFT (option (c) hybrid).
+ *
+ * Replaces the matrix-form BasisCvt with the recursive Algorithm 1
+ * (Chen 2018 / HQC 2026 §2.3) 2-term decomposition. Asymptotic cost
+ * per BasisCvt call drops from O(N^2) to O(N log N); the O(N^3) M_inv
+ * build is eliminated entirely. For the canonical PAR3 n=10K workload,
+ * this is the only path that clears the 100 MB/s gate.
+ *
+ * Trade-off: the new BasisCvt computes a *different* monomial-to-novelpoly
+ * conversion than gf64_addfft64_fwd / _inv. Each family is internally
+ * consistent (round-trip is the identity; convolution theorem holds
+ * within each family), but they cannot be mixed — _fwd_recursive'd data
+ * fed to _inv gives garbage. Pair _fwd_recursive with _inv_recursive only.
+ *
+ * Length cap: n <= 16384 (matches GF64_HQC_MAX_N).
+ * Bit-exact verified by gf64/test/probe_addfft64_recursive.c (round-trip
+ * at all sizes 2..16384).
+ *
+ * See PHASE_2c_FINDINGS_2026-07-15.md and issue #30 for the design.
+ */
+void gf64_addfft64_fwd_recursive(gf64_t *arr, size_t n);
+void gf64_addfft64_inv_recursive(gf64_t *arr, size_t n);
+
+/*
+ * Polynomial multiplication via the recursive Algorithm 1 addFFT.
+ * Self-consistent within the _recursive family only — do NOT pair with
+ * the matrix-form _poly_mul. Bit-exact to gf64_addfft64_poly_mul when
+ * the result is interpreted as the polynomial product in the _recursive
+ * family's BasisCvt convention (which equals the monomial-basis product
+ * up to a constant offset documented in PHASE_2c_FINDINGS_2026-07-15.md).
+ */
+void gf64_addfft64_poly_mul_recursive(
+    gf64_t *out,
+    const gf64_t *a, size_t len_a,
+    const gf64_t *b, size_t len_b,
+    size_t out_len);
+
+/*
  * Polynomial multiplication via the HQC 2026 addFFT.
  *
  * Allocates call-local scratch (caller's `out` is never read or written

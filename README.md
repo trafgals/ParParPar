@@ -4,38 +4,22 @@ High-performance PAR3 create and repair with GF(2^64) recovery, written in C++ w
 
 ## Throughput
 
-> **Note on the numbers below:** the v2 max-perf plan shipped a stack of new
-> kernel optimizations (PA1-PA7 coupled-input, PB1-PB7 fused-output,
-> PC1-PC7 2D-blocked, plus PD1-PD3 supporting opts — see [What this fork
-> adds](#what-this-fork-adds) below). The plan's bench gates
-> (≥ 600 / ≥ 900 / ≥ 1200 MB/s) **were not met** — on this host (Zen4 / 1 GiB
-> / 10% recovery / 4 threads / tmpfs / taskset 0-3), every commit tested
-> (T2 baseline, pre-PA, PA7, PB7+PD1) hits the same ~20–33 MB/s environmental
-> ceiling. The v3 max-perf plan followed with 6 sequential phases (foundation
-> + I/O streaming + JS overhead reduction + AVX-512 threshold + wider SIMD +
-> parallel Cauchy + software prefetch), shipping 13 of 24 tasks before the
-> session timed out; the end-to-end 1 GiB throughput still hits the same
-> ~30 MB/s environmental ceiling. A standalone C++-only bench (T1,
-> `test/bench/par3-native-bench`) confirms the kernel itself is hardware-
-> bound at ~1097 MB/s on AVX2 — the ceiling is end-to-end pipeline, not the
-> kernel. The earlier 395.99 / 471.24 / 220.81 MB/s figures in this section
-> are **stale** and are **not reproducible** in this environment; they are
-> retained here for historical reference only. The new measured numbers,
-> against the same 1 GiB / 10% recovery / 4-thread / tmpfs bench protocol,
-> are:
+**PAR3-create 1 GiB throughput (Zen4 7800X3D, AVX-512, 1 GiB / 10K slices / 10% recovery, 1 GiB / 1000 slices / 10% recovery):**
 
-| Commit / config | Throughput | Notes |
-|---|---:|---|
-| T2 baseline (`90b0611`, pre-PA) | ~21 MB/s | legacy WorkerThread, scalar fallback |
-| PA7 (`958e9d1`) | 30–33 MB/s | coupled-input kernel +40% over T2 |
-| PB7 (post-PD1, v2 HEAD) | ~20–30 MB/s | within env-ceiling noise (v2 intermediate; v3 plan shipped 13/24 tasks) |
-| Env ceiling | ~30 MB/s | host/branch artifact — same on every commit |
-| PAR3 create 1 GiB (v3 max-perf plan, 13/24 tasks shipped) | env-ceiling: ~30 MB/s; C++-only bench (T1) hit ~1097 MB/s on AVX2; WSL2 dispatch is intermittent [†] | mmap + streaming NAPI + Buffer pool + LRU pool + worker_threads hash + AVX-512 threshold (16MiB→256MiB) + wider SIMD K=2 + parallel Cauchy + software prefetch + isolated detection TU + SIGILL probe |
-| `PAR3_GF64_USE_AVX512=1` (avx512-wsl2-detect, T0-T3) | 30 MB/s (JS env-ceiling); ~1097 MB/s (C++-only kernel) | operator escape hatch for reliable AVX-512 dispatch on WSL2/Hyper-V hosts; co-exists with `PAR3_AVX512_FORCE`; see [†] |
-| D1–D5 (W2-T1, parallel create) | target ≥ 88 MB/s (1 GiB / 1M slices / 4 KiB / 10% recovery / taskset -c 0-3 / tmpfs); cumulative floor +27–47 MB/s on top of 44.5 MB/s baseline | D2 alone lifts default-env bench from 44→69 MB/s (+57%); D1+D3+D4+D5+D7 clear the 88 MB/s bar — first change set to exceed the env-ceiling |
-| T9 (this session, WSL2 + `PAR3_GF64_USE_AVX512=1`) | 1 GiB / 10K: 29.17 MB/s (run 1), 24.38 MB/s (run 2); 1 GiB / 1M: **71.51 MB/s** (warmup run); 100 MiB / 10K: 26.25 MB/s; env-ceiling reproduced | JS-pipeline ceiling is the same on forced AVX-512 — kernel throughput is not the limiter on 10K-slice workloads. 1 GiB / 1M-slice (which the §9 baseline gate exercises) lands **below** the 88 MB/s gate on WSL2 even with reliable AVX-512. Evidence: `.omo/evidence/par3-create-{100M,1G-forced-avx512}{,-r2}.log`, `.omo/evidence/par3-create-1G-1M-forced-avx512-warmup.log` |
-| **Native Windows PAR3 (AVX-512 dispatch auto, this session)** | 1 GiB / 1000 sl: **102 MB/s**; 1 GiB / 10K sl: **28.3 MB/s**; Repair (1 GiB, 5% loss): **58.5 MB/s** | MSVC-parpar_gf64.node, Zen4 7800X3D, no env override needed. AVX-512 detected via CPUID+XCR0+_xgetbv (MSVC intrinsics, no SIGILL probe). The create numbers match WSL forced-AVX-512 ceiling, confirming the JS-pipeline bound. Repair throughput is *higher* than create because the recovery path uses pre-computed coefficients. PAR2 on same host (GFNI+AVX512): 1 GiB / 1000 sl create **622 MB/s** — PAR3 GF(2^64) Cauchy-matrix overhead is dominant. |
-| **v2-4 — matrix-build / file-read overlap (this commit)** | 1 GiB / 10K sl: **28.0 MB/s** (kernel 28.9s, was 29.7s); 100 MiB / 1000 sl: **92.5 MB/s** (was 90.3 MB/s) | New NAPI entries `build_coefficient_matrix` and `compute_recovery_with_coeff`; JS layer spawns the matrix build in a `worker_threads.Worker` BEFORE the file read begins; `finalizeRecovery()` blocks on a `SharedArrayBuffer` + `Atomics.wait` until ready. Wall-clock savings bounded by min(matrix_build_time, read_time) — at 1 GiB / 10K that's ~4s out of ~30s, a 14% improvement bounded to ~10% wall-clock. The kernel COMPUTATION itself (not the build) is the dominant remaining cost; see [issue #22](https://github.com/trafgals/parparpar/issues/22) for the research path (subproduct tree) to break that barrier. |
+| State | 1 GiB / 10K sl | 1 GiB / 1000 sl | Source |
+|---|---:|---:|---|
+| **PARPAR baseline** (upstream PAR2 GF(16)+GFNI+AVX512) | n/a | **622 MB/s** create | native Windows host, MSVC, par2cmdline parity |
+| **Current state** (this fork, PAR3 GF(2^64)) | 28–30 MB/s | **102 MB/s** | env-ceiling on WSL2 / native Windows; v2-4 (matrix-build / file-read overlap) commit |
+| **Target state** (issue #27 acceptance gate) | **≥ 100 MB/s** | n/a | 1 GiB / 10K-slice is the canonical PAR3-create workload |
+
+The 10K-slice workload is held at the ~30 MB/s JS-pipeline ceiling: the
+C++-only kernel hits ~1097 MB/s on AVX2 (`test/bench/par3-native-bench`),
+so kernel throughput is not the limiter. The bottleneck is the O(N²)
+matrix-form basisCvt inside `gf64_addfft64` (250× too slow at n=4096);
+`PHASE_2c_FINDINGS_2026-07-15.md` documents the recursive Algorithm 1
+(Chen 2018 / HQC 2026 §2.3) port required to clear the gate. Tracking
+issue: [trafgals/parparpar#30](https://github.com/trafgals/parparpar/issues/30)
+at the only acceptable PR target — never upstream `animetosho/ParPar`.
 
 [†] **WSL2 dispatch bug (issue #17):** on WSL2/Hyper-V hosts, `-march=native`
 compiles AVX-512 instructions into the binary, which the hypervisor detects
@@ -48,49 +32,6 @@ detection TU with `-mno-avx512f` to remove the architectural trigger,
 partial. The operator must set `PAR3_GF64_USE_AVX512=1` to force reliable
 AVX-512 dispatch on WSL2/Hyper-V hosts. See [BENCHMARKING.md §5](BENCHMARKING.md)
 for the full state and `test/par3-cpu-detect.js` for the regression test.
-
-[D1] **Affinity-aware worker count:** `HASH_POOL_SIZE` uses `os.cpus().length`
-which reflects the `taskset` affinity mask. When pinned to 4 cores (e.g.
-`taskset -c 0-3`), the pool allocates exactly 4 workers. Previously the
-count was hard-coded or derived from total system CPUs, risking
-oversubscription under `taskset`. See `lib/par3gen.js` line 286.
-
-[D2] **Parallel hash now enabled by default:** BLAKE3-16 hashing of data
-packets is dispatched across a `worker_threads` pool with
-`PAR3_GF64_PARALLEL_HASH` defaulting to enabled. Set
-`PAR3_GF64_PARALLEL_HASH=0` to disable (serial hash). When enabled, the
-read loop batches blocks in groups of `poolSize × 16 = 64` and dispatches
-hashes in parallel, preserving wire order via ordered writes. See
-`lib/par3gen.js` lines 287, 1449–1452.
-
-[D3] **Hasher batch size increased to 64:** The inner read loop accumulates
-`HASH_POOL_SIZE × HASH_BATCH_MULT = 4 × 16 = 64` blocks before flushing,
-reducing worker wakeup overhead and per-message IPC cost. The per-batch
-recovery path uses the same `PAR3_BATCH_SIZE` default of 64. See
-`lib/par3gen.js` lines 288, 1581–1582.
-
-[D4] **Single bulk read replaces per-block syscalls:** Each input file is
-read into one pre-allocated buffer via a single `fs.readSync()` call,
-replacing the previous pattern of one `fs.readSync()` per block (262 K
-syscalls for a 1 GiB file at 4 KiB blocks). On failure (e.g. file too
-large for a single allocation), the old per-block path is used as fallback.
-See `lib/par3gen.js` lines 1430–1445.
-
-[D5] **Batched output writes:** Recovery packets are accumulated in groups
-of 64, merged into a single `Buffer.allocUnsafe(totalLen)`, and written via
-`stream.cork()` / `stream.uncork()` to reduce event-loop round-trips and
-avoid one `write()` per packet. Backpressure is handled via the `drain`
-event on the merged write. See `lib/par3gen.js` lines 1789–1839.
-
-The kernel work shipped is **bit-exact correct** (see the kernel-parity test
-below) and provides measurable inner-loop improvements that don't move past
-this host's environmental ceiling. The plan's documented success criteria
-(targets ≥ 600 / ≥ 900 / ≥ 1200 MB/s) are environmentally unreachable here;
-the bit-exact kernel work is what shipped. The v3 plan's 1200 MB/s target
-faces the same ceiling — the C++-only bench (T1) hit ~1097 MB/s on AVX2,
-which is the kernel's absolute hardware-bound throughput; the end-to-end
-stack still hits the same ~30 MB/s. PAR3 still offers the field-size
-and file-size advantages over PAR2 listed below.
 
 PAR3 GF(2^64) trades a larger Galois field for a higher recovery-block cap
 and unbounded input size. It lifts the 65 537 input-block-per-slice cap and
