@@ -131,5 +131,35 @@ int main(void) {
         printf("\n");
     }
     printf("%s\n", ok ? "M*M_inv = I (Gauss-Jordan correct)" : "M*M_inv != I — INVERSION BUG");
+
+    /* For selected inputs c, compute g = M_inv * c (basisCvt) and print
+     * alongside the EXPECTED novelpoly coefficients for that input
+     * (computed by hand from the X basis table above). */
+    static const struct {
+        const char *name;
+        gf64_t c[8];
+    } CASES[] = {
+        {"c = 1 (constant)",         {1, 0, 0, 0, 0, 0, 0, 0}},
+        {"c = x (linear)",           {0, 1, 0, 0, 0, 0, 0, 0}},
+        {"c = x^2",                  {0, 0, 1, 0, 0, 0, 0, 0}},
+        {"c = x^3",                  {0, 0, 0, 1, 0, 0, 0, 0}},
+        {"c = x^4",                  {0, 0, 0, 0, 1, 0, 0, 0}},
+        {"c = x^5",                  {0, 0, 0, 0, 0, 1, 0, 0}},
+        {"c = x^6",                  {0, 0, 0, 0, 0, 0, 1, 0}},
+        {"c = x^7 (highest)",        {0, 0, 0, 0, 0, 0, 0, 1}},
+    };
+    int ncases = sizeof(CASES) / sizeof(CASES[0]);
+    printf("\n=== BASISCVT-AT-N=8: g = M_inv * c for each monomial basis input ===\n");
+    for (int t = 0; t < ncases; t++) {
+        gf64_t g[8];
+        for (int k = 0; k < n; k++) {
+            gf64_t acc = 0;
+            for (int j = 0; j < n; j++) acc ^= gf64_mul_reference(M_inv[k * n + j], CASES[t].c[j]);
+            g[k] = acc;
+        }
+        printf("  %-28s  g = [", CASES[t].name);
+        for (int k = 0; k < n; k++) printf(" %016llx", (unsigned long long)g[k]);
+        printf(" ]\n");
+    }
     return ok ? 0 : 1;
 }
