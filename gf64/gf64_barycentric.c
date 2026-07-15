@@ -27,7 +27,11 @@
  *   2. Evaluate P'(x_j) at each input point via gf64_multi_point_eval
  *      (T8 — gf64_mpe.{c,h}). The subproduct tree is built over the
  *      input points {x_j}; MPE walks its leaves and writes P'(x_j)
- *      directly into deriv_at_points. No local Horner loop here.
+ *      directly into deriv_at_points. The current MPE implementation
+ *      is Bostan-Schost top-down with schoolbook divmod (O(M(N) log²N)
+ *      with Karatsuba-based poly_mul). When issue #23 Phase 1 lands
+ *      an additive-FFT poly_mul primitive, MPE drops to O(M_FFT(N) log²N)
+ *      with M_FFT = O(N log N) and T7 follows for free.
  *
  *   3. Invert the N values in one shot via Itoh-Tsujii batched inversion
  *      (gf64_invert_ita_batch from T5).
@@ -51,12 +55,8 @@
 HEDLEY_BEGIN_C_DECLS
 
 /* Public reference for field multiplication, declared in gf64_single.c.
- * The scalar CLMUL-based reference is appropriate here: T7 is a correctness
- * milestone (the O(N^2) Horner loop will be replaced by T8's Bostan-Schost
- * MPE); using the ISA-independent reference avoids a self-test ordering
- * problem with the build target's ISA gating. */
-extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
-
+ * Used only in path-of-no-concern edges; the heavy lifting here goes
+ * through gf64_multi_point_eval which uses gf64_mul_reference internally. */
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
 void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {

@@ -211,6 +211,7 @@ test_gf64_fenger_pipeline: $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c
 # Phase 3 microbench (issue #28): wall-clock throughput of gf64_fenger_matvec
 # vs explicit Cauchy reference, downscaled from the canonical 1 GiB / 10K /
 # 1K workload to fit in microbench RAM budgets. Throughput is reported in
-# MB/s of (input + output) bytes processed.
+# MB/s of (input + output) bytes processed. Built with -fopenmp to expose
+# the multi-threaded execute path via the prepare/execute/release API.
 bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) -fopenmp $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c

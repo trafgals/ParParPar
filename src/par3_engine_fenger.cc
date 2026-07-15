@@ -7,10 +7,10 @@
  *
  *     out[r][w] = XOR_{c=0..numInputs-1} in[c][w] / (y_r XOR x_c)
  *
- * via the Bostan-Schost top-down Fenger pipeline (gf64_fenger_matvec).
- * Bit-identical to the legacy 2D-muladd path (verified by Phase 1's
- * bit-exact parity test: 12/12 PASS across N∈{1,2,4,8,16,32},
- * R∈{1,2,4,8,16}, B∈{1,2,4,8}).
+ * via the Bostan-Schost top-down Fenger pipeline (gf64_fenger_matvec /
+ * gf64_fenger_{prepare,execute,release}). Bit-identical to the legacy
+ * 2D-muladd path (verified by Phase 1's bit-exact parity test: 12/12
+ * PASS across N∈{1,2,4,8,16,32}, R∈{1,2,4,8,16}, B∈{1,2,4,8}).
  *
  * ASYMPTOTICS
  * -----------
@@ -41,10 +41,15 @@
  *
  * THREADING
  * ---------
- *   Currently single-threaded: gf64_fenger_matvec is sequential per word.
- *   Per-thread sharding across input blocks (each thread owns a slice
- *   of B and runs the full per-word pipeline on that slice) is the
- *   obvious next-step parallelization once the baseline is bit-exact.
+ *   Per-thread sharding across the B-axis: the prepare phase builds the
+ *   trees and weights ONCE in the calling thread, then B is split into
+ *   numThreads slices and each thread runs gf64_fenger_execute on its
+ *   slice. The threads share read-only state (T_X, T_Y, V_prime,
+ *   V_at_y_inv); the execute function allocates per-call scratch via
+ *   gf64_multi_point_* and is therefore reentrant.
+ *
+ *   numThreads = 0 selects "auto": cap at the smaller of (blockSize64,
+ *   GetEffectiveCpuCount()) to avoid spinning more threads than words.
  *
  * FALLBACK
  * --------
@@ -62,22 +67,34 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <thread>
+#include <vector>
 
-/* C-linkage declaration for the Fenger matvec kernel (defined in
- * gf64/gf64_fenger.c). */
-extern "C" void gf64_fenger_matvec(
-	const gf64_t *in,  size_t N, size_t B,
-	      gf64_t *out, size_t R,
+/* C-linkage declarations for the Fenger pipeline. */
+extern "C" gf64_fenger_ctx *gf64_fenger_prepare(
 	uint64_t firstInput,
-	uint64_t firstRecovery
+	uint64_t firstRecovery,
+	size_t N,
+	size_t R
 );
+extern "C" void gf64_fenger_execute(
+	const gf64_fenger_ctx *ctx,
+	const gf64_t *in,  size_t B,
+	      gf64_t *out,
+	size_t w_start, size_t w_end
+);
+extern "C" void gf64_fenger_release(gf64_fenger_ctx *ctx);
+
+/* Forward declaration from par3_engine.cc — the cpu-count helper used
+ * by ComputeRecoveryBlocksWithCoeff's per-thread shard logic. */
+extern int GetEffectiveCpuCount(void);
 
 void GF64Controller::ComputeRecoveryBlocksFenger(
 	const gf64_t* inputs, size_t numInputs,
 	gf64_t* recovery, size_t numRecovery,
 	size_t blockSize64,
 	uint64_t firstInput, uint64_t firstRecovery,
-	int /* numThreads — reserved, currently ignored */
+	int numThreads
 ) {
 	/* Trivial-input short-circuit, matching the engine convention. */
 	if (numInputs == 0 || numRecovery == 0 || blockSize64 == 0) {
@@ -111,9 +128,51 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 		recovery[i] = 0;
 	}
 
-	gf64_fenger_matvec(
-		inputs, numInputs, blockSize64,
-		recovery, numRecovery, blockSize64,
-		firstInput, firstRecovery
+	/* Auto thread count: cap at the smaller of (blockSize64, cpu count).
+	 * blockSize64 is the B-axis size; no point in spinning more threads
+	 * than words when each thread takes a contiguous B-slice. */
+	if (numThreads <= 0) {
+		int cpu = GetEffectiveCpuCount();
+		if (cpu <= 0) cpu = 1;
+		size_t max_useful = (size_t)cpu;
+		if (max_useful > blockSize64) max_useful = blockSize64;
+		numThreads = (int)max_useful;
+		if (numThreads < 1) numThreads = 1;
+	}
+
+	/* Prepare the shared pipeline state. */
+	gf64_fenger_ctx *ctx = gf64_fenger_prepare(
+		firstInput, firstRecovery, numInputs, numRecovery
 	);
+
+	/* Single-thread fast path: avoid the std::thread overhead. */
+	if (numThreads == 1) {
+		gf64_fenger_execute(ctx, inputs, blockSize64, recovery, 0, blockSize64);
+		gf64_fenger_release(ctx);
+		return;
+	}
+
+	/* Per-thread sharding: divide B across numThreads contiguous slices.
+	 * Each slice is roughly ceil(B / numThreads); the last slice absorbs
+	 * the remainder. */
+	std::vector<std::thread> workers;
+	workers.reserve((size_t)numThreads);
+	const size_t chunk = (blockSize64 + (size_t)numThreads - 1)
+	                     / (size_t)numThreads;
+	size_t w_start = 0;
+	for (int t = 0; t < numThreads && w_start < blockSize64; t++) {
+		size_t w_end = w_start + chunk;
+		if (w_end > blockSize64) w_end = blockSize64;
+		workers.emplace_back(
+			[ctx, inputs, blockSize64, recovery, w_start, w_end]() {
+				gf64_fenger_execute(
+					ctx, inputs, blockSize64, recovery, w_start, w_end
+				);
+			}
+		);
+		w_start = w_end;
+	}
+	for (auto& th : workers) th.join();
+
+	gf64_fenger_release(ctx);
 }
