@@ -30,10 +30,11 @@ TEST_GF64_POLY_MUL_TOOM3_SOURCES := test_gf64_poly_mul_toom3.c
 TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES := test_gf64_poly_mul_vandermonde.c
 TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES := test_gf64_additive_fft_hqc2026.c
 TEST_GF64_FENGER_KERNEL_SOURCES := test_gf64_fenger_kernel.c
+TEST_GF64_FENGER_PIPELINE_SOURCES := test_gf64_fenger_pipeline.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel test_gf64_fenger_pipeline
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel test_gf64_fenger_pipeline
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -197,3 +198,11 @@ clean:
 # top-down MPE on T_R, deferred to Phase 1.
 test_gf64_fenger_kernel: $(TEST_GF64_FENGER_KERNEL_SOURCES) ../gf64_single.c ../gf64_invert.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_KERNEL_SOURCES) ../gf64_single.c ../gf64_invert.c
+
+# Phase 1 of issue #28 (Fenger Toeplitz pipeline): bit-exact parity of
+# the Bostan-Schost top-down gf64_fenger_matvec against the explicit
+# Cauchy matrix-vector product. Same dependency chain as
+# test_gf64_mpe_interp — the pipeline uses gf64_subproduct.c (T6),
+# gf64_barycentric.c (T7), and gf64_mpe.c (T8 interp + eval).
+test_gf64_fenger_pipeline: $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
