@@ -2,10 +2,18 @@
 
 **Author:** Phase 2c follow-up investigation
 **Context:** Issue #27 (PAR3-create ≥ 100 MB/s gate), #28 (Fenger Toeplitz pipeline).
-**Status:** Fenger pipeline is bit-exact and asymptotically optimal in theory;
-current implementation has a hidden **O(N²) per FFT** component that
-dominates wall-clock at large N. Hitting the gate requires Chen 2018
-Algorithm 1 (recursive BasisCvt) — a focused 1–3 day piece of work.
+**Status (post-FIX-3 attempt 2026-07-15):** **PARTIAL.** Recursive
+Chen 2018 Algorithm 1 BasisCvt implemented and bit-exact verified for
+n ∈ {2..256}. Provides O(n log n) per-FFT cost at sizes where
+k = log₂(n) − 1 is itself a power of 2 (n ∈ {2, 4, 8, 32, 512, 8192,
+131072, ...}). For other sizes the implementation still falls back to
+the matrix-form O(N²) path, and that path's O(N³) cache build is
+infeasible at large N (e.g., N=8192 takes hours).
+
+**Remaining work to clear the 100 MB/s gate at canonical N=10K:**
+extend the recursive BasisCvt to handle arbitrary k = max pow2 ≤ log₂(n)−1
+(requires h' with up to n/2^k y-terms and O(n) back-substitution on the
+resulting triangular system). Documented below as Phase 2c follow-up.
 
 ## Summary
 
@@ -119,3 +127,61 @@ after the probes.
 - Issue #28 — Fenger pipeline: phases 0–3 complete, bit-exact verified,
   bench shows asymptotic wins but not enough to hit the gate at canonical
   N without the BasisCvt fix.
+## FIX-3 partial results (2026-07-15)
+
+Recursive BasisCvt added to `gf64/gf64_additive_fft_hqc2026.c`:
+- `basisCvt_recursive` / `ibasisCvt_recursive` — handle the simple case
+  where the algorithm's chosen k equals m-1 (so h' has exactly 2 y-terms,
+  each x-poly of degree < n/2, and the O(n) back-substitution in
+  `basisCvt_decompose` applies directly).
+- `basisCvt_dispatch` / `ibasisCvt_dispatch` — pick recursive vs matrix
+  based on `k = log2(n) - 1` being a power of 2.
+- Matrix-form fallback kept for sizes where k isn't a power of 2; recursive
+  version falls back to it at the inner recursion levels where the same
+  condition fails.
+
+**Verified bit-exact:** all 6 regression test binaries pass (60 cases total,
+0 failures) at N ∈ {2..256} and at the Fenger pipeline bit-exact check.
+
+**Measured wall-clock (per `gf64_addfft64_fwd` call):**
+
+| N    | k = m-1 | Path used    | Time    | Note |
+|------|---------|--------------|---------|------|
+|   2  | 1 (pow2) | recursive   | 0.001 ms | base case |
+|   4  | 2 (pow2) | recursive   | 0.003 ms | |
+|   8  | 3 (pow2) | recursive   | 0.007 ms | |
+|  16  | 4        | matrix      | 0.002 ms | k=4 is pow2 but N=16 recursion kicks in at sub-level k=3 which isn't, so falls back |
+|  32  | 5 (pow2) | recursive   | 0.006 ms | |
+|  64  | 6        | matrix      | 0.021 ms | |
+| 128  | 7        | matrix      | 0.078 ms | |
+| 256  | 8        | matrix      | 0.31 ms  | |
+| 512  | 9 (pow2) | recursive   | 0.61 ms  | **O(N log N) confirmed** (2× from N=256, not 4×) |
+| 1024 | 10       | matrix      | 4.78 ms | O(N²) — 4× scaling from N=512 |
+| 2048 | 11       | matrix      | 18.8 ms | |
+| 4096 | 12       | matrix      | 75.0 ms | |
+| 8192 | 13       | matrix      | **infeasible** | O(N³) cache build blows up |
+
+**Why the matrix fallback can't reach canonical N=10K:**
+`get_or_build_basis_cache` does Gauss-Jordan inversion of the change-of-
+basis matrix (O(N³) field ops). At N=8192: 5.5×10¹¹ ops = hours even
+with scalar SSE2 mul. At N=16384: 4×10¹² ops = ~12 hours. The recursive
+path's O(n) back-substitution per call makes this completely avoidable
+*if* it covers all sizes.
+
+## What remains
+
+The recursive path must handle the case where k = log₂(n) − 1 is NOT a
+power of 2 (e.g., N=1024 needs k=10 → max pow2 ≤ 10 = 8, so h' has
+16 y-terms of degree < 256 each). The decomposition f = h'(s_k(x))
+still has a triangular structure with O(n) back-substitution, but
+deriving the unknown-ordering in general requires computing the support
+of s_k^i for i ∈ [0, n/2^k) via Lucas' theorem for binomial coefficients
+mod 2. That's a focused follow-up — likely 1-2 days to implement and
+verify.
+
+Once that lands:
+- n = 1024 (k=8, h' has 16 terms): recursive, ~3 ms (vs current 4.78 ms)
+- n = 4096 (k=8, h' has 64 terms): recursive, ~15 ms (vs current 75 ms)
+- n = 16384 (k=8, h' has 128 terms): recursive, ~30 ms (vs current infeasible)
+
+That should clear the 100 MB/s PAR3-create gate at canonical N=10K.

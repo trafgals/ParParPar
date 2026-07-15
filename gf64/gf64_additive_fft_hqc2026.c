@@ -192,7 +192,9 @@ typedef struct {
     int initialized;
 } hqc_basis_cache_t;
 
-#define HQC_CACHE_SLOTS 6
+#define HQC_CACHE_SLOTS 16  /* FIX-3: recursive BasisCvt visits ~log_2(N) distinct
+                              * sizes (one per recursion level where matrix-form
+                              * fallback fires). 6 was insufficient for large N. */
 static hqc_basis_cache_t hqc_cache[HQC_CACHE_SLOTS];
 
 /* Build X_basis[k * n + j] = coefficient of x^j in X_k(x). */
@@ -333,6 +335,171 @@ static void ibasisCvt(gf64_t *c, const gf64_t *g, int n, const gf64_t *M) {
     }
 }
 
+/* ----- FIX-3: Chen 2018 Algorithm 1 recursive BasisCvt (O(n log n)) -----
+ *
+ * Reference: Li, Wang, Yang, "Frobenius Additive Fast Fourier Transform",
+ * ISSAC '18 (https://homepage.iis.sinica.edu.tw/papers/byyang/21820-F.pdf)
+ * Algorithm 1. Recovers monomial → novelpoly conversion in O(n log n)
+ * field ops by recursively factoring out s_k(x) = x^{n/2} + x.
+ *
+ * Recursion structure (for n = 2^m, k = m-1 so 2^k = n/2):
+ *   f(x) = a(x) + b(x) * (x^{n/2} + x),   deg a, deg b < n/2
+ *   Decomposition is O(n) via back-substitution (closed form below).
+ *   Then basis-convert(a, n/2), basis-convert(b, n/2), combine.
+ *
+ * Combine: g[i] = basisCvt(a)[i] for i < n/2,
+ *          g[i] = basisCvt(b)[i - n/2] for i ≥ n/2.
+ *
+ * Total cost T(n) = 2 T(n/2) + O(n) = O(n log n).
+ *
+ * Scratch: each call allocates two half-size scratch arrays on the stack.
+ * Recursion depth is log_2(n) ≤ 14 for our cap of 16384, total stack usage
+ * bounded by 2 * 16384 * 8 = 256 KB across the deepest call chain — well
+ * within the 8 MB default thread stack.
+ */
+
+/* Decompose f(x) = a(x) + b(x) * (x^{n/2} + x), deg(a), deg(b) < n/2.
+ *
+ * f[i] = a[i] + (i >= 1 ? b[i-1] : 0) + (i >= n/2 ? b[i - n/2] : 0)
+ * (using GF(2) addition = XOR).
+ *
+ * Back-substitution:
+ *   The bottom row n-1 = (half-1) + half is only hit by b[half-1].
+ *     b[half-1] = f[n-1]
+ *   Rows in [half, n-1] are hit by exactly one b each (b[i-half]).
+ *     b[i] = f[i+half]  for i = half-1, half-2, ..., 1
+ *   Row half is also hit by b[half-1] (the +x contribution).
+ *     b[0] = f[half] + b[half-1]
+ *   Then a:
+ *     a[0] = f[0]
+ *     a[i] = f[i] + b[i-1]  for i = 1, ..., half-1
+ */
+static void basisCvt_decompose(gf64_t *a, gf64_t *b, const gf64_t *f, int n) {
+    int half = n / 2;
+    b[half - 1] = f[n - 1];
+    for (int i = half - 2; i >= 1; i--) {
+        b[i] = f[i + half];
+    }
+    b[0] = f[half] ^ b[half - 1];
+    a[0] = f[0];
+    for (int i = 1; i < half; i++) {
+        a[i] = f[i] ^ b[i - 1];
+    }
+}
+
+/* Chen 2018 Algorithm 1 recursive BasisCvt (monomial → novelpoly).
+ *
+ * Only valid when n = 2^(k+1) for some k such that s_k = x^{n/2} + x
+ * (i.e., k is a power of 2). For other n, fall back to matrix-form.
+ *
+ * The recursion builds its own cache entry when the inner matrix-form path
+ * is hit (since the caller's M_inv is for the outer n). */
+static void basisCvt_recursive(gf64_t *g, const gf64_t *f, int n) {
+    if (n == 1) {
+        g[0] = f[0];
+        return;
+    }
+    if (n == 2) {
+        g[0] = f[0];
+        g[1] = f[1];
+        return;
+    }
+
+    int m = 0; while ((1 << m) < n) m++;
+    int k = m - 1;
+    int k_is_pow2 = (k > 0) && ((k & (k - 1)) == 0);
+
+    if (!k_is_pow2) {
+        /* Fallback: get the cache entry for THIS n and use matrix-form. */
+        hqc_basis_cache_t *cache = get_or_build_basis_cache(n);
+        assert(cache != NULL);
+        basisCvt(g, f, n, cache->M_inv);
+        return;
+    }
+
+    int half = n / 2;
+
+    gf64_t a[GF64_HQC_MAX_N / 2];
+    gf64_t b[GF64_HQC_MAX_N / 2];
+    basisCvt_decompose(a, b, f, n);
+
+    gf64_t g_lo[GF64_HQC_MAX_N / 2];
+    gf64_t g_hi[GF64_HQC_MAX_N / 2];
+    basisCvt_recursive(g_lo, a, half);
+    basisCvt_recursive(g_hi, b, half);
+
+    for (int i = 0; i < half; i++) {
+        g[i] = g_lo[i];
+        g[i + half] = g_hi[i];
+    }
+}
+
+/* Inverse: novelpoly → monomial. Symmetric to forward via the same
+ * decomposition. Split g by index halves, recurse on each, then combine
+ * via f = a + b * (x^{n/2} + x). */
+static void ibasisCvt_recursive(gf64_t *c, const gf64_t *g, int n) {
+    if (n == 1) {
+        c[0] = g[0];
+        return;
+    }
+    if (n == 2) {
+        c[0] = g[0];
+        c[1] = g[1];
+        return;
+    }
+
+    int m = 0; while ((1 << m) < n) m++;
+    int k = m - 1;
+    int k_is_pow2 = (k > 0) && ((k & (k - 1)) == 0);
+
+    if (!k_is_pow2) {
+        hqc_basis_cache_t *cache = get_or_build_basis_cache(n);
+        assert(cache != NULL);
+        ibasisCvt(c, g, n, cache->M);
+        return;
+    }
+
+    int half = n / 2;
+
+    gf64_t g_lo[GF64_HQC_MAX_N / 2];
+    gf64_t g_hi[GF64_HQC_MAX_N / 2];
+    for (int i = 0; i < half; i++) {
+        g_lo[i] = g[i];
+        g_hi[i] = g[i + half];
+    }
+
+    gf64_t a[GF64_HQC_MAX_N / 2];
+    gf64_t b[GF64_HQC_MAX_N / 2];
+    ibasisCvt_recursive(a, g_lo, half);
+    ibasisCvt_recursive(b, g_hi, half);
+
+    /* Combine: c(x) = a(x) + b(x) * (x^half + x).
+     *   c[0]      = a[0]
+     *   c[i]      = a[i] + b[i-1]  for 1 ≤ i < half
+     *   c[half]   = b[0] + b[half-1]
+     *   c[half+j] = b[j]           for 1 ≤ j < half  */
+    c[0] = a[0];
+    for (int i = 1; i < half; i++) {
+        c[i] = a[i] ^ b[i - 1];
+    }
+    c[half] = b[0] ^ b[half - 1];
+    for (int j = 1; j < half; j++) {
+        c[half + j] = b[j];
+    }
+}
+
+/* Public entry: dispatch to recursive path only when k = m-1 is a power of 2
+ * (i.e., m-1 ∈ {1, 2, 4, 8, ...} so that s_{m-1} = x^{n/2} + x has only 2
+ * nonzero coefficients and the simple decompose applies). Otherwise fall
+ * back to the matrix-form O(n²) BasisCvt. */
+static void basisCvt_dispatch(gf64_t *g, const gf64_t *c, int n, const gf64_t *M_inv) {
+    basisCvt_recursive(g, c, n);
+}
+
+static void ibasisCvt_dispatch(gf64_t *c, const gf64_t *g, int n, const gf64_t *M) {
+    ibasisCvt_recursive(c, g, n);
+}
+
 /* ----- Butterfly (radix-2 DIT, depth-first) ----- *
  *
  * Recursive in-place transformation. The recursion picks an affine shift
@@ -393,16 +560,18 @@ void gf64_addfft64_fwd(gf64_t *arr, size_t n) {
     hqc_basis_cache_t *cache = get_or_build_basis_cache(n_int);
     assert(cache != NULL);
 
+    /* FIX-3: dispatch to recursive BasisCvt when k = m-1 is a power of 2
+     * (gives O(n log n) total). Otherwise fall back to matrix-form O(n²). */
+    gf64_t g[GF64_HQC_MAX_N];
+    basisCvt_dispatch(g, arr, n_int, cache->M_inv);
+    memcpy(arr, g, n * sizeof(gf64_t));
+
     int logn = 0; while ((1 << logn) < n_int) logn++;
     /* Affine shift = basis vector at the depth of this transform's
      * primary vanishing subspace boundary: GF64_CANTOR_BASIS[logn-1].
      * For n = 2^i, this element has Cantor-index 1 << (logn-1), whose
      * bit-(logn-1) is set, so it's outside V_{logn-1}. */
     gf64_t a = GF64_CANTOR_BASIS[logn - 1];
-
-    gf64_t g[GF64_HQC_MAX_N];
-    basisCvt(g, arr, n_int, cache->M_inv);
-    memcpy(arr, g, n * sizeof(gf64_t));
     butterfly_fwd(arr, n_int, n_int, a, cache->v_table, logn);
 }
 
@@ -416,10 +585,10 @@ void gf64_addfft64_inv(gf64_t *arr, size_t n) {
 
     int logn = 0; while ((1 << logn) < n_int) logn++;
     gf64_t a = GF64_CANTOR_BASIS[logn - 1];
-
     butterfly_inv(arr, n_int, n_int, a, cache->v_table, logn);
+
     gf64_t c[GF64_HQC_MAX_N];
-    ibasisCvt(c, arr, n_int, cache->M);
+    ibasisCvt_dispatch(c, arr, n_int, cache->M);
     memcpy(arr, c, n * sizeof(gf64_t));
 }
 
