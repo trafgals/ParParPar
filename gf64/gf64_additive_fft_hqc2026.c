@@ -139,17 +139,27 @@ static void poly_mul_trunc(int n, const gf64_t *a, const gf64_t *b, gf64_t *out)
 }
 
 /* s_i(a) for a field element a; per Cantor recurrence,
- *   s_i(v_j) = v_{j-i} for j >= i, else 0. */
-static int compute_index_for(gf64_t a, const gf64_t *v_table, int n) {
+ *   s_i(v_j) = v_{j-i} for j >= i, else 0.
+ *
+ * `n_table` is the size of the v_table backing buffer (always equal to
+ * the TOP-LEVEL transform size — set at gf64_addfft64_fwd entry). It is
+ * NOT the current recursion level's n, because at deeper levels the
+ * affine shift `a` may carry Cantor indices beyond the current level's
+ * range (e.g., n=2 base case recurses with a = basis[1] XOR basis[2]
+ * whose Cantor index 6 sits well above the level-2 bound). Searching
+ * with the wrong bound silently returns 0, demoting the butterfly to a
+ * trivial fold at deeper levels — which is precisely the n>=8 failure
+ * pattern observed in test_gf64_additive_fft_hqc2026.c. */
+static int compute_index_for(gf64_t a, const gf64_t *v_table, int n_table) {
     if (a == 0) return 0;
-    for (int j = 1; j < n; j++) {
+    for (int j = 1; j < n_table; j++) {
         if (v_table[j] == a) return j;
     }
     return -1;
 }
-static gf64_t si_eval(int i, gf64_t a, const gf64_t *v_table, int n) {
+static gf64_t si_eval(int i, gf64_t a, const gf64_t *v_table, int n_table) {
     if (a == 0) return 0;
-    int idx = compute_index_for(a, v_table, n);
+    int idx = compute_index_for(a, v_table, n_table);
     if (idx < 0) return 0;
     int shifted = idx >> i;
     if (shifted == 0) return 0;
@@ -304,7 +314,7 @@ static void ibasisCvt(gf64_t *c, const gf64_t *g, int n, const gf64_t *M) {
  * recursion shifts by v_{logn-1} = W_m(1 << (logn-1)) which XORs in the
  * next Cantor basis vector.
  */
-static void butterfly_fwd(gf64_t *f, int n, gf64_t a,
+static void butterfly_fwd(gf64_t *f, int n, int n_table, gf64_t a,
                           const gf64_t *v_table, int logn) {
     if (n == 2) {
         gf64_t fl = f[0], fh = f[1];
@@ -313,18 +323,18 @@ static void butterfly_fwd(gf64_t *f, int n, gf64_t a,
         return;
     }
     int half = n / 2;
-    gf64_t s_a = si_eval(logn - 1, a, v_table, n);
+    gf64_t s_a = si_eval(logn - 1, a, v_table, n_table);
     for (int j = 0; j < half; j++) {
         gf64_t fl = f[j], fh = f[j + half];
         f[j]       = fl ^ gf64_mul_reference(s_a, fh);
         f[j + half] = fl ^ gf64_mul_reference(s_a ^ 1, fh);
     }
-    butterfly_fwd(f,         half, a,                       v_table, logn - 1);
-    butterfly_fwd(f + half,  half, a ^ v_table[1 << (logn - 1)],
+    butterfly_fwd(f,         half, n_table, a,                       v_table, logn - 1);
+    butterfly_fwd(f + half,  half, n_table, a ^ v_table[1 << (logn - 1)],
                   v_table, logn - 1);
 }
 
-static void butterfly_inv(gf64_t *f, int n, gf64_t a,
+static void butterfly_inv(gf64_t *f, int n, int n_table, gf64_t a,
                           const gf64_t *v_table, int logn) {
     if (n == 2) {
         gf64_t fh = f[0] ^ f[1];
@@ -333,10 +343,10 @@ static void butterfly_inv(gf64_t *f, int n, gf64_t a,
         return;
     }
     int half = n / 2;
-    butterfly_inv(f,         half, a,                       v_table, logn - 1);
-    butterfly_inv(f + half,  half, a ^ v_table[1 << (logn - 1)],
+    butterfly_inv(f,         half, n_table, a,                       v_table, logn - 1);
+    butterfly_inv(f + half,  half, n_table, a ^ v_table[1 << (logn - 1)],
                   v_table, logn - 1);
-    gf64_t s_a = si_eval(logn - 1, a, v_table, n);
+    gf64_t s_a = si_eval(logn - 1, a, v_table, n_table);
     for (int j = 0; j < half; j++) {
         gf64_t fl_new = f[j], fh_new = f[j + half];
         gf64_t fh = fl_new ^ fh_new;
@@ -366,7 +376,7 @@ void gf64_addfft64_fwd(gf64_t *arr, size_t n) {
     gf64_t g[GF64_HQC_MAX_N];
     basisCvt(g, arr, n_int, cache->M_inv);
     memcpy(arr, g, n * sizeof(gf64_t));
-    butterfly_fwd(arr, n_int, a, cache->v_table, logn);
+    butterfly_fwd(arr, n_int, n_int, a, cache->v_table, logn);
 }
 
 void gf64_addfft64_inv(gf64_t *arr, size_t n) {
@@ -380,7 +390,7 @@ void gf64_addfft64_inv(gf64_t *arr, size_t n) {
     int logn = 0; while ((1 << logn) < n_int) logn++;
     gf64_t a = GF64_CANTOR_BASIS[logn - 1];
 
-    butterfly_inv(arr, n_int, a, cache->v_table, logn);
+    butterfly_inv(arr, n_int, n_int, a, cache->v_table, logn);
     gf64_t c[GF64_HQC_MAX_N];
     ibasisCvt(c, arr, n_int, cache->M);
     memcpy(arr, c, n * sizeof(gf64_t));

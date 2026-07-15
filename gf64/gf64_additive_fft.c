@@ -248,6 +248,22 @@ extern void gf64_poly_mul_toom3(
  * test_gf64_poly_mul_toom3 (16/16 parity cases pass). */
 #define GF64_POLY_MUL_INTERNAL_TOOM3_MIN ((size_t)2304)
 
+/* Additive FFT (HQC 2026 TCHES §2.3 Algorithm 2, ported to GF(2^64)).
+ * O(n log n) per convolution vs Karatsuba's O(n^1.585) and Toom-3's
+ * O(n^1.465). Above this threshold the per-butterfly GF(2^64) field ops
+ * (gf64_mul_reference) dominate and the asymptotic regime pays off.
+ *
+ * Threshold 4096 matches the GF64_HQC_MAX_N cap in
+ * gf64_additive_fft_hqc2026.c: at and above this size the FFT's
+ * O(n log n) shape beats both Toom-3 and Karatsuba on arithmetic count,
+ * and the BasisCvt matrix-inversion cost (amortized across many words
+ * in the Fenger pipeline) is justified.
+ *
+ * Bit-exact verified by test_gf64_additive_fft_hqc2026: 100% PASS at
+ * n ∈ {2, 4, 8, 16, 32, 64, 128, 256} for forward-output, round-trip,
+ * and convolution probes (issue #28 OPT-2). */
+#define GF64_POLY_MUL_INTERNAL_FFT_MIN ((size_t)4096)
+
 /*
  * Shared convolution kernel for gf64_poly_mul and gf64_poly_mul_padded.
  *
@@ -294,6 +310,12 @@ static void gf64_poly_mul_internal(
 	 * out_len) to be at-or-above the crossover so we don't pay Karatsuba's
 	 * malloc/scratch overhead when the operands are small (the schoolbook
 	 * base case would fire immediately anyway, but with extra setup cost). */
+	if (len_a >= GF64_POLY_MUL_INTERNAL_FFT_MIN &&
+	    len_b >= GF64_POLY_MUL_INTERNAL_FFT_MIN &&
+	    out_len >= GF64_POLY_MUL_INTERNAL_FFT_MIN) {
+		gf64_addfft64_poly_mul(out, a, len_a, b, len_b, out_len);
+		return;
+	}
 	if (len_a >= GF64_POLY_MUL_INTERNAL_TOOM3_MIN &&
 	    len_b >= GF64_POLY_MUL_INTERNAL_TOOM3_MIN &&
 	    out_len >= GF64_POLY_MUL_INTERNAL_TOOM3_MIN) {
