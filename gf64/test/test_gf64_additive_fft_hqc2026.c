@@ -25,6 +25,7 @@
 #include <string.h>
 #include <time.h>
 
+extern void gf64_addfft64_fwd(gf64_t *arr, size_t n);
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 extern gf64_t gf64_inverse(gf64_t a);
 
@@ -112,6 +113,47 @@ static int verify_forward(int n, int ncases, uint64_t seed) {
                    i, (unsigned long long)f_dbg[i], (unsigned long long)want_i,
                    f_dbg[i] == want_i ? "OK" : "MISMATCH");
         }
+
+        /* Case 4: c = x^7 (highest-degree monomial). After BasisCvt, the
+         * novelpoly coeffs g must satisfy f(x) = sum g_k X_k(x) = x^7.
+         * fwd[i] should equal (a + W_m(i))^7. */
+        gf64_t c_dbg4[8] = {0, 0, 0, 0, 0, 0, 0, 1};
+        memcpy(f_dbg, c_dbg4, n * sizeof(gf64_t));
+        gf64_addfft64_fwd(f_dbg, n);
+        printf("  --- debug-4 (c = x^7; expect fwd[i] = (a^W_m(i))^7):\n");
+        for (int i = 0; i < n; i++) {
+            gf64_t at = a ^ W_m(i);
+            gf64_t at7 = at;
+            for (int k = 0; k < 6; k++) at7 = gf64_mul_reference(at7, at);
+            printf("    [%d] = 0x%016llx | want = (a^W_m(%d))^7 = 0x%016llx %s\n",
+                   i, (unsigned long long)f_dbg[i], i, (unsigned long long)at7,
+                   f_dbg[i] == at7 ? "OK" : "MISMATCH");
+        }
+
+        /* Case 5: c = (1, 0, 0, 0, 0, 0, 0, 1) = 1 + x^7. After
+         * BasisCvt, novelpoly coeffs g = [1, 1, 0, 0, 1, 1, 1, 1]
+         * (= g for c=1 plus g for c=x^7).
+         * fwd[i] should equal 1 + (a + W_m(i))^7. */
+        gf64_t c_dbg5[8] = {1, 0, 0, 0, 0, 0, 0, 1};
+        memcpy(f_dbg, c_dbg5, n * sizeof(gf64_t));
+        gf64_addfft64_fwd(f_dbg, n);
+        printf("  --- debug-5 (c = 1 + x^7; expect fwd[i] = 1 + (a^W_m(i))^7):\n");
+        for (int i = 0; i < n; i++) {
+            gf64_t at = a ^ W_m(i);
+            gf64_t at7 = at;
+            for (int k = 0; k < 6; k++) at7 = gf64_mul_reference(at7, at);
+            gf64_t want_i = at7 ^ 1;
+            printf("    [%d] = 0x%016llx | want = 1 + (a^W_m(%d))^7 = 0x%016llx %s\n",
+                   i, (unsigned long long)f_dbg[i], i, (unsigned long long)want_i,
+                   f_dbg[i] == want_i ? "OK" : "MISMATCH");
+        }
+
+        /* Case 6: directly compute g for c = x^7 via M_inv · c, print it.
+         * If g doesn't match the expected [0, 1, 0, 0, 1, 1, 1, 1],
+         * bug is in BasisCvt. If g is correct, bug is in butterfly. */
+        extern void gf64_addfft64_fwd(gf64_t *arr, size_t n);  /* unused */
+        gf64_t c_dbg6[8] = {0, 0, 0, 0, 0, 0, 0, 1};
+        (void)c_dbg6;  /* placeholder; debug-6 reserved for follow-up */
     }
 
     for (int trial = 0; trial < ncases; trial++) {
