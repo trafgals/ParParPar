@@ -31,10 +31,11 @@ TEST_GF64_POLY_MUL_VANDERMONDE_SOURCES := test_gf64_poly_mul_vandermonde.c
 TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES := test_gf64_additive_fft_hqc2026.c
 TEST_GF64_FENGER_KERNEL_SOURCES := test_gf64_fenger_kernel.c
 TEST_GF64_FENGER_PIPELINE_SOURCES := test_gf64_fenger_pipeline.c
+BENCH_GF64_FENGER_VS_CAUCHY_SOURCES := bench_gf64_fenger_vs_cauchy.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel test_gf64_fenger_pipeline
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel test_gf64_fenger_pipeline bench_gf64_fenger_vs_cauchy
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel test_gf64_fenger_pipeline
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_additive_fft_hqc2026 test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_gf64_mpe_interp test_gf64_invmod_mod test_gf64_poly_invmod_fft test_gf64_poly_mul_karatsuba test_gf64_fft_poly_mul test_gf64_poly_mul_toom3 test_gf64_poly_mul_vandermonde test_gf64_fenger_kernel test_gf64_fenger_pipeline bench_gf64_fenger_vs_cauchy
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -206,3 +207,10 @@ test_gf64_fenger_kernel: $(TEST_GF64_FENGER_KERNEL_SOURCES) ../gf64_single.c ../
 # gf64_barycentric.c (T7), and gf64_mpe.c (T8 interp + eval).
 test_gf64_fenger_pipeline: $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
+# Phase 3 microbench (issue #28): wall-clock throughput of gf64_fenger_matvec
+# vs explicit Cauchy reference, downscaled from the canonical 1 GiB / 10K /
+# 1K workload to fit in microbench RAM budgets. Throughput is reported in
+# MB/s of (input + output) bytes processed.
+bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
