@@ -75,20 +75,42 @@ static int verify_forward(int n, int ncases, uint64_t seed) {
 
     /* Worked-example debug for n=8 (the size that fails). */
     if (n == 8 && ncases > 0) {
-        gf64_t c_dbg[8] = {0x0102030405060708ULL, 0x1112131415161718ULL,
-                           0x2122232425262728ULL, 0x3132333435363738ULL,
-                           0x4142434445464748ULL, 0x5152535455565758ULL,
-                           0x6162636465666768ULL, 0x7172737475767778ULL};
+        /* Case 1: c = constant 1. Every fwd[i] should be 1. */
         gf64_t f_dbg[8];
-        memcpy(f_dbg, c_dbg, n * sizeof(gf64_t));
+        gf64_t c_dbg1[8] = {1, 0, 0, 0, 0, 0, 0, 0};
+        memcpy(f_dbg, c_dbg1, n * sizeof(gf64_t));
         gf64_addfft64_fwd(f_dbg, n);
-        printf("  --- worked example (a = basis[%d] = 0x%016llx):\n",
-               logn - 1, (unsigned long long)a);
+        printf("  --- debug-1 (c = (1, 0, ..., 0); expect fwd[i] = 1 for all i):\n");
+        for (int i = 0; i < n; i++)
+            printf("    [%d] = 0x%016llx %s\n", i,
+                   (unsigned long long)f_dbg[i],
+                   f_dbg[i] == 1 ? "OK" : "WRONG (expect 1)");
+
+        /* Case 2: c = x. Every fwd[i] should be a + W_m(i). */
+        gf64_t c_dbg2[8] = {0, 1, 0, 0, 0, 0, 0, 0};
+        memcpy(f_dbg, c_dbg2, n * sizeof(gf64_t));
+        gf64_addfft64_fwd(f_dbg, n);
+        printf("  --- debug-2 (c = (0, 1, 0, ..., 0); expect fwd[i] = a + W_m(i)):\n");
         for (int i = 0; i < n; i++) {
-            gf64_t want = poly_eval(c_dbg, n, a ^ W_m(i));
-            printf("    addFFT[%d] = 0x%016llx | want = 0x%016llx %s\n",
-                   i, (unsigned long long)f_dbg[i], (unsigned long long)want,
-                   f_dbg[i] == want ? "OK" : "MISMATCH");
+            gf64_t want_i = a ^ W_m(i);
+            printf("    [%d] = 0x%016llx | want = a^W_m(%d) = 0x%016llx %s\n",
+                   i, (unsigned long long)f_dbg[i], i, (unsigned long long)want_i,
+                   f_dbg[i] == want_i ? "OK" : "MISMATCH");
+        }
+
+        /* Case 3: original worked example. */
+        gf64_t c_dbg3[8] = {0x0102030405060708ULL, 0x1112131415161718ULL,
+                            0x2122232425262728ULL, 0x3132333435363738ULL,
+                            0x4142434445464748ULL, 0x5152535455565758ULL,
+                            0x6162636465666768ULL, 0x7172737475767778ULL};
+        memcpy(f_dbg, c_dbg3, n * sizeof(gf64_t));
+        gf64_addfft64_fwd(f_dbg, n);
+        printf("  --- debug-3 worked example:\n");
+        for (int i = 0; i < n; i++) {
+            gf64_t want_i = poly_eval(c_dbg3, n, a ^ W_m(i));
+            printf("    [%d] = 0x%016llx | want = 0x%016llx %s\n",
+                   i, (unsigned long long)f_dbg[i], (unsigned long long)want_i,
+                   f_dbg[i] == want_i ? "OK" : "MISMATCH");
         }
     }
 
