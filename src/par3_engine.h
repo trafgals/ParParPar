@@ -204,4 +204,28 @@ public:
 		uint64_t firstInput, uint64_t firstRecovery,
 		int numThreads
 	);
+
+	/// Compute recovery blocks via the Fenger Toeplitz pipeline (issue #28).
+	/// Bit-exact equivalent of ComputeRecoveryBlocks on power-of-2 inputs/
+	/// recovery counts; uses gf64_fenger_matvec from gf64/gf64_fenger.c
+	/// (Bostan-Schost top-down MPE on T_R). Currently single-threaded.
+	///
+	/// Constraints: numInputs and numRecovery must be 0, 1, or a power of
+	/// 2 (subproduct-tree constraint). The disjointness condition on
+	/// firstInput / firstRecovery (no input index coincides with a recovery
+	/// index) is enforced inside gf64_fenger_matvec. Falls back to
+	/// ComputeRecoveryBlocks for non-power-of-2 workloads.
+	///
+	/// @param numRecovery   Number of recovery blocks to compute
+	/// @param blockSize64   Block size in 64-bit words
+	/// @param firstInput    First input exponent for the interpolation grid
+	/// @param firstRecovery First recovery exponent for the evaluation grid
+	/// @param numThreads    Reserved for future per-thread sharding; ignored.
+	static void ComputeRecoveryBlocksFenger(
+		const gf64_t* inputs, size_t numInputs,
+		gf64_t* recovery, size_t numRecovery,
+		size_t blockSize64,
+		uint64_t firstInput, uint64_t firstRecovery,
+		int numThreads
+	);
 };
