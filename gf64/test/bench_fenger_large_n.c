@@ -1,26 +1,23 @@
 /*
- * bench_gf64_fenger_vs_cauchy.c — microbench: Fenger pipeline vs explicit
- *   Cauchy matvec at canonical PAR3 shapes (issue #28).
+ * bench_fenger_large_n.c — focused microbench for the Fenger Toeplitz
+ *   pipeline at canonical-ish N values (issue #28 / #26).
  *
- * Compares wall-clock throughput of:
+ * The general bench_gf64_fenger_vs_cauchy.c sweeps many small sizes; this
+ * file isolates the large-N regime where the additive-FFT poly_mul win
+ * matters, with line-buffered output and reduced iteration counts so the
+ * wall-clock stays bounded.
  *
- *   cauchy_reference: out[r][w] = XOR_c in[c][w] / (y_r XOR x_c)
- *                     (explicit O(N) per output)
- *
- *   gf64_fenger_matvec: Bostan-Schost top-down Fenger pipeline (issue #28)
- *
- * Also exercises the multi-threaded execute path via OpenMP when B is
- * large enough to benefit.
- *
- * Build & run:
+ * Build:
  *   cd gf64/test
- *   gcc -O3 -march=native -fopenmp -I.. bench_gf64_fenger_vs_cauchy.c \
+ *   gcc -O3 -march=native -fopenmp -I.. bench_fenger_large_n.c \
  *       ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c \
  *       ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c \
  *       ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c \
  *       ../gf64_poly_mul_toom3.c ../gf64_mul_avx512.c ../gf64_square.c \
- *       ../gf64_single.c -o bench_gf64_fenger_vs_cauchy
- *   ./bench_gf64_fenger_vs_cauchy
+ *       ../gf64_single.c -o bench_fenger_large_n
+ *
+ * Run:
+ *   ./bench_fenger_large_n
  */
 
 #include <stdio.h>
@@ -50,7 +47,6 @@ static double now_sec(void) {
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
-/* ----- Explicit Cauchy matrix-vector product. */
 static void cauchy_reference(
     const gf64_t *in, size_t N, size_t B,
     gf64_t *out, size_t R,
@@ -72,6 +68,10 @@ static void cauchy_reference(
 }
 
 static void bench_config(size_t N, size_t R, size_t B, int iters, int num_threads) {
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    fprintf(stdout, ">>> N=%zu R=%zu B=%zu iters=%d threads=%d  alloc...\n",
+            N, R, B, iters, num_threads);
+
     gf64_t *in         = (gf64_t *)malloc(N * B * sizeof(gf64_t));
     gf64_t *cauchy_out = (gf64_t *)calloc(R * B, sizeof(gf64_t));
     gf64_t *fenger_out = (gf64_t *)calloc(R * B, sizeof(gf64_t));
@@ -83,26 +83,27 @@ static void bench_config(size_t N, size_t R, size_t B, int iters, int num_thread
     const uint64_t fi = 0x10000;
     const uint64_t fr = 0x1000000;
 
-    /* Warmup. */
+    fprintf(stdout, "    warmup...\n");
     cauchy_reference(in, N, B, cauchy_out, R, fi, fr);
     gf64_fenger_matvec(in, N, B, fenger_out, R, fi, fr);
 
+    fprintf(stdout, "    timing cauchy...\n");
     double t0 = now_sec();
     for (int i = 0; i < iters; i++) {
         cauchy_reference(in, N, B, cauchy_out, R, fi, fr);
     }
     double t_cauchy = now_sec() - t0;
 
-    /* Fenger single-thread. */
+    fprintf(stdout, "    timing fenger-1t...\n");
     t0 = now_sec();
     for (int i = 0; i < iters; i++) {
         gf64_fenger_matvec(in, N, B, fenger_out, R, fi, fr);
     }
     double t_fenger_1t = now_sec() - t0;
 
-    /* Fenger multi-thread (OpenMP-sharded over B). */
     double t_fenger_mt = -1.0;
     if (num_threads > 1) {
+        fprintf(stdout, "    timing fenger-%dt...\n", num_threads);
         gf64_fenger_ctx *ctx = gf64_fenger_prepare(fi, fr, N, R);
         omp_set_num_threads(num_threads);
         const size_t chunk = (B + (size_t)num_threads - 1) / (size_t)num_threads;
@@ -131,10 +132,10 @@ static void bench_config(size_t N, size_t R, size_t B, int iters, int num_thread
     if (t_fenger_mt > 0) bw_fenger_mt = bytes_total / t_fenger_mt / 1e6;
 
     if (t_fenger_mt > 0) {
-        printf("  N=%-5zu R=%-5zu B=%-6zu  cauchy=%7.1f  fenger1t=%7.1f  fenger%dt=%7.1f MB/s\n",
+        fprintf(stdout, "  N=%-5zu R=%-5zu B=%-6zu  cauchy=%7.1f  fenger1t=%7.1f  fenger%dt=%7.1f MB/s\n",
                N, R, B, bw_cauchy, bw_fenger_1t, num_threads, bw_fenger_mt);
     } else {
-        printf("  N=%-5zu R=%-5zu B=%-6zu  cauchy=%7.1f  fenger1t=%7.1f MB/s  speedup=%5.2fx\n",
+        fprintf(stdout, "  N=%-5zu R=%-5zu B=%-6zu  cauchy=%7.1f  fenger1t=%7.1f MB/s  speedup=%5.2fx\n",
                N, R, B, bw_cauchy, bw_fenger_1t, t_cauchy / t_fenger_1t);
     }
 
@@ -143,35 +144,15 @@ static void bench_config(size_t N, size_t R, size_t B, int iters, int num_thread
 
 int main(void) {
     int ncpu = omp_get_num_procs();
-    printf("Fenger Toeplitz pipeline — microbench (issue #28)\n");
-    printf("Wall-clock throughput; CPU count = %d\n\n", ncpu);
+    fprintf(stdout, "Fenger Toeplitz pipeline — large-N focused microbench (issue #28)\n");
+    fprintf(stdout, "CPU count = %d\n\n", ncpu);
 
-    bench_config(8,   8,   4096, 20, ncpu);
-    bench_config(16,  16,  4096, 20, ncpu);
-    bench_config(32,  32,  4096, 20, ncpu);
-    bench_config(64,  64,  4096, 10, ncpu);
-    bench_config(128, 128, 4096,  5, ncpu);
-    bench_config(256, 64,  4096,  5, ncpu);
-    bench_config(512, 256, 2048,  3, ncpu);
-    bench_config(1024, 256, 1024, 3, ncpu);
-
-    /* Larger-N sweep to expose the asymptotic regime. */
-    bench_config(256, 128, 256, 10, ncpu);
-    bench_config(512, 128, 256, 10, ncpu);
-    bench_config(1024, 256, 512, 5, ncpu);
-    bench_config(2048, 256, 256, 3, ncpu);
-    bench_config(2048, 512, 256, 3, ncpu);
-
-    /* Larger-N sweep to expose the additive FFT win. */
-    bench_config(2048, 1024, 64, 3, ncpu);
-    bench_config(2048, 2048, 32, 2, ncpu);
-
-    /* Canonical-ish workload: N=8K data slices (closest power-of-2 to the
-     * canonical 10K that the subproduct tree builder accepts), R=1K recovery,
-     * scaled-down B for microbench RAM. */
+    /* The canonical-ish workload sizes that the original bench's later
+     * entries stalled on; isolated here with line-buffered output so
+     * progress is visible. */
     bench_config(8192,  1024, 32,  2, ncpu);
     bench_config(16384, 1024, 16,  1, ncpu);
 
-    printf("\nDone.\n");
+    fprintf(stdout, "\nDone.\n");
     return 0;
 }

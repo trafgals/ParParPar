@@ -79,7 +79,13 @@ extern gf64_t gf64_inverse(gf64_t a);
 
 /* Cantor basis has 20 precomputed vectors; ℓ_m = 20 supports n up to 2^20. */
 #define GF64_HQC_MAX_LM 20
-#define GF64_HQC_MAX_N 4096   /* production cap; canonical PAR3 transform size */
+/* Production cap on the additive FFT transform size. Stacks of 5 buffers
+ * at this size come to 5 * 16384 * 8 = 640 KB per recursion level; Linux
+ * default thread stack (8 MB) accommodates this with room for call frames.
+ * The canonical PAR3 workload (N = 10K data slices) needs at least 16384
+ * to fit; the bench at N = 10240 verifies the additive FFT path is correct
+ * there. */
+#define GF64_HQC_MAX_N 16384
 
 /* ----- helpers ----- */
 

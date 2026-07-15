@@ -1,0 +1,63 @@
+=== Additive FFT micro-timing (HQC Alg 2) ===
+gcc -O3 -march=native, single-threaded, Zen4-class 8-thread box
+See PHASE_2c_FINDINGS_2026-07-15.md for analysis.
+
+Forward/inverse FFT:
+    gf64_addfft64_fwd  N=2        0.0003 ms/call  (100000 iters)
+    gf64_addfft64_inv  N=2        0.0003 ms/call  (100000 iters)
+    gf64_addfft64_fwd  N=4        0.0003 ms/call  (100000 iters)
+    gf64_addfft64_inv  N=4        0.0004 ms/call  (100000 iters)
+    gf64_addfft64_fwd  N=8        0.0006 ms/call  (10000 iters)
+    gf64_addfft64_inv  N=8        0.0007 ms/call  (10000 iters)
+    gf64_addfft64_fwd  N=16       0.0019 ms/call  (10000 iters)
+    gf64_addfft64_inv  N=16       0.0016 ms/call  (10000 iters)
+    gf64_addfft64_fwd  N=32       0.0057 ms/call  (10000 iters)
+    gf64_addfft64_inv  N=32       0.0054 ms/call  (10000 iters)
+    gf64_addfft64_fwd  N=64       0.0205 ms/call  (10000 iters)
+    gf64_addfft64_inv  N=64       0.0202 ms/call  (10000 iters)
+    gf64_addfft64_fwd  N=128      0.0786 ms/call  (10000 iters)
+    gf64_addfft64_inv  N=128      0.0770 ms/call  (10000 iters)
+    gf64_addfft64_fwd  N=256      0.3073 ms/call  (5000 iters)
+    gf64_addfft64_inv  N=256      0.3006 ms/call  (5000 iters)
+    gf64_addfft64_fwd  N=512      1.2020 ms/call  (2000 iters)
+    gf64_addfft64_inv  N=512      1.1802 ms/call  (2000 iters)
+    gf64_addfft64_fwd  N=1024     4.7211 ms/call  (1000 iters)
+    gf64_addfft64_inv  N=1024     4.6929 ms/call  (1000 iters)
+    gf64_addfft64_fwd  N=2048    18.9070 ms/call  (500 iters)
+    gf64_addfft64_inv  N=2048    18.7369 ms/call  (500 iters)
+    gf64_addfft64_fwd  N=4096    76.4301 ms/call  (100 iters)
+    gf64_addfft64_inv  N=4096    75.8124 ms/call  (100 iters)
+    gf64_addfft64_fwd  N=8192   307.8860 ms/call  (20 iters)
+    gf64_addfft64_inv  N=8192   308.1350 ms/call  (20 iters)
+
+Poly mul:
+    gf64_addfft64_poly_mul N=2        0.0011 ms/call  (100000 iters)
+    gf64_addfft64_poly_mul N=4        0.0020 ms/call  (100000 iters)
+    gf64_addfft64_poly_mul N=8        0.0052 ms/call  (10000 iters)
+    gf64_addfft64_poly_mul N=16       0.0168 ms/call  (10000 iters)
+    gf64_addfft64_poly_mul N=32       0.0617 ms/call  (10000 iters)
+    gf64_addfft64_poly_mul N=64       0.2360 ms/call  (10000 iters)
+    gf64_addfft64_poly_mul N=128      0.9106 ms/call  (10000 iters)
+    gf64_addfft64_poly_mul N=256      3.5447 ms/call  (5000 iters)
+    gf64_addfft64_poly_mul N=512     14.1824 ms/call  (2000 iters)
+    gf64_addfft64_poly_mul N=1024    56.8364 ms/call  (1000 iters)
+    gf64_addfft64_poly_mul N=2048   226.3404 ms/call  (500 iters)
+    gf64_addfft64_poly_mul N=4096   916.0592 ms/call  (100 iters)
+
+SCALING ANALYSIS
+================
+FFT (forward/inverse): exactly 4x per 2x N -- confirms O(N^2) bottleneck
+  1024 -> 2048:  4.72 -> 18.91 ms  (4.00x)
+  2048 -> 4096: 18.91 -> 76.43 ms  (4.04x)
+  4096 -> 8192: 76.43 -> 307.89 ms (4.03x)
+
+Poly mul: exactly 4x per 2x N
+  512 -> 1024:   14.18 -> 56.84 ms  (4.01x)
+  1024 -> 2048:  56.84 -> 226.34 ms (3.98x)
+  2048 -> 4096: 226.34 -> 916.06 ms (4.05x)
+
+Causation: basisCvt/ibasisCvt in gf64_additive_fft_hqc2026.c lines 297-313
+is an explicit matrix-vector multiply -- O(N^2) per call. The FFT does one
+basisCvt + one butterfly per direction, so per FFT: O(N^2) + O(N log N).
+Poly mul does 2 fwd + 1 inv = 3 * (O(N^2) + O(N log N)) = O(N^2).
+Fix: Chen 2018 Algorithm 1 recursive BasisCvt brings this to O(N log N).
