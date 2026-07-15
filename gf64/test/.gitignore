@@ -29,6 +29,7 @@ test_tower_fft_gf16
 test_gf64_gao_mateer
 test_avx2
 test_gf64_additive_fft_hqc2026
+check_basis
 
 # One-shot helper generators (Cantor basis lookup, etc.).
 gen_cantor_basis
