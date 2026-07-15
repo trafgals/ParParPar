@@ -227,13 +227,26 @@ extern void gf64_poly_mul_toom3(
 #define GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN ((size_t)128)
 
 /* Toom-Cook 3 (2.3): O(n^1.465), beats Karatsuba's O(n^1.585) above
- * a measured crossover. DISABLED by default — the existing
- * gf64_poly_mul_toom3 implementation does per-recursion mallocs for
- * 6 limb buffers × 5 recursive sub-products, which costs more than
- * Karatsuba at all sizes measured (n=64..4096; bench log in commit).
- * Set to a non-SIZE_MAX value to enable once a thread_local scratch
- * pool is added (or once the malloc overhead is otherwise amortized). */
-#define GF64_POLY_MUL_INTERNAL_TOOM3_MIN ((size_t)SIZE_MAX)
+ * a measured crossover.
+ *
+ * Previously DISABLED (set to SIZE_MAX) because the existing
+ * gf64_poly_mul_toom3 implementation did per-recursion mallocs for
+ * 6 limb buffers × 5 recursive sub-products (commit 860ee66's
+ * microbench showed Toom-3 LOSING at every measured size, in some
+ * sizes by 50%).
+ *
+ * Enabled in this commit because gf64_poly_mul_toom3.c now uses a
+ * thread_local scratch pool that bump-allocates from one backing
+ * buffer and resets at toplevel entry (commit f200075). With the
+ * per-call allocator churn amortized away, Toom-3 should win at
+ * large n per PHASE_2b_3_DESIGN.md §Phase 2c.
+ *
+ * Threshold 2304 matches the design-doc target: above this n the
+ * Toom-3 5-way sub-product spread beats the Karatsuba 3-way
+ * spread; below it Karatsuba's lower constant factor dominates.
+ * Bit-exact correctness vs. gf64_poly_mul is verified by
+ * test_gf64_poly_mul_toom3 (16/16 parity cases pass). */
+#define GF64_POLY_MUL_INTERNAL_TOOM3_MIN ((size_t)2304)
 
 /*
  * Shared convolution kernel for gf64_poly_mul and gf64_poly_mul_padded.
