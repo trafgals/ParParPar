@@ -269,3 +269,223 @@ Alternative optimizations to clear the gate WITHOUT implementing Algorithm 1:
 
 These are all simpler than the general Algorithm 1 and could plausibly clear
 the 100 MB/s gate within a session. See issue #29 for the trade-off analysis.
+
+
+## Reference implementations found (2026-07-15)
+
+The recursive Algorithm 1 pattern (with y-domain recursion) is implemented
+in several reference repositories. Each uses a different field abstraction
+for the y-domain:
+
+### HQC 2026 reference (paper authors' own code)
+
+ — Chen, Peng, Yang et al.
+-  — Frobenius addFFT over GF(2^64), reference C
+-  (1725 lines) — bit-level iterative
+  basis conversion. Hardcodes 20 layers for n = 32768 bits (m=32, ℓ_m=11).
+-  — iterative butterfly with precomputed
+   v-table.
+-  — wires basisCvt + butterfly
+  + Karatsuba tail for the HQC parameter set.
+
+The HQC reference is **iterative** (unrolled recursion) at the bit level, with
+each layer doing specific XOR operations on packed 32-bit words. Very fast
+(uses PCLMULQDQ for the GF(2^64) muls) but tied to specific HQC parameters.
+
+### devillegna/polyeval (Chen 2018 author)
+
+ — Ming-Shing Chen.
+-  — **the recursive structure I needed**. The bc_64
+  function for size-2^l uint64_t arrays:
+  
+  This is Algorithm 1 line 5 implemented as a separate function 
+  (the y-domain recursion) at the 32-bit (256-bit-element) level. The
+   function (in bc_32.c) recursively calls  for the deeper
+  y-level, etc.
+-  — y-domain recursion at 32-bit level. Recurses to
+   (256-bit level) for the deeper recursion.
+
+The polyeval code is bit-level (uint32_t* / uint64_t*). The y-domain field is
+the *bit-block* (256-bit elements viewed as GF(2^256) elements via Kronecker
+substitution), not R[x]^{<S}.
+
+### fast-crypto-lab/Frobenius_AFFT
+
+ — third reference, not yet
+examined.
+
+## Algorithm 1 y-domain field choice — three options
+
+When implementing Algorithm 1 at the GF(2^64) level (PAR3's natural
+abstraction), the y-domain field can be chosen three ways:
+
+### Option A: Bit-level (HQC reference style)
+
+Decompose the GF(2^64) polynomial into 64 separate bit-polynomials, do the
+recursive basis conversion at the bit level, then recombine. This is what
+the HQC reference does. It uses Kronecker substitution to lift 64 bit
+positions into a GF(2^64) element, and the y-domain recursion is at the
+bit level.
+
+Pros: most efficient (the HQC implementation hits GHz rates with PCLMULQDQ).
+Cons: requires a deep restructure of our GF(2^64)-level code; loses the
+"field element" abstraction.
+
+### Option B: R[x]^{<S} as the y-domain field (my original interpretation)
+
+Each y-coefficient is a polynomial in x of degree < S with GF(2^64) coeffs.
+y-Cantor basis elements are constants in R (GF(2^64) elements). y-Butterfly
+has constant-times-poly multiplications, O(S) R-muls per butterfly.
+
+Pros: stays in the GF(2^64) abstraction. Recursion has clear structure.
+Cons: y-BasisCvt recursion at size m is O(m log m · S) per level. Total
+complexity: T(n) = O(n log n · S_opt) where S_opt = n^{1/3} for balanced
+recursion. For n=16384, S_opt=256, T ≈ 200K R-muls ≈ 0.2 ms per FFT.
+Clears the 100 MB/s gate.
+
+### Option C: Lift to GF(2^64 · S) via Kronecker substitution (hybrid)
+
+Use a GF(2^64 · S) = GF(2^64)^S element to represent an R[x]^{<S} poly.
+The y-Cantor basis lives in this larger field. Field operations are
+S-dim vector operations. Similar to Option B but with a different
+abstraction.
+
+Pros: cleaner field arithmetic at the y-domain.
+Cons: requires Kronecker substitution/unsubstitution, possibly a separate
+field definition.
+
+## Recommended path forward
+
+**Option A** is what the HQC reference does and is the proven path. The
+devillegna/polyeval code (Option A but with different parameters) provides
+the recursive structure. Porting Option A to PAR3 requires:
+1. Decompose GF(2^64) polys into 64 bit-polys.
+2. Apply bc_64-style recursive basisCvt at the bit level.
+3. Use the HQC reference's butterfly (with PCLMULQDQ) for the GF(2^64) muls.
+4. Recombine 64 bit-polys back into a GF(2^64) poly.
+
+This is a significant port effort but well-supported by existing code. The
+devillegna/polyeval repo is the cleanest reference (smaller, MIT-style
+license, recursive structure clear).
+
+**Option B** is what I attempted in the previous session. It clears the gate
+but is hard to verify bit-exactly because the y-domain's R[x]^{<S} field
+arithmetic is a fresh implementation.
+
+Recommend Option A for the next session, with devillegna/polyeval as the
+primary reference (it's smaller and more clearly documented than the HQC
+reference).
+
+
+## Reference implementations found (2026-07-15)
+
+The recursive Algorithm 1 pattern (with y-domain recursion) is implemented
+in several reference repositories. Each uses a different "field" abstraction
+for the y-domain:
+
+### HQC 2026 reference (paper authors' own code)
+
+`github.com/ChunTaoPengim/HQC_with_addFFT_tches2026` - Chen, Peng, Yang et al.
+- `bitpolymul/gf264_ref/` - Frobenius addFFT over GF(2^64), reference C
+- `bitpolymul/gf264_ref/ref/bc_1_ref.c` (1725 lines) - bit-level iterative
+  basis conversion. Hardcodes 20 layers for n = 32768 bits (m=32, l_m=11).
+- `bitpolymul/gf264_ref/ref/btfy.c` - iterative butterfly with precomputed
+  `cantor_to_gf264_2x` v-table.
+- `bitpolymul/gf264_ref/ref/polymul_hqclen_ref.c` - wires basisCvt + butterfly
+  + Karatsuba tail for the HQC parameter set.
+
+The HQC reference is **iterative** (unrolled recursion) at the bit level, with
+each layer doing specific XOR operations on packed 32-bit words. Very fast
+(uses PCLMULQDQ for the GF(2^64) muls) but tied to specific HQC parameters.
+
+### devillegna/polyeval (Chen 2018 author)
+
+`github.com/devillegna/polyeval` - Ming-Shing Chen.
+- `bc/src/bc_64.c` - **the recursive structure I needed**. The bc_64
+  function for size-2^l uint64_t arrays:
+  ```c
+  void bc_64(uint64_t *poly, unsigned n_64) {
+    if(2>=n_64) return;
+    if(4>=n_64) { bc_64_256(poly, 1); return; }
+    repr_s2_64(poly, n_64);       // step 4: decompose via s_2 = x^4 + x
+    bc_64_256(poly, n_64>>2);     // step 6: BasisCvt on each q_j (size-4)
+    bc_256(poly, n_64>>2);        // step 5: BasisCvt on h^(y) (size-m)
+  }
+  ```
+  This is Algorithm 1 line 5 implemented as a separate function `bc_256`
+  (the y-domain recursion) at the 32-bit (256-bit-element) level. The
+  `bc_256` function (in bc_32.c) recursively calls `bc_512` for the deeper
+  y-level, etc.
+- `bc/src/bc_32.c` - y-domain recursion at 32-bit level. Recurses to
+  `bc_512` (256-bit level) for the deeper recursion.
+
+The polyeval code is bit-level (uint32_t* / uint64_t*). The y-domain field is
+the *bit-block* (256-bit elements viewed as GF(2^256) elements via Kronecker
+substitution), not R[x]^{<S}.
+
+### fast-crypto-lab/Frobenius_AFFT
+
+`github.com/fast-crypto-lab/Frobenius_AFFT` - third reference, not yet
+examined.
+
+## Algorithm 1 y-domain field choice - three options
+
+When implementing Algorithm 1 at the GF(2^64) level (PAR3's natural
+abstraction), the y-domain field can be chosen three ways:
+
+### Option A: Bit-level (HQC reference style)
+
+Decompose the GF(2^64) polynomial into 64 separate bit-polynomials, do the
+recursive basis conversion at the bit level, then recombine. This is what
+the HQC reference does. It uses Kronecker substitution to lift 64 bit
+positions into a GF(2^64) element, and the y-domain recursion is at the
+bit level.
+
+Pros: most efficient (the HQC implementation hits GHz rates with PCLMULQDQ).
+Cons: requires a deep restructure of our GF(2^64)-level code; loses the
+"field element" abstraction.
+
+### Option B: R[x]^{<S} as the y-domain field (my original interpretation)
+
+Each y-coefficient is a polynomial in x of degree < S with GF(2^64) coeffs.
+y-Cantor basis elements are constants in R (GF(2^64) elements). y-Butterfly
+has constant-times-poly multiplications, O(S) R-muls per butterfly.
+
+Pros: stays in the GF(2^64) abstraction. Recursion has clear structure.
+Cons: y-BasisCvt recursion at size m is O(m log m * S) per level. Total
+complexity: T(n) = O(n log n * S_opt) where S_opt = n^{1/3} for balanced
+recursion. For n=16384, S_opt=256, T ~ 200K R-muls ~ 0.2 ms per FFT.
+Clears the 100 MB/s gate.
+
+### Option C: Lift to GF(2^64 * S) via Kronecker substitution (hybrid)
+
+Use a GF(2^64 * S) = GF(2^64)^S element to represent an R[x]^{<S} poly.
+The y-Cantor basis lives in this larger field. Field operations are
+S-dim vector operations. Similar to Option B but with a different
+abstraction.
+
+Pros: cleaner field arithmetic at the y-domain.
+Cons: requires Kronecker substitution/unsubstitution, possibly a separate
+field definition.
+
+## Recommended path forward
+
+**Option A** is what the HQC reference does and is the proven path. The
+devillegna/polyeval code (Option A but with different parameters) provides
+the recursive structure. Porting Option A to PAR3 requires:
+1. Decompose GF(2^64) polys into 64 bit-polys.
+2. Apply bc_64-style recursive basisCvt at the bit level.
+3. Use the HQC reference's butterfly (with PCLMULQDQ) for the GF(2^64) muls.
+4. Recombine 64 bit-polys back into a GF(2^64) poly.
+
+This is a significant port effort but well-supported by existing code. The
+devillegna/polyeval repo is the cleanest reference (smaller, MIT-style
+license, recursive structure clear).
+
+**Option B** is what I attempted in the previous session. It clears the gate
+but is hard to verify bit-exactly because the y-domain's R[x]^{<S} field
+arithmetic is a fresh implementation.
+
+Recommend Option A for the next session, with devillegna/polyeval as the
+primary reference (it's smaller and more clearly documented than the HQC
+reference).
