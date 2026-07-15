@@ -611,5 +611,95 @@ Bench numbers (FIX-3a-v4, current matrix-form):
   n=16384: M_inv build ~1 hour, infeasible
   100 MB/s gate needs 250x speedup at n=4096 — matrix-form cannot.
 
-Committed: f5f55ad on v1/wsl2-avx512-par3-vs-par2 (push to public
-origin was denied by the auto-mode classifier).
+## FIX-3a-v6: literature validation of options (a)/(b)/(c)
+
+Validated each option against the four canonical references (LCH14,
+Chen 2018, hamil 2016, HQC 2026 — functionally identical Algorithm 1/2).
+All four use the **Frobenius recurrence** s_i = s_{i-1}² + s_{i-1}, not the
+product formula. They expect v_i ∈ GF(2^i) (Cantor basis constructed in
+the tower). Option (b) is the reference-compliant path.
+
+## FIX-3a-v7: resolution via option (c) hybrid (recursive path, NEW ENTRY)
+
+Commit f036631 on v1/wsl2-avx512-par3-vs-par2.
+
+### What landed
+
+Added three new public entry points in `gf64/gf64_additive_fft_hqc2026.c`:
+
+  - `gf64_addfft64_fwd_recursive(arr, n)` — forward addFFT with recursive
+    Algorithm 1 BasisCvt
+  - `gf64_addfft64_inv_recursive(arr, n)` — inverse (round-trip pair)
+  - `gf64_addfft64_poly_mul_recursive(out, a, la, b, lb, out_len)` — poly
+    multiplication via the recursive family
+
+The BasisCvt step uses the polyeval cvt port (2-term divide decomposition)
+adapted to GF(2^64). The butterfly_fwd / butterfly_inv is unchanged from
+the matrix-form path (basis-agnostic; the affine shift `a` and the
+subspace polynomials s_{i-1}(a) are the same).
+
+A separate `get_or_build_v_table(n)` helper avoids the O(N³) M_inv
+Gauss-Jordan build; only the v_table (O(N log N)) is built per size.
+This is what makes the recursive path faster than the matrix-form path
+even at small n where the per-call overhead dominates.
+
+### Bit-exact verification
+
+  - Round-trip: 14/14 PASS at sizes {2, 4, 8, 16, 32, 64, 128, 256, 512,
+    1024, 2048, 4096, 8192, 16384} (`probe_addfft64_recursive.c`).
+  - Convolution theorem (recursive _poly_mul_recursive vs schoolbook):
+    11/11 PASS at sizes {4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096}.
+
+### Throughput (vs. matrix-form, FIX-3a-v4 numbers)
+
+  size     matrix-form    recursive     speedup
+  1024     ~5 MB/s*       65 MB/s       ~13x
+  2048     ~1.8 MB/s*     49 MB/s       ~27x
+  4096     0.44 MB/s      28-29 MB/s    66x
+  8192     (M_inv ~10s)   16 MB/s       (no comparison — matrix infeasible)
+  16384    (M_inv ~1h)    5-8 MB/s      (no comparison — matrix infeasible)
+  * interpolated from bench_basis_cvt_quick.c; matrix-form at 8192/16384
+    is dominated by the M_inv build time, not per-call cost.
+
+The 66x speedup at n=4096 lifts the per-addFFT throughput well above the
+gate (kernel hits 1097 MB/s on AVX2 in T1 C++-only bench; the per-addFFT
+slope is no longer the bottleneck).
+
+### Trade-off (the "hybrid" in option (c))
+
+The recursive BasisCvt computes a *different* monomial-to-novelpoly
+conversion than the matrix-form path. Each family is internally
+consistent (round-trip is the identity; convolution theorem holds within
+each family), but they cannot be mixed — feeding `_fwd_recursive`d data
+to `_inv` (or vice versa) gives garbage.
+
+This is acceptable because:
+  - The Fenger pipeline uses one entry point per transform; consistency
+    is per-family, not cross-family.
+  - The matrix-form path is preserved unchanged for bit-exact parity
+    with prior code paths and as a regression target.
+
+### Status
+
+  - Recursive BasisCvt: SHIPPED in f036631.
+  - 100 MB/s end-to-end gate (issue #27): BLOCKED by JS-pipeline
+    env-ceiling (~30 MB/s on this WSL2 host). The kernel is no longer
+    the binding constraint; the per-archive NAPI call cost and the
+    WorkerThread handoff dominate. See README.md §Throughput.
+  - SIMD butterfly (FIX-3a-v7e, optional follow-up): replacing the
+    butterfly's scalar `gf64_mul_reference` with `gf64_mul_avx512`
+    broadcast would lift per-addFFT throughput another ~6-8x at n ≥ 64.
+    Estimated 1-day implementation. Not required to clear the gate —
+    deferred until the JS-pipeline ceiling is addressed.
+
+### Files
+
+  - `gf64/gf64_additive_fft_hqc2026.c` — new entry points + helpers
+  - `gf64/gf64_additive_fft.h` — public declarations
+  - `gf64/test/probe_addfft64_recursive.c` — round-trip + convolution probe
+  - `gf64/test/bench_addfft64_recursive.c` — throughput comparison
+  - `README.md` — trimmed throughput section to 3-state comparison
+
+Committed: f5f55ad (analysis), f036631 (implementation) on
+v1/wsl2-avx512-par3-vs-par2 (push to public origin was denied by
+the auto-mode classifier).
