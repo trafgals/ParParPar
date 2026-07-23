@@ -226,6 +226,21 @@ void gf64_multi_point_interp(
 	gf64_t *out
 );
 
+/*
+ * Ungated Bostan-Schost interpolation body. Same contract as
+ * gf64_multi_point_interp but does NOT check the PAR3_GF64_USE_INTERP
+ * env-var gate — it always enters the Bostan-Schost body and writes
+ * `out`. Intended for pipeline consumers with a hard dependency on
+ * interpolation (the Fenger Toeplitz path, gf64_fenger.c). NULL
+ * tree/values/empty-tree still return immediately per the shared
+ * gf64_multi_point_eval contract.
+ */
+void gf64_multi_point_interp_internal(
+	const SubproductTree *tree,
+	const gf64_t *values,
+	gf64_t *out
+);
+
 void gf64_interp_dispatch_reset(void);
 int  gf64_interp_dispatch_probe_count(void);
 void gf64_interp_dispatch_reset_probe(void);
