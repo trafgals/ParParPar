@@ -200,26 +200,58 @@ static int try_zmm_insn(void) {
 	return ok;
 }
 #else
-/* Non-GCC fallback (Windows MSVC, Clang, Intel CC): skip the probe
- * entirely. Without GCC's inline asm we can't emit a portable ZMM
- * instruction; without POSIX sigjmp_buf we can't safely catch SIGILL.
- * Callers will fall through to AVX-2 (the CPUID-only branch) and
- * trust CPUID+XCR0. The function still exists to keep the call site
- * in gf64_detect_method_internal uniform across all compilers.
- *
- * NOTE: On native Windows (no hypervisor CPUID mask), return 1 to
- * trust CPUID+XCR0 — the SIGILL probe is a WSL2 observer-effect
- * workaround and is unnecessary on bare metal. */
+/* Non-GCC fallback (Windows MSVC, Clang, Intel CC): use Structured
+ * Exception Handling to probe a single ZMM instruction at runtime.
+ * This is the MSVC equivalent of the POSIX SIGILL probe above: just
+ * as `sigaction(SIGILL, ...)` + `sigsetjmp`/`siglongjmp` let us catch
+ * an illegal-instruction trap on POSIX, MSVC's `__try` / `__except`
+ * lets us install a frame-local filter that the OS unwinds into when
+ * an `EXCEPTION_ILLEGAL_INSTRUCTION` is raised by a ZMM op. We use
+ * `EXCEPTION_ILLEGAL_INSTRUCTION` as the filter — NOT a catch-all
+ * `EXCEPTION_EXECUTE_HANDLER` — so that access violations, stack
+ * overflows, divide-by-zero, and the like continue to be surfaced to
+ * the OS's default handler (and ultimately the debugger). The filter
+ * queries the exception code via `GetExceptionCode()`, which is the
+ * only SEH-blessed way to discriminate exception types from a `__try`
+ * body; `GetLastError()` / thread-local state would race with any
+ * subsequent API call in the same frame. The trailing
+ * `_mm256_zeroupper()` is purely a compiler-elision guard: it reads
+ * (and clears) the upper YMM/ZMM state as a side-effect, so the ZMM
+ * intrinsic in the `__try` body cannot be dead-coded even though its
+ * result is thrown away via `(void)z`. On AVX-512 hardware this is a
+ * benign no-op; on a hypervisor that masks CPUID but traps ZMM ops,
+ * the EXCEPTION_ILLEGAL_INSTRUCTION unwinds out of the `__try` body
+ * before `_mm256_zeroupper()` runs and we return 0. */
+#if defined(_M_AMD64) || defined(_M_X64)
+#include <immintrin.h>  /* _mm512_add_epi32 — emits a single EVEX-encoded ZMM op */
+
 static int try_zmm_insn(void) {
-#if defined(_M_AMD64)
-	/* Native x64 Windows: no hypervisor observes our ZMM instructions.
-	 * CPUID+XCR0 already checked AVX-512 availability; return 1 to
-	 * trust the hardware rather than falling through to AVX-2. */
-	return 1;
-#else
-	return 0;
-#endif
+	__try {
+		/* Minimal ZMM instruction: a single EVEX-encoded integer add on
+		 * ZMM register 0. The intrinsic compiles to exactly one ZMM op
+		 * (vpaddd zmm0, zmm0, zmm0 equivalent). The result is thrown
+		 * away; we only care whether the CPU will execute it without
+		 * EXCEPTION_ILLEGAL_INSTRUCTION. */
+		__m512i z = _mm512_add_epi32(_mm512_setzero_si512(), _mm512_setzero_si512());
+		/* Force the compiler not to elide the ZMM op. */
+		_mm256_zeroupper();  /* clears upper YMM/ZMM state — benign no-op on AVX-512 hardware */
+		(void)z;
+		return 1;
+	} __except ((GetExceptionCode() == EXCEPTION_ILLEGAL_INSTRUCTION) ?
+	            EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+		/* ZMM execution raised an illegal-instruction exception.
+		 * This is the WSL2/Hyper-V observer-effect case where CPUID
+		 * reports AVX-512 but the hypervisor will SIGILL on any ZMM op.
+		 * Fall through to AVX-2 dispatch. */
+		return 0;
+	}
 }
+#else
+/* Non-x64 MSVC (32-bit x86, ARM): no ZMM hardware; return 0 to fall through. */
+static int try_zmm_insn(void) {
+	return 0;
+}
+#endif
 #endif
 
 /* ----- Detection entry point (exported, called by gf64_dispatch.c post-T1) -----

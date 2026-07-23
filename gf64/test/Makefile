@@ -21,10 +21,11 @@ TEST_GF64_ADDITIVE_FFT_SOURCES := test_gf64_additive_fft.c
 TEST_GF64_SUBPRODUCT_TREE_SOURCES := test_gf64_subproduct_tree.c
 TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
 TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
+TEST_CPU_DETECT_SOURCES := test_cpu_detect.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -85,5 +86,17 @@ test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ..
 test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
+# Standalone unit test for the gf64_detect_method_internal() dispatch
+# algorithm (avx512-wsl2-detect, Todo 3 of pr-26-recovery plan). The test
+# exercises both the "ZMM probe returns 1" path (POSIX-positive=1) and
+# the "ZMM probe returns 0" path (POSIX-negative=0) in a single binary.
+# Compiled with -DGF64_CPU_DETECT_STANDALONE so test_cpu_detect.c skips
+# gf64_global.h and brings its own minimal type shims; cpu_detect.c is
+# compiled alongside to confirm both files build cleanly. Needs AVX-512F
+# at runtime (not required — the test stubs both the CPUID and the ZMM
+# probe, so the actual host hardware is irrelevant).
+test_cpu_detect: $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
+	$(CC) $(CFLAGS) -DGF64_CPU_DETECT_STANDALONE $(LDFLAGS) -o $@ $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
