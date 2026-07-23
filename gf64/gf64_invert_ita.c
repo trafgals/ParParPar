@@ -67,7 +67,9 @@
 #include "gf64_mul.h"
 #include "gf64_global.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 #include <stdint.h>
 #include <stddef.h>
 
@@ -79,6 +81,13 @@
 #endif
 
 HEDLEY_BEGIN_C_DECLS
+
+#if defined(__x86_64__) || defined(_M_X64)
+#define GF64_INVERT_ITA_TU_BODY 1
+#else
+#define GF64_INVERT_ITA_TU_BODY 0
+#endif
+#if GF64_INVERT_ITA_TU_BODY
 
 /* Public scalar SSE2 multiplication, defined in gf64/gf64_single.c:6.
  * Bit-exact to gf64_mul in gf64_solve.c:7-37. */
@@ -201,4 +210,5 @@ void gf64_invert_ita_batch(
 	}
 }
 
+#endif /* GF64_INVERT_ITA_TU_BODY */
 HEDLEY_END_C_DECLS
