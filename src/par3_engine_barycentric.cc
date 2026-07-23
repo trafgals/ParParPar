@@ -95,6 +95,15 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 		return;
 	}
 
+	if (numRecovery <= 32) {
+		/* Keep the small-R workload on the engine's 1D muladd shortcut.
+		 * This entry can still be selected by the JS large-input gate, but
+		 * the Barycentric algorithm itself is reserved for larger R. */
+		ComputeRecoveryBlocks(inputs, numInputs, recovery, numRecovery,
+		                     blockSize64, firstInput, firstRecovery, 0);
+		return;
+	}
+
 	/*
 	 * Ensure the global GF(2^64) dispatch is bound (mirrors the legacy
 	 * ComputeRecoveryBlocks entry — the dispatch pointers may be unbound

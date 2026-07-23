@@ -547,6 +547,7 @@ static size_t AutotuneBlockSize() {
 struct WorkerRange {
 	gf64_t*       out_start;       // first recovery block of this worker
 	size_t        num_out;         // how many recovery blocks this worker handles
+	size_t        total_num_out;   // total recovery blocks across all workers
 	const gf64_t* in;
 	size_t        num_in;
 	const gf64_t* coeff_row_start; // coeffMatrix + outStart * numIn
@@ -590,11 +591,32 @@ struct WorkerRange {
 // ============================================================================
 static void WorkerThread(const WorkerRange& range) {
 	EnsureDispatch();
-	const int K = GetKGroupSize();
-	const int G = GetGroupSize();
 	const size_t num_in = range.num_in;
 	const size_t num_out = range.num_out;
+	const size_t total_num_out = range.total_num_out;
 	const size_t B = range.block_size64;
+
+	if (total_num_out <= 32) {
+		// Small-R single-output shortcut: 1D muladd loop (same shape as
+		// ComputeRepairBlocks). The 2D kernel's per-call setup (outs_ptr /
+		// in_blocks_ptr arrays, the K-tile outer loop, the Kk clamp) costs
+		// more than the work it saves when output count is small. Threshold
+		// is hardcoded at 32; matches issue #27 §auxiliary guidance; no env gate.
+		for (size_t k = 0; k < num_out; k++) {
+			gf64_t* out_k = range.out_start + k * B;
+			memset(out_k, 0, B * sizeof(gf64_t));
+
+			const gf64_t* row = range.coeff_row_start + k * num_in;
+			for (size_t j = 0; j < num_in; j++) {
+				gf64_region_muladd_arr(out_k, range.in + j * B,
+				                       &row[j], B, 1);
+			}
+		}
+		return;
+	}
+
+	const int K = GetKGroupSize();
+	const int G = GetGroupSize();
 	const size_t MAX_STACK_K = 256;  // matches kDefaultKGroupSize cap
 	const size_t MAX_STACK_G = 256;  // matches kDefaultGroupSize cap
 
@@ -956,6 +978,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		WorkerRange r;
 		r.out_start = recovery;
 		r.num_out = numRecovery;
+		r.total_num_out = numRecovery;
 		r.in = inputs;
 		r.num_in = numInputs;
 		r.coeff_row_start = coeff;
@@ -972,6 +995,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 			WorkerRange r;
 			r.out_start       = recovery + base * blockSize64;
 			r.num_out         = end - base;
+			r.total_num_out   = numRecovery;
 			r.in              = inputs;
 			r.num_in          = numInputs;
 			r.coeff_row_start = coeff + base * numInputs;
