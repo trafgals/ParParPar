@@ -8,7 +8,27 @@ CXXFLAGS := -std=c++11 -Wall -Wextra -O2 -march=native -D_POSIX_C_SOURCE=200112L
 LDFLAGS :=
 
 # Source files
-GF64_SOURCES := ../gf64_single.c ../gf64_region_scalar.c ../gf64_region_ssse3.c ../gf64_region_ssse3_arr.c ../gf64_region_avx2.c ../gf64_region_avx2_arr.c ../gf64_region_avx512.c ../gf64_region_avx512_arr.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_additive_fft.c ../gf64_dispatch.c ../cpu_detect.c ../gf64_invert.c ../gf64_invert_ssse3.c ../gf64_invert_avx2.c ../gf64_invert_avx512.c
+GF64_SOURCES := ../gf64_single.c \
+	../gf64_region_scalar.c \
+	../gf64_region_ssse3.c \
+	../gf64_region_ssse3_arr.c \
+	../gf64_region_avx2.c \
+	../gf64_region_avx2_arr.c \
+	../gf64_region_avx512.c \
+	../gf64_region_avx512_arr.c \
+	../gf64_mul_avx512.c \
+	../gf64_square.c \
+	../gf64_additive_fft.c \
+	../gf64_subproduct.c \
+	../gf64_barycentric.c \
+	../gf64_mpe.c \
+	../gf64_dispatch.c \
+	../cpu_detect.c \
+	../gf64_invert.c \
+	../gf64_invert_ssse3.c \
+	../gf64_invert_avx2.c \
+	../gf64_invert_avx512.c \
+	../gf64_invert_ita.c
 GF64_INCLUDES := -I..
 
 # Test sources

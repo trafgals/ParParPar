@@ -61,6 +61,19 @@ void gf64_poly_mul(
 	size_t deg_b
 );
 
+/*
+ * Writes exactly out_len low-order coefficients of a * b. The output is
+ * zero-padded when out_len exceeds the full product and truncated otherwise.
+ * The output range must not overlap either input range; violations abort with
+ * GF64_ALIASING_ERROR.
+ */
+void gf64_poly_mul_padded(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len
+);
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_ADDITIVE_FFT_H */

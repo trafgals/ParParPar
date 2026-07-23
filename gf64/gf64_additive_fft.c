@@ -45,6 +45,7 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -78,25 +79,6 @@ static gf64_t gf64_fft_scale(size_t n) {
 		return 1;
 	}
 	return (gf64_t)1ULL << (log_n - 1);
-}
-
-static gf64_t gf64_pow_u64(gf64_t base, uint64_t exponent) {
-	gf64_t result = 1;
-	while (exponent != 0) {
-		if ((exponent & 1U) != 0) {
-			result = gf64_mul_reference(result, base);
-		}
-		exponent >>= 1;
-		if (exponent != 0) {
-			base = gf64_mul_reference(base, base);
-		}
-	}
-	return result;
-}
-
-static gf64_t gf64_inverse_nonzero(gf64_t a) {
-	assert(a != 0);
-	return gf64_pow_u64(a, UINT64_MAX - 1ULL);
 }
 
 static void gf64_alloc_halves(size_t half, gf64_t **even_half, gf64_t **odd_half) {
@@ -210,6 +192,95 @@ void gf64_fft_inverse(gf64_t *poly, size_t n) {
 	gf64_scale_vector(poly, n, gf64_fft_scale(n));
 }
 
+static void gf64_length_error(void) {
+	fputs("GF64_LENGTH_ERROR: polynomial size overflow\n", stderr);
+	abort();
+}
+
+static size_t gf64_poly_product_len(size_t len_a, size_t len_b) {
+	if (len_a == 0 || len_b == 0) {
+		return 0;
+	}
+	if (len_a > SIZE_MAX - len_b + 1U) {
+		gf64_length_error();
+	}
+	return len_a + len_b - 1U;
+}
+
+static uintptr_t gf64_range_end(const gf64_t *ptr, size_t len) {
+	uintptr_t start = (uintptr_t)ptr;
+	if (len > SIZE_MAX / sizeof(*ptr)) {
+		gf64_length_error();
+	}
+	size_t bytes = len * sizeof(*ptr);
+	if (start > UINTPTR_MAX - bytes) {
+		gf64_length_error();
+	}
+	return start + bytes;
+}
+
+static int gf64_ranges_overlap(
+	const gf64_t *left, size_t left_len,
+	const gf64_t *right, size_t right_len
+) {
+	if (left_len == 0 || right_len == 0) {
+		return 0;
+	}
+
+	uintptr_t left_start = (uintptr_t)left;
+	uintptr_t right_start = (uintptr_t)right;
+	uintptr_t left_end = gf64_range_end(left, left_len);
+	uintptr_t right_end = gf64_range_end(right, right_len);
+	return left_start < right_end && right_start < left_end;
+}
+
+static void gf64_assert_no_output_alias(
+	gf64_t *out, size_t out_len,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b
+) {
+	if (gf64_ranges_overlap(out, out_len, a, len_a) ||
+	    gf64_ranges_overlap(out, out_len, b, len_b)) {
+		fputs("GF64_ALIASING_ERROR: output overlaps polynomial input\n", stderr);
+		abort();
+	}
+}
+
+/*
+ * Shared schoolbook convolution kernel for gf64_poly_mul and
+ * gf64_poly_mul_padded. The helper remains file-local so the only additive
+ * public surface is gf64_poly_mul_padded; Todo 5 can replace this body's
+ * dispatch without changing either public entry point.
+ */
+static void gf64_poly_mul_internal(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len
+) {
+	assert(out != NULL || out_len == 0);
+	assert(a != NULL || len_a == 0);
+	assert(b != NULL || len_b == 0);
+
+	if (out_len == 0) {
+		return;
+	}
+	memset(out, 0, out_len * sizeof(*out));
+
+	size_t a_cap = len_a < out_len ? len_a : out_len;
+	size_t b_cap = len_b < out_len ? len_b : out_len;
+	for (size_t i = 0; i < a_cap; i++) {
+		gf64_t ai = a[i];
+		if (ai == 0) {
+			continue;
+		}
+		size_t j_max = b_cap < out_len - i ? b_cap : out_len - i;
+		for (size_t j = 0; j < j_max; j++) {
+			out[i + j] ^= gf64_mul_reference(ai, b[j]);
+		}
+	}
+}
+
 void gf64_poly_mul(
 	gf64_t *out,
 	const gf64_t *a,
@@ -217,46 +288,35 @@ void gf64_poly_mul(
 	const gf64_t *b,
 	size_t deg_b
 ) {
+	if (deg_a == SIZE_MAX || deg_b == SIZE_MAX) {
+		gf64_length_error();
+	}
+
+	size_t len_a = deg_a + 1U;
+	size_t len_b = deg_b + 1U;
+	size_t out_len = gf64_poly_product_len(len_a, len_b);
 	assert(out != NULL);
 	assert(a != NULL);
 	assert(b != NULL);
+	gf64_assert_no_output_alias(out, out_len, a, len_a, b, len_b);
+	gf64_poly_mul_internal(out, a, len_a, b, len_b, out_len);
+}
 
-	size_t len_a = deg_a + 1;
-	size_t len_b = deg_b + 1;
-	size_t out_len = deg_a + deg_b + 1;
-	size_t n = 1;
-	while (n < out_len) {
-		n <<= 1;
-	}
+void gf64_poly_mul_padded(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len
+) {
+	assert(out != NULL || out_len == 0);
+	assert(a != NULL || len_a == 0);
+	assert(b != NULL || len_b == 0);
 
-	gf64_t *fa = (gf64_t *)calloc(n, sizeof(gf64_t));
-	gf64_t *fb = (gf64_t *)calloc(n, sizeof(gf64_t));
-	if (fa == NULL || fb == NULL) {
-		free(fa);
-		free(fb);
-		abort();
-	}
-
-	memcpy(fa, a, len_a * sizeof(gf64_t));
-	memcpy(fb, b, len_b * sizeof(gf64_t));
-
-	gf64_fft_forward(fa, n);
-	gf64_fft_forward(fb, n);
-	for (size_t i = 0; i < n; i++) {
-		fa[i] = gf64_mul_reference(fa[i], fb[i]);
-	}
-	gf64_fft_inverse(fa, n);
-	gf64_scale_vector(fa, n, gf64_inverse_nonzero(gf64_fft_scale(n)));
-
-	memset(out, 0, out_len * sizeof(gf64_t));
-	for (size_t i = 0; i < len_a; i++) {
-		for (size_t j = 0; j < len_b; j++) {
-			out[i + j] ^= gf64_mul_reference(a[i], b[j]);
-		}
-	}
-
-	free(fa);
-	free(fb);
+	/* Validate len_a + len_b - 1 before deciding whether this call pads or
+	 * truncates. The internal kernel then writes exactly out_len elements. */
+	(void)gf64_poly_product_len(len_a, len_b);
+	gf64_assert_no_output_alias(out, out_len, a, len_a, b, len_b);
+	gf64_poly_mul_internal(out, a, len_a, b, len_b, out_len);
 }
 
 /* ===========================================================================
