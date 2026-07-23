@@ -60,6 +60,55 @@ HEDLEY_BEGIN_C_DECLS
 
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
+/*
+ * Forward declaration for the Karatsuba drop-in (see
+ * gf64_poly_mul_karatsuba.c). Defined in its own TU to keep this file's
+ * focus on the additive FFT primitive.
+ */
+extern void gf64_poly_mul_karatsuba(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len
+);
+
+/*
+ * Karatsuba crossover for gf64_poly_mul_internal dispatch. Below this size,
+ * schoolbook wins on constant overhead. Above it (and the operands being
+ * at-or-above this size after truncation), Karatsuba wins asymptotically at
+ * O(n^1.585) vs O(n^2). The threshold is also the schoolbook base case
+ * inside gf64_poly_mul_karatsuba's recursion, so the two stay in sync.
+ */
+#define GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN ((size_t)128)
+
+/*
+ * Dispatch-probe counters. Incremented once per gf64_poly_mul_internal
+ * invocation per code path taken. Read by test_gf64_poly_mul_karatsuba's
+ * threshold-boundary assertions (n == 127 -> schoolbook, n == 128 ->
+ * karatsuba, n == 4096 -> karatsuba with toom3/fft remaining 0).
+ *
+ * These are intentionally single-threaded counters (uint64_t, not
+ * stdatomic). The dispatched engine runs multi-threaded but each call to
+ * gf64_poly_mul_internal happens on one worker at a time; for the test's
+ * threshold-boundary verification the harness is single-threaded and the
+ * counters are observed only after a memory barrier implicit in the next
+ * library call. For production: the increment cost (~1ns) is amortized into
+ * the polynomial multiplication and is dwarfed by the work itself at the
+ * sizes where these counters move (n >= 128).
+ *
+ * Reset to 0 via gf64_dispatch_counts_reset(); read into the struct via
+ * gf64_dispatch_counts_get().
+ */
+typedef struct gf64_dispatch_counts {
+	uint64_t schoolbook;
+	uint64_t karatsuba;
+	uint64_t toom3;
+	uint64_t fft;
+} gf64_dispatch_counts_t;
+
+extern gf64_dispatch_counts_t gf64_dispatch_counts;
+void gf64_dispatch_counts_reset(void);
+
 static int gf64_is_power_of_two(size_t n) {
 	return n != 0 && (n & (n - 1)) == 0;
 }
@@ -247,11 +296,42 @@ static void gf64_assert_no_output_alias(
 }
 
 /*
- * Shared schoolbook convolution kernel for gf64_poly_mul and
- * gf64_poly_mul_padded. The helper remains file-local so the only additive
- * public surface is gf64_poly_mul_padded; Todo 5 can replace this body's
- * dispatch without changing either public entry point.
+ * Shared convolution kernel for gf64_poly_mul and gf64_poly_mul_padded.
+ *
+ * Computes out[0 .. out_len) as the low-order coefficients of the convolution
+ * a * b in GF(2^64)[x]. `a` has len_a coefficients and `b` has len_b
+ * coefficients (constant-first, length = degree + 1). Coefficients of
+ * index >= out_len are discarded; trailing slots [0, out_len) are zeroed
+ * before writing.
+ *
+ * Implementation: dispatches to either the schoolbook triple loop (below
+ * GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN) or to gf64_poly_mul_karatsuba
+ * (above). The Gao-Mateer additive FFT in this TU does NOT implement the
+ * convolution theorem for arbitrary GF(2^64) inputs — the recursive
+ * structure is a transform of the monomial basis into a "twiddle"-laden
+ * evaluation-like representation where pointwise multiplication is not
+ * equivalent to polynomial convolution. A correct FFT-based multiplication
+ * would need either:
+ *
+ *   (a) the full Gao-Mateer "tower of extensions" pipeline (works in
+ *       characteristic 2 but needs to use the *evaluation* basis at the
+ *       top level, not just the monomial-basis transform), or
+ *   (b) an NTT over a prime subfield of GF(2^64) with roots of unity.
+ *
+ * Both are research-level primitives. Karatsuba (Phase 2a) is the
+ * pragmatic, immediately useful intermediate that gets the
+ * polynomial-heavy T6/T7/T8 primitives to O(n^1.585) without the
+ * research-grade FFT work.
  */
+gf64_dispatch_counts_t gf64_dispatch_counts = {0, 0, 0, 0};
+
+void gf64_dispatch_counts_reset(void) {
+	gf64_dispatch_counts.schoolbook = 0;
+	gf64_dispatch_counts.karatsuba = 0;
+	gf64_dispatch_counts.toom3 = 0;
+	gf64_dispatch_counts.fft = 0;
+}
+
 static void gf64_poly_mul_internal(
 	gf64_t *out,
 	const gf64_t *a, size_t len_a,
@@ -265,16 +345,40 @@ static void gf64_poly_mul_internal(
 	if (out_len == 0) {
 		return;
 	}
+
+	/* Karatsuba above the threshold. We require ALL of (len_a, len_b,
+	 * out_len) to be at-or-above the crossover so we don't pay Karatsuba's
+	 * malloc/scratch overhead when the operands are small (the schoolbook
+	 * base case would fire immediately anyway, but with extra setup cost).
+	 *
+	 * Only Karatsuba is wired into production at this point; Toom-3, FFT,
+	 * and HQC belong to deferred waves (todos 7-9). Their counter slots
+	 * remain 0 to prove no silent promotion. */
+	if (len_a >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
+	    len_b >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
+	    out_len >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN) {
+		gf64_dispatch_counts.karatsuba++;
+		gf64_poly_mul_karatsuba(out, a, len_a, b, len_b, out_len);
+		return;
+	}
+
+	gf64_dispatch_counts.schoolbook++;
 	memset(out, 0, out_len * sizeof(*out));
 
-	size_t a_cap = len_a < out_len ? len_a : out_len;
-	size_t b_cap = len_b < out_len ? len_b : out_len;
+	/* Cap reads at the truncation point: any coefficient of index >= out_len
+	 * in either input contributes only to output slots [out_len, ...), which
+	 * are out of contract. Skipping the long-tail inner products gives the
+	 * Newton-iteration truncation idiom for free without needing a separate
+	 * "low-order only" loop. */
+	size_t a_cap = (len_a < out_len) ? len_a : out_len;
+	size_t b_cap = (len_b < out_len) ? len_b : out_len;
+
 	for (size_t i = 0; i < a_cap; i++) {
 		gf64_t ai = a[i];
-		if (ai == 0) {
-			continue;
-		}
-		size_t j_max = b_cap < out_len - i ? b_cap : out_len - i;
+		if (ai == 0) continue;
+		/* Output slot (i + j) must be < out_len for this product to land
+		 * inside the truncation; clamp j at out_len - i - 1. */
+		size_t j_max = (b_cap < out_len - i) ? b_cap : (out_len - i);
 		for (size_t j = 0; j < j_max; j++) {
 			out[i + j] ^= gf64_mul_reference(ai, b[j]);
 		}

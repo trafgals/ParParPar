@@ -28,7 +28,8 @@ GF64_SOURCES := ../gf64_single.c \
 	../gf64_invert_ssse3.c \
 	../gf64_invert_avx2.c \
 	../gf64_invert_avx512.c \
-	../gf64_invert_ita.c
+	../gf64_invert_ita.c \
+	../gf64_poly_mul_karatsuba.c
 GF64_INCLUDES := -I..
 
 # Test sources
@@ -42,10 +43,11 @@ TEST_GF64_SUBPRODUCT_TREE_SOURCES := test_gf64_subproduct_tree.c
 TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
 TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
 TEST_CPU_DETECT_SOURCES := test_cpu_detect.c
+TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -118,5 +120,13 @@ test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf
 test_cpu_detect: $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
 	$(CC) $(CFLAGS) -DGF64_CPU_DETECT_STANDALONE $(LDFLAGS) -o $@ $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
 
+# Karatsuba dispatch test (par3-cauchy-fft-kernel Phase 2a — Todo 5). Tests
+# both gf64_poly_mul_karatsuba (the new T6 helper) and the dispatch into it
+# from gf64_poly_mul_internal inside gf64_additive_fft.c. The additive FFT
+# TU brings in gf64_mul_avx512.c (T1) and gf64_square.c (T2); gf64_single.c
+# provides gf64_mul_reference used by both scalar and Karatsuba paths.
+test_gf64_poly_mul_karatsuba: $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
