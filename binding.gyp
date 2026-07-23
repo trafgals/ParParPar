@@ -124,10 +124,14 @@
       "sources": ["gf64/gf64_region_avx512.c"],
       "include_dirs": ["gf64"],
       "conditions": [
-        ['target_arch in "ia32 x64" and OS=="win"', {
-          "msvs_settings": {
-            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
-          }
+        ['target_arch in "ia32 x64"', {
+          "conditions": [
+            ['OS=="win"', {
+              "msvs_settings": {
+                "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
+              }
+            }]
+          ]
         }]
       ]
     },
@@ -138,10 +142,14 @@
       "sources": ["gf64/gf64_region_avx512_arr.c", "gf64/gf64_invert_avx512.c", "gf64/gf64_mul_avx512.c", "gf64/gf64_square.c", "gf64/gf64_invert_ita.c", "gf64/gf64_additive_fft.c", "gf64/gf64_subproduct.c", "gf64/gf64_barycentric.c", "gf64/gf64_mpe.c"],
       "include_dirs": ["gf64"],
       "conditions": [
-        ['target_arch in "ia32 x64" and OS=="win"', {
-          "msvs_settings": {
-            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
-          }
+        ['target_arch in "ia32 x64"', {
+          "conditions": [
+            ['OS=="win"', {
+              "msvs_settings": {
+                "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
+              }
+            }]
+          ]
         }]
       ]
     },
