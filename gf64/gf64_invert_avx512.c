@@ -27,7 +27,11 @@ static inline int gf64_msvc_clz64(uint64_t x) {
 
 HEDLEY_BEGIN_C_DECLS
 
+#if defined(__x86_64__) || defined(_M_X64)
 #define GF64_INVERT_AVX512_TU_BODY 1
+#else
+#define GF64_INVERT_AVX512_TU_BODY 0
+#endif
 #if GF64_INVERT_AVX512_TU_BODY
 
 extern void gf64_inverse_batch_scalar(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLEY_RESTRICT in, size_t N);

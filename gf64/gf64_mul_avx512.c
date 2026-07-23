@@ -71,7 +71,11 @@
 
 HEDLEY_BEGIN_C_DECLS
 
+#if defined(__x86_64__) || defined(_M_X64)
 #define GF64_MUL_AVX512_TU_BODY 1
+#else
+#define GF64_MUL_AVX512_TU_BODY 0
+#endif
 #if GF64_MUL_AVX512_TU_BODY
 
 /* Public scalar SSE2 reduction path, used for the N % 8 tail.

@@ -50,7 +50,11 @@
 
 HEDLEY_BEGIN_C_DECLS
 
+#if defined(__x86_64__) || defined(_M_X64)
 #define GF64_ADDITIVE_FFT_TU_BODY 1
+#else
+#define GF64_ADDITIVE_FFT_TU_BODY 0
+#endif
 #if GF64_ADDITIVE_FFT_TU_BODY
 
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
