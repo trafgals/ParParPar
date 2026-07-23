@@ -158,7 +158,10 @@ void gf64_invert_ita_batch(
 ) {
 	if (N == 0) return;
 
-	const size_t LANES = 8;
+	/* LANES must be an integer constant expression for MSVC stack-array
+	 * sizing (C2057: "expected constant expression"). A `const size_t` is
+	 * NOT acceptable to MSVC; a #define is. Keep LANES == 8 (one ZMM). */
+#define LANES 8
 	gf64_t a_in_buf[LANES];   /* saved inputs (lane-aligned) */
 	gf64_t t_buf[LANES];      /* running state across the chain */
 

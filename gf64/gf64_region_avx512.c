@@ -1,7 +1,13 @@
 #include "gf64_global.h"
-#include <immintrin.h>
 #include <stdint.h>
 #include <stddef.h>
+
+/* immintrin.h is x86-only; macOS arm64 and Linux/aarch64 do not ship it.
+ * The whole TU uses ZMM intrinsics unconditionally, so on non-x86 the file
+ * becomes an empty stub (binding.gyp only compiles this TU for x86_64). */
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 #ifndef __GNUC__
 /* Stub out GCC __attribute__((target(...))) under MSVC.

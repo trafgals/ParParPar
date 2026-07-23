@@ -29,6 +29,9 @@ jobs:
           node-version: '20'
       - name: Build native addon
         run: npm install
+      - name: Native addon load gate
+        run: |
+          node -e "var m=require('./build/Release/parpar_gf64.node'); var keys=Object.keys(m); if(keys.length<5) { console.error('FAIL: native addon exports only '+keys.length+' keys, need >=5'); process.exit(2); } console.log('OK '+keys.length, keys);"
       - name: Build GF64 tests
         run: |
           cd gf64/test
@@ -86,6 +89,10 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      - name: Native addon load gate
+        run: |
+          node -e "var m=require('./build/Release/parpar_gf64.node'); var keys=Object.keys(m); if(keys.length<5) { console.error('FAIL: native addon exports only '+keys.length+' keys, need >=5'); process.exit(2); } console.log('OK '+keys.length, keys);"
 
       - name: Create test files
         run: |
