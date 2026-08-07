@@ -223,12 +223,18 @@ static int try_zmm_insn(void) {
  * the EXCEPTION_ILLEGAL_INSTRUCTION unwinds out of the `__try` body
  * before `_mm256_zeroupper()` runs and we return 0. */
 #if defined(_M_AMD64) || defined(_M_X64)
-#include <excpt.h>      /* EXCEPTION_ILLEGAL_INSTRUCTION, EXCEPTION_EXECUTE_HANDLER,
-                         * EXCEPTION_CONTINUE_SEARCH, GetExceptionCode — MSVC CRT
-                         * SEH declarations. Lighter than <windows.h> (no WINBASEAPI
-                         * macros, no min/max pollution) and supplies exactly the
-                         * four symbols the __except filter below needs. */
+#include <excpt.h>      /* EXCEPTION_EXECUTE_HANDLER, EXCEPTION_CONTINUE_SEARCH,
+                         * GetExceptionCode — MSVC CRT SEH declarations.
+                         * Lighter than <windows.h> (no WINBASEAPI / min/max). */
 #include <immintrin.h>  /* _mm512_add_epi32 — emits a single EVEX-encoded ZMM op */
+
+/* EXCEPTION_ILLEGAL_INSTRUCTION lives in <winnt.h>/<windows.h>, not <excpt.h>.
+ * Define locally to avoid pulling in <windows.h>. Value is the stable NTSTATUS
+ * STATUS_ILLEGAL_INSTRUCTION; see
+ * https://learn.microsoft.com/en-us/windows/win32/debug/exception-record */
+#ifndef EXCEPTION_ILLEGAL_INSTRUCTION
+#define EXCEPTION_ILLEGAL_INSTRUCTION 0xC000001DL
+#endif
 
 static int try_zmm_insn(void) {
 	__try {
