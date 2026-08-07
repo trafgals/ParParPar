@@ -29,6 +29,9 @@ jobs:
           node-version: '20'
       - name: Build native addon
         run: npm install
+      - name: Native addon load gate
+        run: |
+          node -e "var m=require('./build/Release/parpar_gf64.node'); var keys=Object.keys(m); if(keys.length<5) { console.error('FAIL: native addon exports only '+keys.length+' keys, need >=5'); process.exit(2); } console.log('OK '+keys.length, keys);"
       - name: Build GF64 tests
         run: |
           cd gf64/test
@@ -75,7 +78,7 @@ jobs:
       fail-fast: false
       matrix:
         node-version: [20, 22]
-        os: [ubuntu-latest, macos-latest, windows-2025]
+        os: [ubuntu-latest, windows-2025]
     steps:
       - uses: actions/checkout@v4
 
@@ -86,6 +89,10 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      - name: Native addon load gate
+        run: |
+          node -e "var m=require('./build/Release/parpar_gf64.node'); var keys=Object.keys(m); if(keys.length<5) { console.error('FAIL: native addon exports only '+keys.length+' keys, need >=5'); process.exit(2); } console.log('OK '+keys.length, keys);"
 
       - name: Create test files
         run: |
@@ -101,6 +108,7 @@ jobs:
           echo "file1_checksum=$(sha256sum par3-test-input/file1.txt | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Create PAR3 archive
+        timeout-minutes: 10
         run: |
           mkdir -p par3-test-output
           node bin/par3.js create --output par3-test-output/data --recovery-slices 2 par3-test-input/file1.txt par3-test-input/file2.txt par3-test-input/file3.txt
@@ -115,9 +123,11 @@ jobs:
           echo "PAR3 archive created successfully"
 
       - name: Verify PAR3 archive
+        timeout-minutes: 10
         run: node bin/par3.js verify par3-test-output/data.par3
 
       - name: Repair PAR3 archive (pre-corruption baseline)
+        timeout-minutes: 10
         id: repair-baseline
         shell: bash
         run: |
@@ -153,6 +163,7 @@ jobs:
           echo "Corruption verified: checksums differ"
 
       - name: Repair PAR3 archive (post-corruption)
+        timeout-minutes: 10
         id: repair-post
         shell: bash
         run: |

@@ -54,7 +54,9 @@
 #include "gf64_square.h"
 #include "gf64_global.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 #include <stdint.h>
 #include <stddef.h>
 
@@ -65,7 +67,15 @@
 #define __attribute__(...) /* __attribute__ not supported under MSVC */
 #endif
 
+
 HEDLEY_BEGIN_C_DECLS
+
+#if defined(__x86_64__) || defined(_M_X64)
+#define GF64_SQUARE_TU_BODY 1
+#else
+#define GF64_SQUARE_TU_BODY 0
+#endif
+#if GF64_SQUARE_TU_BODY
 
 /* ---------------------------------------------------------------------------
  * Scalar Frobenius squaring of a single GF(2^64) element.
@@ -253,4 +263,5 @@ void gf64_square_avx512(
 	}
 }
 
+#endif /* GF64_SQUARE_TU_BODY */
 HEDLEY_END_C_DECLS

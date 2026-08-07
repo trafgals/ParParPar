@@ -1,7 +1,20 @@
 #include "gf64_global.h"
-#include <immintrin.h>
 #include <stdint.h>
 #include <stddef.h>
+
+/* immintrin.h is x86-only; macOS arm64 and Linux/aarch64 do not ship it.
+ * The whole TU uses ZMM intrinsics unconditionally; on non-x86 the entire
+ * body is omitted so the file compiles cleanly to an empty translation
+ * unit. See gf64/gf64_region_avx512.c for the rationale; this is the
+ * parallel fix for the array-form kernel. */
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#define GF64_AVX512_ARR_TU_BODY 1
+#else
+#define GF64_AVX512_ARR_TU_BODY 0
+#endif
+
+#if GF64_AVX512_ARR_TU_BODY
 
 #ifndef __GNUC__
 /* Stub out GCC __attribute__((target(...))) under MSVC.
@@ -757,5 +770,7 @@ void gf64_region_2d_muladd_avx512_arr(
 		i++;
 	}
 }
+
+#endif /* GF64_AVX512_ARR_TU_BODY */
 
 HEDLEY_END_C_DECLS
