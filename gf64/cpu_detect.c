@@ -223,6 +223,11 @@ static int try_zmm_insn(void) {
  * the EXCEPTION_ILLEGAL_INSTRUCTION unwinds out of the `__try` body
  * before `_mm256_zeroupper()` runs and we return 0. */
 #if defined(_M_AMD64) || defined(_M_X64)
+#include <excpt.h>      /* EXCEPTION_ILLEGAL_INSTRUCTION, EXCEPTION_EXECUTE_HANDLER,
+                         * EXCEPTION_CONTINUE_SEARCH, GetExceptionCode — MSVC CRT
+                         * SEH declarations. Lighter than <windows.h> (no WINBASEAPI
+                         * macros, no min/max pollution) and supplies exactly the
+                         * four symbols the __except filter below needs. */
 #include <immintrin.h>  /* _mm512_add_epi32 — emits a single EVEX-encoded ZMM op */
 
 static int try_zmm_insn(void) {
