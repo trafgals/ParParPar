@@ -1,6 +1,8 @@
 #include "gf64_global.h"
 #include "gf64_invert.h"
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 #include <stdint.h>
 #include <stddef.h>
 
@@ -24,6 +26,13 @@ static inline int gf64_msvc_clz64(uint64_t x) {
 
 
 HEDLEY_BEGIN_C_DECLS
+
+#if defined(__x86_64__) || defined(_M_X64)
+#define GF64_INVERT_AVX512_TU_BODY 1
+#else
+#define GF64_INVERT_AVX512_TU_BODY 0
+#endif
+#if GF64_INVERT_AVX512_TU_BODY
 
 extern void gf64_inverse_batch_scalar(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLEY_RESTRICT in, size_t N);
 
@@ -101,4 +110,5 @@ void gf64_inverse_batch_avx512(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLEY
 	}
 }
 
+#endif /* GF64_INVERT_AVX512_TU_BODY */
 HEDLEY_END_C_DECLS

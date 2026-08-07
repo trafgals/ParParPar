@@ -128,6 +128,9 @@
           "msvs_settings": {
             "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
           }
+        }],
+        ['target_arch=="arm64" or target_arch=="arm"', {
+          "sources": []
         }]
       ]
     },
@@ -142,6 +145,9 @@
           "msvs_settings": {
             "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
           }
+        }],
+        ['target_arch=="arm64" or target_arch=="arm"', {
+          "sources": []
         }]
       ]
     },

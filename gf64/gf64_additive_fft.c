@@ -50,6 +50,13 @@
 
 HEDLEY_BEGIN_C_DECLS
 
+#if defined(__x86_64__) || defined(_M_X64)
+#define GF64_ADDITIVE_FFT_TU_BODY 1
+#else
+#define GF64_ADDITIVE_FFT_TU_BODY 0
+#endif
+#if GF64_ADDITIVE_FFT_TU_BODY
+
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
 static int gf64_is_power_of_two(size_t n) {
@@ -266,7 +273,9 @@ void gf64_poly_mul(
  * implementation, since SIMD setup overhead dominates for small problems.
  * =========================================================================== */
 
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 
 #ifndef __GNUC__
 /* Stub out GCC __attribute__((target(...))) under MSVC. */
@@ -446,4 +455,5 @@ void gf64_fft_inverse_avx512(gf64_t *poly, size_t n) {
 	gf64_scale_vector(poly, n, gf64_fft_scale(n));
 }
 
+#endif /* GF64_ADDITIVE_FFT_TU_BODY */
 HEDLEY_END_C_DECLS

@@ -1,7 +1,20 @@
 #include "gf64_global.h"
-#include <immintrin.h>
 #include <stdint.h>
 #include <stddef.h>
+
+/* immintrin.h is x86-only; macOS arm64 and Linux/aarch64 do not ship it.
+ * The whole TU uses ZMM intrinsics unconditionally; on non-x86 the entire
+ * body is omitted so the file compiles cleanly to an empty translation
+ * unit. binding.gyp wraps this TU in target_arch="x86_64" but we defend
+ * in depth here so the file still parses if compiled elsewhere. */
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#define GF64_AVX512_TU_BODY 1
+#else
+#define GF64_AVX512_TU_BODY 0
+#endif
+
+#if GF64_AVX512_TU_BODY
 
 #ifndef __GNUC__
 /* Stub out GCC __attribute__((target(...))) under MSVC.
@@ -129,5 +142,7 @@ void gf64_region_mul_avx512(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLEY_RE
 		i++;
 	}
 }
+
+#endif /* GF64_AVX512_TU_BODY */
 
 HEDLEY_END_C_DECLS
