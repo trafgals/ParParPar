@@ -90,9 +90,13 @@ test_gf64_additive_fft: $(TEST_GF64_ADDITIVE_FFT_SOURCES) ../gf64_additive_fft.c
 # which in turn depends on gf64_mul_avx512.c (T1) and gf64_square.c (T2).
 # gf64_poly_mul_karatsuba.c (PR #42 helper) is required because
 # gf64_poly_mul_internal now dispatches into it at n >= 128.
+# gf64_mpe.c (PR #43, T8a) is required because gf64_subproduct_tree_build
+# calls gf64_poly_invmod_mod (defined there) to populate inv_mod_data.
+# gf64_invert_ita.c (T5) is required because gf64_mpe.c calls
+# gf64_invert_ita_one for polynomial modular inverse's leading-coeff invert.
 # Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_mpe.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_mpe.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Barycentric weight extraction test (par3-cauchy-fft-kernel T7).
 # gf64_barycentric.c (T7) depends on the subproduct tree (T6) and the
@@ -100,9 +104,11 @@ test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subprodu
 # AVX-512 scalar multiply (T1) and the Frobenius squaring (T2). The full
 # additive FFT (T3) is needed because gf64_subproduct.c calls gf64_poly_mul,
 # which now dispatches into gf64_poly_mul_karatsuba.c (PR #42 helper) at
-# n >= 128. Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# n >= 128. gf64_mpe.c (PR #43, T8a) is required because
+# gf64_subproduct_tree_build calls gf64_poly_invmod_mod (defined there).
+# Needs AVX-512F + VPCLMULQDQ at runtime.
+test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_mpe.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_mpe.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Multi-point evaluation test (par3-cauchy-fft-kernel T8). gf64_mpe.c (T8)
 # depends on the subproduct tree (T6) for its evaluation entry point, the
