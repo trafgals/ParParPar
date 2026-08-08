@@ -115,7 +115,23 @@
       "sources": ["gf64/cpu_detect.c"],
       "include_dirs": ["gf64"],
       "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
-      "cflags_cc": ["-fpermissive"]
+      "cflags_cc": ["-fpermissive"],
+      "conditions": [
+        # MSVC: the SEH __try/__except ZMM probe in cpu_detect.c uses
+        # _mm512_add_epi32 + _mm256_zeroupper, which require /arch:AVX512
+        # for codegen. Without this, cl.exe defaults to /arch:SSE2 on x64
+        # and fails with "intrinsic requires /arch:AVX512". Mirrors the
+        # /arch:AVX512 setting used by the gf64_avx512 / gf64_avx512_arr
+        # targets (their compute kernels are the same AVX-512 ISA). POSIX
+        # still relies on -mno-avx512f for the WSL2 architectural-isolation
+        # contract; only this TU is allowed to emit ZMM (the rest of
+        # parpar_gf64 is built with -mno-avx512f / /arch:AVX2).
+        ['target_arch in "ia32 x64" and OS=="win"', {
+          "msvs_settings": {
+            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
+          }
+        }]
+      ]
     },
     {
       "target_name": "gf64_avx512",
