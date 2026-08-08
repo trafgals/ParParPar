@@ -219,6 +219,105 @@ console.log('\n--- Test 12: BARY_MIN_INPUTS_DEFAULT constant is exposed and is 1
 check(par3gen.BARY_MIN_INPUTS_DEFAULT === 10000, 'BARY_MIN_INPUTS_DEFAULT === 10000 (got: ' + par3gen.BARY_MIN_INPUTS_DEFAULT + ')');
 
 // ============================================================================
+// Fenger dispatch tests (issue #46 K3): the Fenger pipeline is the DEFAULT
+// for power-of-2 workloads. PAR3_GF64_USE_FENGER=0 kills it; =1 forces it
+// (and errors if the binding lacks the kernel).
+// ============================================================================
+
+function makeFengerBinding() {
+    var b = makeBinding();
+    b.compute_recovery_fenger = function (a, b2, c, d, e, f, g, h) {
+        b.calls.push({ kernel: 'fenger', args: { numInputs: c, numRecovery: d, blockSize: e, firstInput: f, firstRecovery: g, numThreads: h } });
+        return 'fenger-result';
+    };
+    return b;
+}
+
+function withFengerEnv(value, fn) {
+    var prev = process.env.PAR3_GF64_USE_FENGER;
+    if (value === undefined || value === null) {
+        delete process.env.PAR3_GF64_USE_FENGER;
+    } else {
+        process.env.PAR3_GF64_USE_FENGER = String(value);
+    }
+    try {
+        return fn();
+    } finally {
+        if (prev === undefined) delete process.env.PAR3_GF64_USE_FENGER;
+        else process.env.PAR3_GF64_USE_FENGER = prev;
+    }
+}
+
+console.log('\n--- Test 13: power-of-2 workload, env unset → Fenger by default ---');
+withFengerEnv(undefined, function () {
+    var b = makeFengerBinding();
+    var result = dispatchRecovery(b, null, null, 64, 4, 4096, 0, 0n, 0);
+    check(result === 'fenger-result', 'returned Fenger result by default (got: ' + JSON.stringify(result) + ')');
+    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'kernel was compute_recovery_fenger (got: ' + callsToString(b.calls) + ')');
+});
+
+console.log('\n--- Test 14: power-of-2 workload, PAR3_GF64_USE_FENGER=0 → kill switch, skip Fenger ---');
+withFengerEnv('0', function () {
+    var b = makeFengerBinding();
+    var result = dispatchRecovery(b, null, null, 64, 4, 4096, 0, 0n, 0);
+    check(result === 'full-result', 'returned compute_recovery_full (got: ' + JSON.stringify(result) + ')');
+    check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'kernel was compute_recovery_full, NOT fenger (got: ' + callsToString(b.calls) + ')');
+});
+withFengerEnv('false', function () {
+    var b = makeFengerBinding();
+    dispatchRecovery(b, null, null, 64, 4, 4096, 0, 0n, 0);
+    check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'PAR3_GF64_USE_FENGER=false also kills Fenger (got: ' + callsToString(b.calls) + ')');
+});
+
+console.log('\n--- Test 15: power-of-2 workload, PAR3_GF64_USE_FENGER=1 → forced Fenger ---');
+withFengerEnv('1', function () {
+    var b = makeFengerBinding();
+    var result = dispatchRecovery(b, null, null, 64, 4, 4096, 0, 0n, 0);
+    check(result === 'fenger-result', 'returned Fenger result (got: ' + JSON.stringify(result) + ')');
+    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'kernel was compute_recovery_fenger');
+});
+
+console.log('\n--- Test 16: PAR3_GF64_USE_FENGER=1 but binding lacks Fenger → throws ---');
+withFengerEnv('1', function () {
+    var threw = null;
+    try {
+        dispatchRecovery(makeBinding(), null, null, 64, 4, 4096, 0, 0n, 0);
+    } catch (e) {
+        threw = e;
+    }
+    check(threw !== null, 'throws when Fenger is forced but binding lacks it');
+    check(threw && /compute_recovery_fenger/.test(threw.message), 'error names the missing binding entry');
+});
+
+console.log('\n--- Test 17: non-power-of-2 workload, env unset → Fenger not eligible, falls to Barycentric/2D-muladd ---');
+withFengerEnv(undefined, function () {
+    var b = makeFengerBinding();
+    dispatchRecovery(b, null, null, 20000, 100, 4096, 0, 20000n, 4);
+    check(b.calls.length === 1 && b.calls[0].kernel === 'barycentric', 'N=20000 (non-power-of-2) dispatches to Barycentric, NOT Fenger (got: ' + callsToString(b.calls) + ')');
+});
+
+console.log('\n--- Test 18: numRecovery non-power-of-2, env unset → Fenger rejected, 2D-muladd selected ---');
+withFengerEnv(undefined, function () {
+    var b = makeFengerBinding();
+    dispatchRecovery(b, null, null, 64, 3, 4096, 0, 0n, 0);
+    check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'numRecovery=3 (non-power-of-2) dispatches to full, NOT Fenger (got: ' + callsToString(b.calls) + ')');
+});
+
+console.log('\n--- Test 19: blockSize % 8 != 0, env unset → Fenger rejected even for power-of-2 ---');
+withFengerEnv(undefined, function () {
+    var b = makeFengerBinding();
+    dispatchRecovery(b, null, null, 64, 4, 4097, 0, 0n, 0);
+    check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'blockSize=4097 (%8!=0) dispatches to full, NOT Fenger (got: ' + callsToString(b.calls) + ')');
+});
+
+console.log('\n--- Test 20: numInputs=0 (trivial), env unset → Fenger (0 is power-of-2-or-trivial) ---');
+withFengerEnv(undefined, function () {
+    var b = makeFengerBinding();
+    dispatchRecovery(b, null, null, 0, 4, 4096, 0, 0n, 0);
+    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'numInputs=0 (trivial) dispatches to Fenger (got: ' + callsToString(b.calls) + ')');
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 console.log('\n---');

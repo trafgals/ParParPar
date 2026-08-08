@@ -171,6 +171,9 @@ int main(void) {
      * scaled-down B for microbench RAM. */
     bench_config(8192,  1024, 32,  2, ncpu);
     bench_config(16384, 1024, 16,  1, ncpu);
+    bench_config(16384, 4096, 16,  1, ncpu);
+    bench_config(65536, 1024, 8,   1, ncpu);
+    bench_config(65536, 4096, 4,   1, ncpu);
 
     printf("\nDone.\n");
     return 0;
