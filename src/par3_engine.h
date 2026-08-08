@@ -229,3 +229,8 @@ public:
 		int numThreads
 	);
 };
+
+/// Effective CPU count for auto-threading, respecting Linux affinity masks.
+/// Cached after the first call and capped at 32. Shared by the engine and
+/// the Fenger path (par3_engine_fenger.cc).
+size_t GetEffectiveCpuCount(void);

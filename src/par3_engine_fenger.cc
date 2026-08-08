@@ -85,10 +85,6 @@ extern "C" void gf64_fenger_execute(
 );
 extern "C" void gf64_fenger_release(gf64_fenger_ctx *ctx);
 
-/* Forward declaration from par3_engine.cc — the cpu-count helper used
- * by ComputeRecoveryBlocksWithCoeff's per-thread shard logic. */
-extern int GetEffectiveCpuCount(void);
-
 void GF64Controller::ComputeRecoveryBlocksFenger(
 	const gf64_t* inputs, size_t numInputs,
 	gf64_t* recovery, size_t numRecovery,
