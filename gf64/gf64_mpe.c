@@ -59,7 +59,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
+
+#ifdef _MSC_VER
+/* MSVC shim: case-insensitive compare. */
+#define strcasecmp _stricmp
+#endif
 
 HEDLEY_BEGIN_C_DECLS
 
