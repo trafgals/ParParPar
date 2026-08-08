@@ -10,9 +10,12 @@
 #include <v8.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #ifndef _WIN32
 #include <sys/time.h>
+#endif
+#ifdef _MSC_VER
+/* MSVC shim: case-insensitive compare. */
+#define strcasecmp _stricmp
 #endif
 #include <uv.h>
 #include <js_native_api.h>
