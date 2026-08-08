@@ -36,6 +36,7 @@
 
 #include "gf64_subproduct.h"
 #include "gf64_additive_fft.h"
+#include "gf64_mpe.h"
 #include "gf64_global.h"
 
 #include <assert.h>
@@ -177,6 +178,105 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 			}
 		}
 	}
+
+	/*
+	 * Per-pair polynomial modular inverse cache.
+	 *
+	 * For the Bostan-Schost top-down interpolation (T8b), each combine
+	 * step at (lev, node_idx) needs inv_LmodR = P_left^{-1} (mod P_right)
+	 * for the two sibling polynomials at level_data[lev + 1] indices
+	 * 2*node_idx and 2*node_idx + 1. We precompute these once at
+	 * tree-build time via gf64_poly_invmod_mod (T8b §5 — half-extended
+	 * GCD), amortizing to O(N²) total (schoolbook EGCD) and giving the
+	 * interpolation caller an O(1) lookup per node.
+	 *
+	 * Per-level entry i is poly_inv(left_i, mod=right_i) where
+	 *   left_i  = level_data[lev + 1] + (2 * i)     * (child_deg + 1)
+	 *   right_i = level_data[lev + 1] + (2 * i + 1) * (child_deg + 1)
+	 * with child_deg = level_degs[lev + 1].
+	 *
+	 * The result polynomial has degree < child_deg, i.e. child_deg + 1
+	 * coefficients, so we size each per-level row as
+	 * level_lens[lev] * (level_degs[lev + 1] + 1). The last level
+	 * (leaves) has no sibling pairs and gets a NULL pointer.
+	 *
+	 * Trees with num_levels < 2 have no internal pairs at all
+	 * (num_levels == 1 implies N == 1 or N == 0): we leave
+	 * inv_mod_data = inv_storage = NULL.
+	 */
+	if (out->num_levels < 2) {
+		out->inv_mod_data = NULL;
+		out->inv_storage   = NULL;
+		return;
+	}
+
+	out->inv_mod_data = (gf64_t **)calloc(out->num_levels, sizeof(gf64_t *));
+	if (out->inv_mod_data == NULL) {
+		gf64_subproduct_tree_free(out);
+		abort();
+	}
+
+	/*
+	 * Total inverse-coefficient storage:
+	 *   sum_{lev=0}^{num_levels-2} level_lens[lev] * (level_degs[lev+1] + 1)
+	 * = sum (N/2 + 2^lev)
+	 * = (num_levels - 1) * (N/2) + (2^(num_levels - 1) - 1)
+	 * = log2(N) * (N/2) + (N - 1)
+	 */
+	size_t inv_total_coeffs = 0;
+	for (size_t lev = 0; lev + 1 < out->num_levels; lev++) {
+		inv_total_coeffs += out->level_lens[lev] * (out->level_degs[lev + 1] + 1);
+	}
+
+	if (inv_total_coeffs > 0) {
+		out->inv_storage = (gf64_t *)calloc(inv_total_coeffs, sizeof(gf64_t));
+		if (out->inv_storage == NULL) {
+			gf64_subproduct_tree_free(out);
+			abort();
+		}
+	} else {
+		out->inv_storage = NULL;
+	}
+
+	/*
+	 * Set per-level inv_mod_data pointers into inv_storage, then set
+	 * inv_mod_data[num_levels - 1] = NULL (leaves have no children).
+	 */
+	{
+		size_t offset = 0;
+		for (size_t lev = 0; lev + 1 < out->num_levels; lev++) {
+			out->inv_mod_data[lev] = out->inv_storage + offset;
+			offset += out->level_lens[lev] * (out->level_degs[lev + 1] + 1);
+		}
+		out->inv_mod_data[out->num_levels - 1] = NULL;
+	}
+
+	/*
+	 * Compute the per-pair inverse with one EGCD per (lev, parent_idx).
+	 * Coprime-by-construction (the points {x_i} are distinct, so the
+	 * P_left · P_right pair has GCD 1 mod the field polynomial); on
+	 * failure we abort so the failure mode is loud, not silent.
+	 */
+	for (size_t lev = 0; lev + 1 < out->num_levels; lev++) {
+		size_t    child_lev  = lev + 1;
+		size_t    child_deg  = out->level_degs[child_lev];
+		size_t    row_count  = out->level_lens[lev];
+		gf64_t   *child_base = out->level_data[child_lev];
+		gf64_t   *inv_row    = out->inv_mod_data[lev];
+
+		for (size_t i = 0; i < row_count; i++) {
+			const gf64_t *P_left  = child_base + (2 * i)     * (child_deg + 1);
+			const gf64_t *P_right = child_base + (2 * i + 1) * (child_deg + 1);
+			gf64_t       *inv_out = inv_row    + i            * (child_deg + 1);
+			int rc = gf64_poly_invmod_mod(P_left, child_deg,
+			                              P_right, child_deg,
+			                              inv_out);
+			if (rc != 0) {
+				gf64_subproduct_tree_free(out);
+				abort();
+			}
+		}
+	}
 }
 
 void gf64_subproduct_tree_free(SubproductTree *tree) {
@@ -184,7 +284,9 @@ void gf64_subproduct_tree_free(SubproductTree *tree) {
 		return;
 	}
 	free(tree->storage);
+	free(tree->inv_storage);
 	free(tree->level_data);
+	free(tree->inv_mod_data);
 	free(tree->level_lens);
 	free(tree->level_degs);
 	memset(tree, 0, sizeof(*tree));

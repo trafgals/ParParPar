@@ -40,12 +40,28 @@
 HEDLEY_BEGIN_C_DECLS
 
 typedef struct {
-	gf64_t **level_data;  /* level_data[ℓ] -> start of level ℓ's polynomials    */
-	size_t   *level_lens; /* level_lens[ℓ] = #polynomials at level ℓ            */
-	size_t   *level_degs; /* level_degs[ℓ] = degree of each poly at level ℓ     */
-	size_t    num_levels; /* log2(N) + 1                                       */
-	size_t    num_points; /* N                                                 */
-	gf64_t   *storage;    /* backing buffer that level_data points into         */
+	gf64_t **level_data;   /* level_data[ℓ] -> start of level ℓ's polynomials        */
+	size_t   *level_lens;  /* level_lens[ℓ] = #polynomials at level ℓ                */
+	size_t   *level_degs;  /* level_degs[ℓ] = degree of each poly at level ℓ         */
+	size_t    num_levels;  /* log2(N) + 1                                            */
+	size_t    num_points;  /* N                                                      */
+	gf64_t   *storage;     /* backing buffer that level_data points into             */
+	/*
+	 * Per-pair polynomial modular inverse cache:
+	 *   inv_mod_data[lev] points to a block of (level_lens[lev] · (level_degs[lev+1]+1))
+	 *   coefficients; entry i at level lev is P_left^(-1) mod P_right for the
+	 *   pair at level_data[lev+1] indices 2i and 2i+1 (the two siblings
+	 *   whose parent sits at level_data[lev] index i). Populated lazily by
+	 *   gf64_subproduct_tree_build when the T8b interpolate branch is in use.
+	 *   inv_mod_data[num_levels - 1] is NULL (leaves have no children).
+	 *
+	 *   Storage discipline: both inv_mod_data and inv_storage are NULL
+	 *   when N == 1 or N == 0 (single-point / empty trees have no internal
+	 *   pairs to invert). gf64_subproduct_tree_build and
+	 *   gf64_subproduct_tree_free own the lifecycle.
+	 */
+	gf64_t **inv_mod_data;
+	gf64_t  *inv_storage;
 } SubproductTree;
 
 /*

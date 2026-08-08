@@ -161,6 +161,75 @@ void gf64_multi_point_eval(
 	gf64_t *out
 );
 
+/*
+ * Polynomial modular inverse (1/g mod f via half-extended GCD). T8b
+ * building block: used at subproduct tree-build time to populate
+ * `inv_mod_data` (P_left^{-1} mod P_right per sibling pair). Returns
+ * 0 on success and writes `deg_f` coefficients to `inv_out`; -1 if
+ * g and f share a non-trivial GCD (modular inverse does not exist).
+ *
+ * Inputs `g` (deg_g) and `f` (deg_f) must be coprime; `f`'s leading
+ * coefficient must be non-zero (required by gf64_poly_divmod). Caller
+ * is responsible for sizing `inv_out` to hold at least `deg_f` slots.
+ *
+ * Cost: schoolbook O((deg_g+1) * (deg_f+1)) per EGCD step; total
+ * O((deg_g)² + (deg_f)²). At tree-build time deg_g == deg_f ==
+ * deg_child, so each inverse is O(deg_child²); tree-build amortizes
+ * to O(N²). The Newton / reverse-polynomial O(N log² N) variant is
+ * deferred to a Phase A follow-up.
+ */
+int gf64_poly_invmod_mod(
+	const gf64_t *g, size_t deg_g,
+	const gf64_t *f, size_t deg_f,
+	gf64_t *inv_out
+);
+
+/*
+ * Top-down Bostan-Schost multi-point INTERPOLATION (T8b). Given N
+ * subproduct-tree points and N values at those points, returns the
+ * unique polynomial of degree < N satisfying out(x_j) = values[j]
+ * for every j in [0..N).
+ *
+ * GATED behind the PAR3_GF64_USE_INTERP env var. The function checks
+ * the env var at runtime; if unset/0/false/no/off, it returns
+ * immediately without modifying `out`. Set
+ *     PAR3_GF64_USE_INTERP=1   (or true/yes/on)
+ * to enable. Default OFF — production dispatch is NOT wired; this is
+ * opt-in only via the env var.
+ *
+ * @param tree    Subproduct tree built by gf64_subproduct_tree_build
+ *                (T6). Must have its per-pair polynomial-modular-
+ *                inverse cache (inv_mod_data) populated, which the
+ *                standard build function does via gf64_poly_invmod_mod.
+ * @param values  N evaluation results at the subproduct-tree leaves
+ *                [values[0], ..., values[N-1]] = [f(x_0), ..., f(x_{N-1})].
+ * @param out     Output buffer of N coefficients. On success,
+ *                out[0..N-1] is the unique polynomial of degree < N
+ *                satisfying out(x_j) = values[j]. On disabled-by-gate
+ *                the buffer is left untouched.
+ *
+ * Test hooks (declared here for the unit tests; production code
+ * should not touch these):
+ *
+ *   gf64_interp_dispatch_reset():       clear the env-var cache so a
+ *                                       fresh setenv()/unsetenv() takes
+ *                                       effect on the next call.
+ *   gf64_interp_dispatch_probe_count(): number of invocations that
+ *                                       actually entered the Bostan-
+ *                                       Schost body. Used to verify
+ *                                       "default OFF" semantics.
+ *   gf64_interp_dispatch_reset_probe(): zero the probe counter.
+ */
+void gf64_multi_point_interp(
+	const SubproductTree *tree,
+	const gf64_t *values,
+	gf64_t *out
+);
+
+void gf64_interp_dispatch_reset(void);
+int  gf64_interp_dispatch_probe_count(void);
+void gf64_interp_dispatch_reset_probe(void);
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_MPE_H */
