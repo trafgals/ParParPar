@@ -110,6 +110,41 @@ gf64_fenger_ctx *gf64_fenger_prepare(
 );
 
 /*
+ * Padded variant of gf64_fenger_prepare: accepts non-power-of-2 real
+ * counts by padding up to the next power of 2 with synthetic zero-data
+ * inputs. The Fenger identity
+ *
+ *     sum_c in[c] / (y - x_c) = p(y) / V(y)
+ *
+ * holds for ANY point set, and a synthetic input with in[c] = 0
+ * contributes 0 to the sum — so the real recovery rows are bit-identical
+ * to the unpadded computation (verified against the legacy Cauchy path).
+ *
+ * Constraints:
+ *   - numInputsPadded / numRecoveryPadded must be 0/1/power-of-2 and
+ *     >= the real counts.
+ *   - syntheticInputBase places the padded synthetic input points at
+ *     [base, base + numInputsPadded - numInputs). The caller MUST place
+ *     this range disjoint from BOTH the real input range and the recovery
+ *     range [firstRecovery, firstRecovery + numRecoveryPadded) so that
+ *     V(y_r) != 0 (the engine uses firstRecovery + numRecoveryPadded).
+ *
+ * Execute semantics with padding: synthetic input blocks are treated as
+ * zero data (not read from `in`), and only the first numRecovery output
+ * rows are written — the padded rows would exceed the caller's output
+ * buffer.
+ */
+gf64_fenger_ctx *gf64_fenger_prepare_padded(
+	uint64_t firstInput,
+	uint64_t firstRecovery,
+	size_t numInputs,
+	size_t numRecovery,
+	size_t numInputsPadded,
+	size_t numRecoveryPadded,
+	uint64_t syntheticInputBase
+);
+
+/*
  * Run the per-word Fenger pipeline on the input/output data over the
  * word range [w_start, w_end). Used to sharded the B-axis across
  * multiple threads — each thread owns a disjoint slice.

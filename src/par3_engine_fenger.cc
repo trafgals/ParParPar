@@ -77,6 +77,15 @@ extern "C" gf64_fenger_ctx *gf64_fenger_prepare(
 	size_t N,
 	size_t R
 );
+extern "C" gf64_fenger_ctx *gf64_fenger_prepare_padded(
+	uint64_t firstInput,
+	uint64_t firstRecovery,
+	size_t numInputs,
+	size_t numRecovery,
+	size_t numInputsPadded,
+	size_t numRecoveryPadded,
+	uint64_t syntheticInputBase
+);
 extern "C" void gf64_fenger_execute(
 	const gf64_fenger_ctx *ctx,
 	const gf64_t *in,  size_t B,
@@ -84,6 +93,12 @@ extern "C" void gf64_fenger_execute(
 	size_t w_start, size_t w_end
 );
 extern "C" void gf64_fenger_release(gf64_fenger_ctx *ctx);
+
+static size_t next_pow2_ge(size_t n) {
+	size_t p = 1;
+	while (p < n) p <<= 1;
+	return p;
+}
 
 void GF64Controller::ComputeRecoveryBlocksFenger(
 	const gf64_t* inputs, size_t numInputs,
@@ -94,24 +109,6 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 ) {
 	/* Trivial-input short-circuit, matching the engine convention. */
 	if (numInputs == 0 || numRecovery == 0 || blockSize64 == 0) {
-		return;
-	}
-
-	/* Power-of-2 gate for the subproduct tree. If the workload isn't
-	 * power-of-2, fall back to the legacy path (which is bit-exact and
-	 * works for any shape). Future padding work (Phase 2b follow-up)
-	 * will lift this constraint by padding N up to the next power of 2
-	 * with synthetic zero-weight inputs. */
-	int numInputs_pow2  = (numInputs  >= 1) && ((numInputs  & (numInputs  - 1)) == 0);
-	int numRecovery_pow2 = (numRecovery >= 1) && ((numRecovery & (numRecovery - 1)) == 0);
-	if (!numInputs_pow2 || !numRecovery_pow2) {
-		GF64Controller::ComputeRecoveryBlocks(
-			inputs, numInputs,
-			recovery, numRecovery,
-			blockSize64,
-			firstInput, firstRecovery,
-			/* numThreads */ 0
-		);
 		return;
 	}
 
@@ -136,10 +133,38 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 		if (numThreads < 1) numThreads = 1;
 	}
 
-	/* Prepare the shared pipeline state. */
-	gf64_fenger_ctx *ctx = gf64_fenger_prepare(
-		firstInput, firstRecovery, numInputs, numRecovery
-	);
+	/* Power-of-2 check for the subproduct tree. Non-power-of-2 workloads
+	 * are padded up to the next power of 2 (K5, issue #46) with synthetic
+	 * zero-data inputs at a disjoint base, which the Fenger identity makes
+	 * bit-exact. This lifts the original power-of-2-only constraint so the
+	 * 10G/100k-slice acceptance workload (2,621,440 inputs / 100,000
+	 * slices — both non-power-of-2) can use the Fenger path. */
+	size_t numInputsPadded  = next_pow2_ge(numInputs);
+	size_t numRecoveryPadded = next_pow2_ge(numRecovery);
+	bool needsPadding = (numInputsPadded != numInputs) ||
+	                    (numRecoveryPadded != numRecovery);
+
+	gf64_fenger_ctx *ctx;
+	if (needsPadding) {
+		/* Synthetic input points go just past the padded recovery range so
+		 * they are disjoint from both the real inputs and the recovery
+		 * points (V(y_r) != 0 required by the Fenger identity). In the
+		 * canonical create flow firstInput=0 and firstRecovery=numInputs,
+		 * so [numInputs, numInputsPadded) would collide with the recovery
+		 * range [firstRecovery, firstRecovery + numRecoveryPadded) — the
+		 * base firstRecovery + numRecoveryPadded avoids that. */
+		uint64_t syntheticBase = firstRecovery + (uint64_t)numRecoveryPadded;
+		ctx = gf64_fenger_prepare_padded(
+			firstInput, firstRecovery,
+			numInputs, numRecovery,
+			numInputsPadded, numRecoveryPadded,
+			syntheticBase
+		);
+	} else {
+		ctx = gf64_fenger_prepare(
+			firstInput, firstRecovery, numInputs, numRecovery
+		);
+	}
 
 	/* Single-thread fast path: avoid the std::thread overhead. */
 	if (numThreads == 1) {
