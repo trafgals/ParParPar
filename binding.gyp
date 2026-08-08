@@ -166,7 +166,8 @@
         "gf64/gf64_additive_fft.c",
         "gf64/gf64_subproduct.c",
         "gf64/gf64_barycentric.c",
-        "gf64/gf64_mpe.c"
+        "gf64/gf64_mpe.c",
+        "gf64/gf64_poly_mul_karatsuba.c"
       ],
       "include_dirs": ["gf64"],
       "conditions": [

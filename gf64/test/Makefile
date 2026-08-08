@@ -28,7 +28,8 @@ GF64_SOURCES := ../gf64_single.c \
 	../gf64_invert_ssse3.c \
 	../gf64_invert_avx2.c \
 	../gf64_invert_avx512.c \
-	../gf64_invert_ita.c
+	../gf64_invert_ita.c \
+	../gf64_poly_mul_karatsuba.c
 GF64_INCLUDES := -I..
 
 # Test sources
@@ -42,10 +43,11 @@ TEST_GF64_SUBPRODUCT_TREE_SOURCES := test_gf64_subproduct_tree.c
 TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
 TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
 TEST_CPU_DETECT_SOURCES := test_cpu_detect.c
+TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -77,34 +79,41 @@ test_gf64_invert_ita: $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf
 # The AVX-512 implementation lives in gf64_additive_fft.c (same TU as the
 # scalar version) and depends on gf64_mul_avx512.c (T1) for the butterfly
 # alpha * odd multiplications. gf64_square.c (T2) supplies the Frobenius
-# squaring. Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_additive_fft: $(TEST_GF64_ADDITIVE_FFT_SOURCES) ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_ADDITIVE_FFT_SOURCES) ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# squaring. gf64_poly_mul_karatsuba.c (T6 helper, PR #42) is required
+# because gf64_poly_mul_internal now dispatches into it at n >= 128.
+# Needs AVX-512F + VPCLMULQDQ at runtime.
+test_gf64_additive_fft: $(TEST_GF64_ADDITIVE_FFT_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_ADDITIVE_FFT_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # FFT-based bottom-up subproduct tree test (par3-cauchy-fft-kernel T6).
 # gf64_subproduct.c (T6) depends on gf64_additive_fft.c (T3) for gf64_poly_mul,
 # which in turn depends on gf64_mul_avx512.c (T1) and gf64_square.c (T2).
+# gf64_poly_mul_karatsuba.c (PR #42 helper) is required because
+# gf64_poly_mul_internal now dispatches into it at n >= 128.
 # Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subproduct.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Barycentric weight extraction test (par3-cauchy-fft-kernel T7).
 # gf64_barycentric.c (T7) depends on the subproduct tree (T6) and the
 # Itoh-Tsujii batched inversion (T5). The ITA batch in turn depends on the
 # AVX-512 scalar multiply (T1) and the Frobenius squaring (T2). The full
-# additive FFT (T3) is needed because gf64_subproduct.c calls gf64_poly_mul.
-# Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# additive FFT (T3) is needed because gf64_subproduct.c calls gf64_poly_mul,
+# which now dispatches into gf64_poly_mul_karatsuba.c (PR #42 helper) at
+# n >= 128. Needs AVX-512F + VPCLMULQDQ at runtime.
+test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Multi-point evaluation test (par3-cauchy-fft-kernel T8). gf64_mpe.c (T8)
 # depends on the subproduct tree (T6) for its evaluation entry point, the
 # Itoh-Tsujii batched inversion (T5) for the polynomial inverse seed, and
 # the additive FFT's gf64_poly_mul (T3) for the Newton-iteration squaring.
 # In turn, those primitives depend on gf64_mul_avx512.c (T1) and
-# gf64_square.c (T2). Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+# gf64_square.c (T2). gf64_poly_mul_karatsuba.c (PR #42 helper) is
+# required because gf64_poly_mul_internal dispatches into it at n >= 128.
+# Needs AVX-512F + VPCLMULQDQ at runtime.
+test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
 # Standalone unit test for the gf64_detect_method_internal() dispatch
 # algorithm (avx512-wsl2-detect, Todo 3 of pr-26-recovery plan). The test
@@ -118,5 +127,13 @@ test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) ../gf64_mpe.c ../gf64_subproduct.c ../gf
 test_cpu_detect: $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
 	$(CC) $(CFLAGS) -DGF64_CPU_DETECT_STANDALONE $(LDFLAGS) -o $@ $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
 
+# Karatsuba dispatch test (par3-cauchy-fft-kernel Phase 2a — Todo 5). Tests
+# both gf64_poly_mul_karatsuba (the new T6 helper) and the dispatch into it
+# from gf64_poly_mul_internal inside gf64_additive_fft.c. The additive FFT
+# TU brings in gf64_mul_avx512.c (T1) and gf64_square.c (T2); gf64_single.c
+# provides gf64_mul_reference used by both scalar and Karatsuba paths.
+test_gf64_poly_mul_karatsuba: $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
