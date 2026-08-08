@@ -1425,6 +1425,55 @@ function _runTwoDMulAddParity(detectedMethodName) {
 _runTwoDMulAddParity(methodName);
 
 // ============================================================================
+// Section J — WorkerThread small-R boundary parity
+// ----------------------------------------------------------------------------
+// These four scenarios pin the inclusive R <= 32 boundary and the first
+// 2D-muladd workload above it. Each native dispatched result is compared with
+// the independent legacy Cauchy reference used by Section A.
+// ============================================================================
+
+console.log('\nSection J: WorkerThread small-R boundary R={30,31,32,33}');
+console.log('----------------------------------------------------------\n');
+
+var BOUNDARY_R_VALUES = [30, 31, 32, 33];
+var BOUNDARY_NUM_INPUTS = 64;
+var BOUNDARY_BLOCK_SIZE = 64;
+var BOUNDARY_FIRST_INPUT = 17;
+var BOUNDARY_FIRST_RECOVERY = 1000;
+var boundaryRng = mulberry32(0x51A11CE);
+
+for (var bri = 0; bri < BOUNDARY_R_VALUES.length; bri++) {
+	var boundaryR = BOUNDARY_R_VALUES[bri];
+	var boundaryInputs = Buffer.alloc(BOUNDARY_NUM_INPUTS * BOUNDARY_BLOCK_SIZE);
+	fillRandom(boundaryInputs, boundaryRng);
+	var boundaryJs = jsRecovery(
+		boundaryInputs,
+		BOUNDARY_NUM_INPUTS,
+		boundaryR,
+		BOUNDARY_BLOCK_SIZE,
+		BOUNDARY_FIRST_INPUT,
+		BOUNDARY_FIRST_RECOVERY,
+		encoder
+	);
+	var boundaryCpp = cppRecovery(
+		boundaryInputs,
+		BOUNDARY_NUM_INPUTS,
+		boundaryR,
+		BOUNDARY_BLOCK_SIZE,
+		BOUNDARY_FIRST_INPUT,
+		BOUNDARY_FIRST_RECOVERY,
+		1
+	);
+	assertBufEq(
+		boundaryCpp,
+		boundaryJs,
+		'Boundary R=' + boundaryR + ': dispatched native path matches legacy Cauchy path bit-exact'
+	);
+}
+
+console.log('\nSection J complete\n');
+
+// ============================================================================
 // Summary
 // ============================================================================
 

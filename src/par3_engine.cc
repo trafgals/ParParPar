@@ -313,6 +313,34 @@ static gf64_t* GetOrBuildCoeffMatrix(
 }
 
 // ============================================================================
+// muladd_single_output  (shared 1D muladd-accumulate inner loop)
+// ----------------------------------------------------------------------------
+// Resets out to zero and XOR-accumulates in[j] * coeffRow[j] for j in
+// [0, numIn). Three callers used to inline this exact pattern:
+//   * GF64Controller::MultiplyAccumulate        (single-threaded recovery)
+//   * GF64Controller::ComputeRepairBlocks       (per-chunk back-sub worker)
+//   * WorkerThread small-R shortcut             (PR #40, total_num_out <= 32)
+// Triplication was flagged by cubic as a P3 maintainability issue (no
+// behavioural change): any future tweak to the coefficient/input addressing
+// or memset/clear semantics would have to be kept in sync across three
+// call sites or the paths would silently diverge. The helper centralises
+// the pattern; dispatch is left to the outer function so we still call
+// EnsureDispatch() exactly once per entry (not per output block).
+// ============================================================================
+static inline void muladd_single_output(
+	gf64_t* out,
+	const gf64_t* in,
+	const gf64_t* coeffRow,
+	size_t numIn,
+	size_t B
+) {
+	memset(out, 0, B * sizeof(gf64_t));
+	for (size_t j = 0; j < numIn; j++) {
+		gf64_region_muladd_arr(out, in + j * B, &coeffRow[j], B, 1);
+	}
+}
+
+// ============================================================================
 // GF64Controller::MultiplyAccumulate  (single-threaded kernel)
 // ----------------------------------------------------------------------------
 // For each output block k:
@@ -331,14 +359,9 @@ void GF64Controller::MultiplyAccumulate(
 	EnsureDispatch();
 
 	for (size_t k = 0; k < numOut; k++) {
-		gf64_t* out_k = out + k * blockSize64;
-		memset(out_k, 0, blockSize64 * sizeof(gf64_t));
-
 		const gf64_t* row = coeffMatrix + k * numIn;
-		for (size_t j = 0; j < numIn; j++) {
-			gf64_region_muladd_arr(out_k, in + j * blockSize64,
-			                       &row[j], blockSize64, 1);
-		}
+		muladd_single_output(out + k * blockSize64,
+		                     in, row, numIn, blockSize64);
 	}
 }
 
@@ -547,6 +570,7 @@ static size_t AutotuneBlockSize() {
 struct WorkerRange {
 	gf64_t*       out_start;       // first recovery block of this worker
 	size_t        num_out;         // how many recovery blocks this worker handles
+	size_t        total_num_out;   // total recovery blocks across all workers
 	const gf64_t* in;
 	size_t        num_in;
 	const gf64_t* coeff_row_start; // coeffMatrix + outStart * numIn
@@ -590,11 +614,28 @@ struct WorkerRange {
 // ============================================================================
 static void WorkerThread(const WorkerRange& range) {
 	EnsureDispatch();
-	const int K = GetKGroupSize();
-	const int G = GetGroupSize();
 	const size_t num_in = range.num_in;
 	const size_t num_out = range.num_out;
+	const size_t total_num_out = range.total_num_out;
 	const size_t B = range.block_size64;
+
+	if (total_num_out <= 32) {
+		// Small-R single-output shortcut: 1D muladd loop via the shared
+		// muladd_single_output helper. The 2D kernel's per-call setup
+		// (outs_ptr / in_blocks_ptr arrays, the K-tile outer loop, the Kk
+		// clamp) costs more than the work it saves when output count is
+		// small. Threshold is hardcoded at 32; matches issue #27
+		// §auxiliary guidance; no env gate.
+		for (size_t k = 0; k < num_out; k++) {
+			const gf64_t* row = range.coeff_row_start + k * num_in;
+			muladd_single_output(range.out_start + k * B,
+			                     range.in, row, num_in, B);
+		}
+		return;
+	}
+
+	const int K = GetKGroupSize();
+	const int G = GetGroupSize();
 	const size_t MAX_STACK_K = 256;  // matches kDefaultKGroupSize cap
 	const size_t MAX_STACK_G = 256;  // matches kDefaultGroupSize cap
 
@@ -706,14 +747,9 @@ void GF64Controller::ComputeRepairBlocks(
 
 	auto worker = [&](size_t startMissing, size_t countMissing) {
 		for (size_t k = startMissing; k < startMissing + countMissing; k++) {
-			gf64_t* out_k = repairedBlocks + k * blockSize64;
-			memset(out_k, 0, blockSize64 * sizeof(gf64_t));
-
 			const gf64_t* row = solveMatrix + k * numAvail;
-			for (size_t j = 0; j < numAvail; j++) {
-				gf64_region_muladd_arr(out_k, availBlocks + j * blockSize64,
-				                       &row[j], blockSize64, 1);
-			}
+			muladd_single_output(repairedBlocks + k * blockSize64,
+			                     availBlocks, row, numAvail, blockSize64);
 		}
 	};
 
@@ -956,6 +992,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		WorkerRange r;
 		r.out_start = recovery;
 		r.num_out = numRecovery;
+		r.total_num_out = numRecovery;
 		r.in = inputs;
 		r.num_in = numInputs;
 		r.coeff_row_start = coeff;
@@ -972,6 +1009,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 			WorkerRange r;
 			r.out_start       = recovery + base * blockSize64;
 			r.num_out         = end - base;
+			r.total_num_out   = numRecovery;
 			r.in              = inputs;
 			r.num_in          = numInputs;
 			r.coeff_row_start = coeff + base * numInputs;
