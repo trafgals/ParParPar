@@ -13,6 +13,10 @@
 #ifndef _WIN32
 #include <sys/time.h>
 #endif
+#ifdef _MSC_VER
+/* MSVC shim: case-insensitive compare. */
+#define strcasecmp _stricmp
+#endif
 #include <uv.h>
 #include <js_native_api.h>
 #include <node_api.h>
@@ -2060,6 +2064,323 @@ static napi_value ComputeRecoveryWithCoeff_NAPI(napi_env env, napi_callback_info
 	return NULL;
 }
 
+// ============================================================================
+// P1 of issue #46's delivery plan: compute_recovery_streaming NAPI binding.
+//
+// Replaces the per-batch JS recovery loop in lib/par3gen.js's
+// _processRecoveryBatch (which makes ~N/BATCH_SIZE JS<->C roundtrips) with a
+// single C++ call that accepts ALL the input batches in one go. The JS layer
+// can keep the existing per-batch loop as a fallback for builds that lack
+// the new entry.
+//
+// Args:
+//   inputBatches   (Array<Buffer>) — one Buffer per batch; each Buffer holds
+//                    numBlocksInBatch * blockSize bytes. The buffers are
+//                    concatenated in array order to form the full input.
+//   outputBuffer   (Buffer)        — numRecovery * blockSize bytes
+//   numInputs      (int32)         — total number of input blocks (== sum of
+//                    inputBatches[i].length / blockSize)
+//   numRecovery    (int32)         — number of recovery blocks to compute
+//   blockSize      (int64)         — bytes per block, must be % 8 == 0
+//   firstInput     (Number|BigInt) — global index of the first input block
+//                    (in the canonical per-batch flow this is 0; the global
+//                    indices are contiguous across batches)
+//   firstRecovery  (Number|BigInt) — global index of the first recovery block
+//   numThreads     (int32, optional) — 0 = auto
+//
+// Dispatch mirrors lib/par3gen.js's dispatchRecovery so the streaming entry
+// produces the same bytes as the per-batch loop on the same workload:
+//   1. Fenger  — power-of-2 N, power-of-2 R, blockSize%8==0, non-Windows
+//                (default) or env-forced (PAR3_GF64_USE_FENGER=1). Falls
+//                back internally to the legacy Cauchy path when constraints
+//                aren't met (subproduct-tree requirement).
+//   2. Barycentric — N > PAR3_BF64_MIN_INPUTS (default 10000) AND
+//                blockSize%8==0.
+//   3. Legacy Cauchy — the same engine that compute_recovery (per-batch
+//                fallback) calls.
+//
+// The Cauchy / Barycentric distinction matters: Cauchy is the
+// matrix-vector product out[r][w] = XOR_c in[c][w] / (y_r XOR x_c); Barycentric
+// is Lagrange interpolation of the same inputs. Both are LINEAR in the
+// input blocks, so the streaming entry can take the concatenation of all
+// per-batch inputs in one call and produce the same final output as the
+// per-batch loop's XOR-accumulation. To preserve bit-exact parity with the
+// per-batch path, the streaming entry must pick the same engine the per-batch
+// loop would have picked — hence the dispatch mirror here.
+// ============================================================================
+
+// defined_win32() — compile-time mirror of JS process.platform === 'win32'
+// (mirrors the JS Fenger-gate default in lib/par3gen.js dispatchRecovery).
+#if defined(_WIN32)
+static inline bool defined_win32(void) { return true; }
+#else
+static inline bool defined_win32(void) { return false; }
+#endif
+
+static napi_value ComputeRecoveryStreaming_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 8;
+	napi_value args[8];
+
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get callback info");
+		return NULL;
+	}
+
+	if(argc < 7) {
+		napi_throw_type_error(env, NULL,
+			"Requires inputBatches (Array<Buffer>), outputBuffer, numInputs, numRecovery, blockSize, firstInput, firstRecovery [, numThreads]");
+		return NULL;
+	}
+
+	bool is_array = false;
+	status = napi_is_array(env, args[0], &is_array);
+	if(status != napi_ok || !is_array) {
+		napi_throw_type_error(env, NULL, "inputBatches must be an array of Buffers");
+		return NULL;
+	}
+	uint32_t numBatches_u32 = 0;
+	status = napi_get_array_length(env, args[0], &numBatches_u32);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get inputBatches array length");
+		return NULL;
+	}
+
+	gf64_t* outputs = NULL;
+	size_t outputsLen = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&outputs, &outputsLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "outputBuffer must be a Buffer");
+		return NULL;
+	}
+	void* aligned_outputs = (void*)outputs;
+	bool needs_outputs_temp = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+		void* tmp = nullptr;
+		if (ALIGN_ALLOC(tmp, outputsLen, 64)) {
+			aligned_outputs = tmp;
+			needs_outputs_temp = true;
+		} else {
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed (outputs)");
+			return NULL;
+		}
+	}
+
+	int64_t numInputs = 0;
+	status = napi_get_value_int64(env, args[2], &numInputs);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "numInputs must be an integer");
+		return NULL;
+	}
+
+	int64_t numRecovery = 0;
+	status = napi_get_value_int64(env, args[3], &numRecovery);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "numRecovery must be an integer");
+		return NULL;
+	}
+
+	int64_t blockSize = 0;
+	status = napi_get_value_int64(env, args[4], &blockSize);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "blockSize must be an integer");
+		return NULL;
+	}
+
+	uint64_t firstInput = 0;
+	status = get_uint64_from_value(env, args[5], &firstInput);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "firstInput must be a Number or BigInt");
+		return NULL;
+	}
+
+	uint64_t firstRecovery = 0;
+	status = get_uint64_from_value(env, args[6], &firstRecovery);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "firstRecovery must be a Number or BigInt");
+		return NULL;
+	}
+
+	int32_t numThreads = 0;
+	if(argc >= 8) {
+		status = napi_get_value_int32(env, args[7], &numThreads);
+		if(status != napi_ok) {
+			napi_throw_type_error(env, NULL, "numThreads must be an integer");
+			return NULL;
+		}
+	}
+
+	if(numInputs < 0) {
+		napi_throw_range_error(env, NULL, "numInputs must be non-negative");
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		return NULL;
+	}
+	if(numRecovery < 0) {
+		napi_throw_range_error(env, NULL, "numRecovery must be non-negative");
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		return NULL;
+	}
+	if(blockSize <= 0 || blockSize % 8 != 0) {
+		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		return NULL;
+	}
+	if(numInputs == 0 || numRecovery == 0) {
+		// Trivial short-circuit: JS accumulator is already zero-initialised.
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		return NULL;
+	}
+
+	const size_t totalInputsBytes = (size_t)numInputs * (size_t)blockSize;
+	if(outputsLen < (size_t)numRecovery * (size_t)blockSize) {
+		napi_throw_range_error(env, NULL, "outputBuffer too small for numRecovery * blockSize");
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		return NULL;
+	}
+
+	// 64-byte aligned contiguous input buffer (engine requires contiguity;
+	// C++ alloc bypasses JS Buffer kMaxLength, e.g. 10 GiB / 4 KiB = 2.5M blocks).
+	gf64_t* inputs = NULL;
+	void* aligned_inputs_alloc = nullptr;
+	if (ALIGN_ALLOC(aligned_inputs_alloc, totalInputsBytes, 64)) {
+		inputs = (gf64_t*)aligned_inputs_alloc;
+	} else {
+		napi_throw_error(env, NULL, "ALIGN_ALLOC failed (streaming inputs)");
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		return NULL;
+	}
+
+	size_t inputsCopiedBlocks = 0;
+	for(uint32_t i = 0; i < numBatches_u32; i++) {
+		napi_value elem;
+		status = napi_get_element(env, args[0], i, &elem);
+		if(status != napi_ok) {
+			ALIGN_FREE(aligned_inputs_alloc);
+			if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+			napi_throw_error(env, NULL, "Failed to read inputBatches element");
+			return NULL;
+		}
+		void* p = NULL;
+		size_t pl = 0;
+		status = napi_get_buffer_info(env, elem, &p, &pl);
+		if(status != napi_ok) {
+			ALIGN_FREE(aligned_inputs_alloc);
+			if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+			napi_throw_type_error(env, NULL, "inputBatches element must be a Buffer");
+			return NULL;
+		}
+		if(pl % (size_t)blockSize != 0) {
+			ALIGN_FREE(aligned_inputs_alloc);
+			if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+			napi_throw_range_error(env, NULL, "inputBatches element length not a multiple of blockSize");
+			return NULL;
+		}
+		const size_t blocksInBatch = pl / (size_t)blockSize;
+		if(inputsCopiedBlocks + blocksInBatch > (size_t)numInputs) {
+			ALIGN_FREE(aligned_inputs_alloc);
+			if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+			napi_throw_range_error(env, NULL, "inputBatches total blocks exceeds numInputs");
+			return NULL;
+		}
+		if(pl > 0) {
+			memcpy((uint8_t*)inputs + inputsCopiedBlocks * (size_t)blockSize, p, pl);
+		}
+		inputsCopiedBlocks += blocksInBatch;
+	}
+	if(inputsCopiedBlocks != (size_t)numInputs) {
+		ALIGN_FREE(aligned_inputs_alloc);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_range_error(env, NULL, "inputBatches total blocks does not equal numInputs");
+		return NULL;
+	}
+
+	const size_t blockSize64 = (size_t)(blockSize / 8);
+
+	// Engine dispatch mirrors lib/par3gen.js's dispatchRecovery() so the
+	// streaming entry produces bit-exact parity with the per-batch loop.
+	// Cauchy / Fenger / Barycentric are all linear in the input blocks,
+	// so concatenating all per-batch inputs and calling the engine once
+	// is mathematically identical to per-batch calls XORed into an
+	// accumulator.
+	gf64_init_dispatch();
+
+	const char* fengerEnv = getenv("PAR3_GF64_USE_FENGER");
+	const bool fengerForced = fengerEnv && (
+		strcmp(fengerEnv, "1") == 0 ||
+		strcasecmp(fengerEnv, "true") == 0 ||
+		strcasecmp(fengerEnv, "yes") == 0 ||
+		strcasecmp(fengerEnv, "on") == 0);
+	const bool fengerDisabled = fengerEnv && (
+		strcmp(fengerEnv, "0") == 0 ||
+		strcasecmp(fengerEnv, "false") == 0 ||
+		strcasecmp(fengerEnv, "no") == 0 ||
+		strcasecmp(fengerEnv, "off") == 0);
+	const bool isPowerOfTwoOrTrivial_N =
+		(numInputs == 0) || (numInputs == 1) || ((numInputs > 1) && ((numInputs & (numInputs - 1)) == 0));
+	const bool isPowerOfTwoOrTrivial_R =
+		(numRecovery == 0) || (numRecovery == 1) || ((numRecovery > 1) && ((numRecovery & (numRecovery - 1)) == 0));
+	const bool fengerEligible =
+		isPowerOfTwoOrTrivial_N &&
+		isPowerOfTwoOrTrivial_R &&
+		(blockSize % 8 == 0) &&
+		(fengerForced || !defined_win32());
+
+	long baryMin = 10000;
+	const char* baryEnv = getenv("PAR3_BF64_MIN_INPUTS");
+	if(baryEnv) {
+		char* endp = nullptr;
+		long v = strtol(baryEnv, &endp, 10);
+		if(endp != baryEnv && v > 0) baryMin = v;
+	}
+	const bool baryEligible = (numInputs > baryMin) && (blockSize % 8 == 0);
+
+	static bool dispatch_warned = false;
+	if(fengerEligible && !fengerDisabled) {
+		if(!dispatch_warned) {
+			dispatch_warned = true;
+			std::fprintf(stderr, "[par3gen] compute_recovery_streaming: Fenger kernel for numInputs=%lld numRecovery=%lld\n",
+				(long long)numInputs, (long long)numRecovery);
+		}
+		GF64Controller::ComputeRecoveryBlocksFenger(
+			(const gf64_t*)inputs, (size_t)numInputs,
+			(gf64_t*)aligned_outputs, (size_t)numRecovery,
+			blockSize64,
+			firstInput, firstRecovery,
+			(int)numThreads
+		);
+	} else if(baryEligible) {
+		if(!dispatch_warned) {
+			dispatch_warned = true;
+			std::fprintf(stderr, "[par3gen] compute_recovery_streaming: Barycentric kernel for numInputs=%lld\n",
+				(long long)numInputs);
+		}
+		GF64Controller::ComputeRecoveryBlocksBarycentric(
+			(const gf64_t*)inputs, (size_t)numInputs,
+			(gf64_t*)aligned_outputs, (size_t)numRecovery,
+			blockSize64,
+			firstInput, firstRecovery,
+			(int)numThreads
+		);
+	} else {
+		GF64Controller::ComputeRecoveryBlocks(
+			(const gf64_t*)inputs, (size_t)numInputs,
+			(gf64_t*)aligned_outputs, (size_t)numRecovery,
+			blockSize64,
+			firstInput, firstRecovery,
+			(int)numThreads
+		);
+	}
+
+	ALIGN_FREE(aligned_inputs_alloc);
+	if (needs_outputs_temp) {
+		memcpy(outputs, aligned_outputs, (size_t)numRecovery * (size_t)blockSize);
+		ALIGN_FREE(aligned_outputs);
+	}
+
+	return NULL;
+}
+
 // ComputeRepairBlocks NAPI binding
 // Args: availBlocks, repairedBlocks, numAvail, numMissing, blockSize, solveMatrix [, numThreads]
 static napi_value ComputeRepair_NAPI(napi_env env, napi_callback_info info) {
@@ -2573,6 +2894,21 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "compute_recovery_with_coeff", compute_with_coeff_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set compute_recovery_with_coeff property");
+		return NULL;
+	}
+
+	// P1 of issue #46: streaming variant of compute_recovery_full — accepts
+	// multiple batches of input blocks in one call. See ComputeRecoveryStreaming_NAPI
+	// for the dispatch mirroring (must match lib/par3gen.js dispatchRecovery).
+	napi_value compute_recovery_streaming_fn;
+	status = napi_create_function(env, NULL, 0, ComputeRecoveryStreaming_NAPI, NULL, &compute_recovery_streaming_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create compute_recovery_streaming function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "compute_recovery_streaming", compute_recovery_streaming_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set compute_recovery_streaming property");
 		return NULL;
 	}
 
