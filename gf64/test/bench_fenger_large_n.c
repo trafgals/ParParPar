@@ -152,6 +152,10 @@ int main(void) {
      * progress is visible. */
     bench_config(8192,  1024, 32,  2, ncpu);
     bench_config(16384, 1024, 16,  1, ncpu);
+    /* K4 (issue #46): 2^17 = 131072 — the padded-to-power-of-2 size for the
+     * 100k-slice recovery target (100000 -> 131072). Validates the
+     * subproduct-tree build memory/time at the acceptance-workload scale. */
+    bench_config(131072, 1024, 16,  1, ncpu);
 
     fprintf(stdout, "\nDone.\n");
     return 0;
