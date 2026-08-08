@@ -42,7 +42,11 @@ var SCENARIOS = [
   { id: 'par3-repair-1G-10k-5p',   script: 'par3-repair-bench.js',  args: ['--size=1G', '--slices=10000', '--deletion=5'] },
   { id: 'par3-repair-1G-10k-10p',  script: 'par3-repair-bench.js',  args: ['--size=1G', '--slices=10000', '--deletion=10'] },
   { id: 'par3-compare-1G-10k-5p',  script: 'par3-compare-turbo.js', args: ['--size=1G', '--slices=10000', '--deletion=5'] },
-  { id: 'par3-create-10G-1M', script: 'par3-create-bench.js', args: ['--size=10G', '--slices=1000000', '--block-size=4096'], largeOnly: true }
+  { id: 'par3-create-10G-1M', script: 'par3-create-bench.js', args: ['--size=10G', '--slices=1000000', '--block-size=4096'], largeOnly: true },
+  // B1 (issue #46): acceptance scenario — 10 GB / 100k slices / 4 KiB blocks,
+  // the create-throughput target of the super-issue. largeOnly: skipped unless
+  // --size=10G (or explicit). See BENCHMARKING.md §4 for the run protocol.
+  { id: 'par3-create-10G-100k', script: 'par3-create-bench.js', args: ['--size=10G', '--slices=100000', '--block-size=4096'], largeOnly: true }
 ];
 
 function parseArgs() {
