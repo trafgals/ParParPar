@@ -1739,6 +1739,109 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 	return NULL;
 }
 
+// compute_recovery_fenger NAPI binding — Fenger-Toeplitz (issue #28) single-
+// call variant of compute_recovery_full. Same args as ComputeRecoveryFull_NAPI,
+// but routes through GF64Controller::ComputeRecoveryBlocksFenger, which uses
+// the Bostan-Schost top-down Fenger pipeline from gf64/gf64_fenger.c.
+//
+// Constraints (forwarded from the engine entry):
+//   - numInputs and numRecovery must each be 0, 1, or a power of 2 (the
+//     subproduct-tree builder in gf64_subproduct.c requires it).
+//   - The engine entry falls back to the legacy 2D-muladd path when the
+//     constraint is not met, so the NAPI binding is safe to call from any
+//     JS-side caller — but for the canonical PAR3 workload (powers of 2
+//     slice counts) it routes through the Fenger pipeline.
+static napi_value ComputeRecoveryFenger_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 8;
+	napi_value args[8];
+
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get callback info");
+		return NULL;
+	}
+
+	if(argc < 7) {
+		napi_throw_type_error(env, NULL, "Requires inputs, outputs, numInputs, numRecovery, blockSize, firstInput, firstRecovery [, numThreads]");
+		return NULL;
+	}
+
+	gf64_t* inputs = NULL;
+	size_t inputsLen = 0;
+	status = napi_get_buffer_info(env, args[0], (void**)&inputs, &inputsLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "inputs must be a Buffer");
+		return NULL;
+	}
+
+	gf64_t* outputs = NULL;
+	size_t outputsLen = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&outputs, &outputsLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "outputs must be a Buffer");
+		return NULL;
+	}
+
+	int64_t numInputs = 0, numRecovery = 0;
+	status = napi_get_value_int64(env, args[2], &numInputs);
+	if(status != napi_ok) { napi_throw_type_error(env, NULL, "numInputs must be an integer"); return NULL; }
+	status = napi_get_value_int64(env, args[3], &numRecovery);
+	if(status != napi_ok) { napi_throw_type_error(env, NULL, "numRecovery must be an integer"); return NULL; }
+	if(numInputs < 0 || numRecovery < 0) {
+		napi_throw_range_error(env, NULL, "numInputs and numRecovery must be non-negative");
+		return NULL;
+	}
+
+	int64_t blockSize = 0;
+	status = napi_get_value_int64(env, args[4], &blockSize);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "blockSize must be an integer");
+		return NULL;
+	}
+
+	uint64_t firstInput = 0, firstRecovery = 0;
+	status = get_uint64_from_value(env, args[5], &firstInput);
+	if(status != napi_ok) { napi_throw_type_error(env, NULL, "firstInput must be a Number or BigInt"); return NULL; }
+	status = get_uint64_from_value(env, args[6], &firstRecovery);
+	if(status != napi_ok) { napi_throw_type_error(env, NULL, "firstRecovery must be a Number or BigInt"); return NULL; }
+
+	int numThreads = 0;
+	if(argc >= 8) {
+		status = napi_get_value_int32(env, args[7], &numThreads);
+		if(status != napi_ok) { napi_throw_type_error(env, NULL, "numThreads must be an integer"); return NULL; }
+	}
+
+	if(blockSize <= 0 || blockSize % 8 != 0) {
+		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
+		return NULL;
+	}
+
+	if(inputsLen < (size_t)(numInputs * blockSize)) {
+		napi_throw_range_error(env, NULL, "inputs buffer too small for numInputs * blockSize");
+		return NULL;
+	}
+
+	if(outputsLen < (size_t)(numRecovery * blockSize)) {
+		napi_throw_range_error(env, NULL, "outputs buffer too small for numRecovery * blockSize");
+		return NULL;
+	}
+
+	size_t blockSize64 = (size_t)(blockSize / 8);
+
+	gf64_init_dispatch();
+
+	GF64Controller::ComputeRecoveryBlocksFenger(
+		(const gf64_t*)inputs, (size_t)numInputs,
+		(gf64_t*)outputs, (size_t)numRecovery,
+		blockSize64,
+		firstInput, firstRecovery,
+		(int)numThreads
+	);
+
+	return NULL;
+}
+
 // ============================================================================
 // v2-4: build_coefficient_matrix NAPI binding
 // ----------------------------------------------------------------------------
@@ -2386,6 +2489,22 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "compute_recovery_barycentric", compute_recovery_barycentric_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set compute_recovery_barycentric property");
+		return NULL;
+	}
+
+	// Issue #28: Fenger-Toeplitz recovery variant. Bit-exact alternative to
+	// compute_recovery_full on power-of-2 inputs/recovery counts; falls back
+	// to the legacy muladd path otherwise. Opt-in from JS via
+	// PAR3_GF64_USE_FENGER=1; default OFF.
+	napi_value compute_recovery_fenger_fn;
+	status = napi_create_function(env, NULL, 0, ComputeRecoveryFenger_NAPI, NULL, &compute_recovery_fenger_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create compute_recovery_fenger function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "compute_recovery_fenger", compute_recovery_fenger_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set compute_recovery_fenger property");
 		return NULL;
 	}
 

@@ -748,11 +748,13 @@ static void gf64_mpi_recurse(
 }
 
 /*
- * Internal "always-enter" Bostan-Schost body. Called by the public
- * gf64_multi_point_interp only after the PAR3_GF64_USE_INTERP gate
- * has been validated.
+ * Ungated Bostan-Schost body. Exposed (non-static) so pipeline consumers
+ * with a hard dependency on interpolation — currently the Fenger Toeplitz
+ * path (gf64_fenger.c) — can call it directly without tripping the
+ * PAR3_GF64_USE_INTERP opt-in gate. The public gf64_multi_point_interp
+ * wrapper still enforces the gate for everyone else.
  */
-static void gf64_multi_point_interp_internal(
+void gf64_multi_point_interp_internal(
 	const SubproductTree *tree,
 	const gf64_t *values,
 	gf64_t *out

@@ -44,10 +44,13 @@ TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
 TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
 TEST_CPU_DETECT_SOURCES := test_cpu_detect.c
 TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
+TEST_GF64_FENGER_KERNEL_SOURCES := test_gf64_fenger_kernel.c
+TEST_GF64_FENGER_PIPELINE_SOURCES := test_gf64_fenger_pipeline.c
+BENCH_GF64_FENGER_VS_CAUCHY_SOURCES := bench_gf64_fenger_vs_cauchy.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline bench_gf64_fenger_vs_cauchy
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline bench_gf64_fenger_vs_cauchy
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -141,5 +144,28 @@ test_cpu_detect: $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
 test_gf64_poly_mul_karatsuba: $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_POLY_MUL_KARATSUBA_SOURCES) ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
 
+# Phase 0 of issue #28 (Fenger Toeplitz pipeline — Todo 8): sanity-check that
+# the Fenger decomposition (Lagrange interpolation + subproduct polynomial
+# evaluation) produces bit-exact output against the explicit Cauchy
+# matrix-vector product at small (N, R, B). Minimal dependencies: scalar
+# field multiply + gf64_invert for the per-row division.
+test_gf64_fenger_kernel: $(TEST_GF64_FENGER_KERNEL_SOURCES) ../gf64_single.c ../gf64_invert.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_KERNEL_SOURCES) ../gf64_single.c ../gf64_invert.c
+
+# Phase 1 of issue #28 (Fenger Toeplitz pipeline — Todo 8): bit-exact parity
+# of the Bostan-Schost top-down gf64_fenger_matvec against the explicit
+# Cauchy reference. Dependencies mirror test_gf64_mpe (the pipeline's
+# per-word interpolation/evaluation) plus gf64_fenger.c, gf64_barycentric.c,
+# and gf64_invert.c.
+test_gf64_fenger_pipeline: $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
+# Phase 3 microbench (issue #28 — Todo 8): wall-clock throughput of
+# gf64_fenger_matvec vs explicit Cauchy reference. Same source set as
+# test_gf64_fenger_pipeline. Built with -fopenmp to expose the multi-threaded
+# execute path via the prepare/execute/release API.
+bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+	$(CC) $(CFLAGS) -fopenmp $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline bench_gf64_fenger_vs_cauchy

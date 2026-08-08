@@ -151,7 +151,7 @@ static size_t s_cauchyWorkerCount = 0;
 // on non-Linux platforms.  The result is cached after the first call and
 // capped at 32 to keep per-worker overhead bounded on large machines.
 // ============================================================================
-static size_t GetEffectiveCpuCount() {
+size_t GetEffectiveCpuCount() {
 	static size_t s_cached = 0;
 	if (s_cached != 0) return s_cached;
 
