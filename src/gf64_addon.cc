@@ -1831,13 +1831,56 @@ static napi_value ComputeRecoveryFenger_NAPI(napi_env env, napi_callback_info in
 
 	gf64_init_dispatch();
 
+	// AVX-512 alignment gate (matches the other NAPI entry points): the
+	// Fenger pipeline's subproduct-tree build dispatches to the AVX-512
+	// gf64_poly_mul path, which requires 64-byte-aligned buffers. JS
+	// Buffers are only guaranteed base-aligned, so bounce misaligned
+	// buffers through aligned temporaries.
+	const size_t inputsBytes = (size_t)numInputs * (size_t)blockSize;
+	const size_t outputsBytes = (size_t)numRecovery * (size_t)blockSize;
+	void* aligned_inputs = (void*)inputs;
+	bool inputs_bounced = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+		void* tmp = nullptr;
+		if (ALIGN_ALLOC(tmp, inputsBytes, 64)) {
+			memcpy(tmp, inputs, inputsBytes);
+			aligned_inputs = tmp;
+			inputs_bounced = true;
+		} else {
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed (fenger inputs)");
+			return NULL;
+		}
+	}
+	void* aligned_outputs = (void*)outputs;
+	bool outputs_bounced = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+		void* tmp = nullptr;
+		if (ALIGN_ALLOC(tmp, outputsBytes, 64)) {
+			memcpy(tmp, outputs, outputsBytes);
+			aligned_outputs = tmp;
+			outputs_bounced = true;
+		} else {
+			if (inputs_bounced) ALIGN_FREE(aligned_inputs);
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed (fenger outputs)");
+			return NULL;
+		}
+	}
+
 	GF64Controller::ComputeRecoveryBlocksFenger(
-		(const gf64_t*)inputs, (size_t)numInputs,
-		(gf64_t*)outputs, (size_t)numRecovery,
+		(const gf64_t*)aligned_inputs, (size_t)numInputs,
+		(gf64_t*)aligned_outputs, (size_t)numRecovery,
 		blockSize64,
 		firstInput, firstRecovery,
 		(int)numThreads
 	);
+
+	if (outputs_bounced) {
+		memcpy(outputs, aligned_outputs, outputsBytes);
+		ALIGN_FREE(aligned_outputs);
+	}
+	if (inputs_bounced) {
+		ALIGN_FREE(aligned_inputs);
+	}
 
 	return NULL;
 }
