@@ -154,7 +154,20 @@
       "target_name": "gf64_avx512_arr",
       "type": "static_library",
       "defines": ["NDEBUG"],
-      "sources": ["gf64/gf64_region_avx512_arr.c", "gf64/gf64_invert_avx512.c", "gf64/gf64_mul_avx512.c", "gf64/gf64_square.c", "gf64/gf64_invert_ita.c", "gf64/gf64_additive_fft.c", "gf64/gf64_subproduct.c", "gf64/gf64_barycentric.c", "gf64/gf64_mpe.c"],
+      # Polynomial API closure mirrors the corresponding GF64 test aggregate;
+      # keep each transitive translation unit explicit so static linking cannot
+      # silently drop a required symbol.
+      "sources": [
+        "gf64/gf64_region_avx512_arr.c",
+        "gf64/gf64_invert_avx512.c",
+        "gf64/gf64_mul_avx512.c",
+        "gf64/gf64_square.c",
+        "gf64/gf64_invert_ita.c",
+        "gf64/gf64_additive_fft.c",
+        "gf64/gf64_subproduct.c",
+        "gf64/gf64_barycentric.c",
+        "gf64/gf64_mpe.c"
+      ],
       "include_dirs": ["gf64"],
       "conditions": [
         ['target_arch in "ia32 x64" and OS=="win"', {
@@ -210,7 +223,7 @@
               "defines": ["NODE_API_EXPERIMENTAL_NOGC_ENV_OPT_OUT"],
               "cflags": ["/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS"],
               "cxxflags": ["/std:c++17", "/permissive-", "/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS", "/EHsc"]
-            }] 
+            }]
           ]
         }, {
           "sources": ["src/gf64_stub.cc"]
