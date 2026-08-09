@@ -148,8 +148,17 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 			denoms[c] = (d == 0) ? (gf64_t)1 : (gf64_t)d;
 		}
 
-		/* Step 2: batched Itoh-Tsujii inversion (T5). */
-		gf64_invert_ita_batch(denoms, denoms, numInputs);
+		/* Step 2: batched Itoh-Tsujii inversion (T5).
+		 *
+		 * gf64_invert_ita_batch is compiled with __attribute__((target
+		 * ("avx512f,vpclmulqdq"))) and would SIGILL on an AVX2-only host,
+		 * so gate it on the runtime dispatch (bound by gf64_init_dispatch
+		 * above) and fall back to the scalar one-at-a-time inverter. */
+		if (gf64_current_method == GF64_AVX512) {
+			gf64_invert_ita_batch(denoms, denoms, numInputs);
+		} else {
+			for (size_t c = 0; c < numInputs; c++) denoms[c] = gf64_invert_ita_one(denoms[c]);
+		}
 
 		/* Step 3: out[r][w] = XOR_c in[c][w] * denoms[c].
 		 *

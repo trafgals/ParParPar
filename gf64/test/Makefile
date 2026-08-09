@@ -111,8 +111,8 @@ test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) ../gf64_subprodu
 # n >= 128. gf64_mpe.c (PR #43, T8a) is required because
 # gf64_subproduct_tree_build calls gf64_poly_invmod_mod (defined there).
 # Needs AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_mpe.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) ../gf64_barycentric.c ../gf64_subproduct.c ../gf64_mpe.c ../gf64_invert_ita.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) $(GF64_SOURCES)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) $(GF64_SOURCES)
 
 # Multi-point evaluation test (par3-cauchy-fft-kernel T8). gf64_mpe.c (T8)
 # depends on the subproduct tree (T6) for its evaluation entry point, the
@@ -158,22 +158,22 @@ test_gf64_fenger_kernel: $(TEST_GF64_FENGER_KERNEL_SOURCES) ../gf64_single.c ../
 # Cauchy reference. Dependencies mirror test_gf64_mpe (the pipeline's
 # per-word interpolation/evaluation) plus gf64_fenger.c, gf64_barycentric.c,
 # and gf64_invert.c.
-test_gf64_fenger_pipeline: $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_PIPELINE_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+test_gf64_fenger_pipeline: $(TEST_GF64_FENGER_PIPELINE_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_PIPELINE_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
 # K5 (issue #46): bit-exact parity of the PADDED Fenger path (non-power-of-2
 # real counts padded up to the next power of 2 with synthetic zero-data
 # inputs at a disjoint base) against the explicit Cauchy reference. Same
 # source set as test_gf64_fenger_pipeline.
-test_gf64_fenger_padded: $(TEST_GF64_FENGER_PADDED_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_PADDED_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+test_gf64_fenger_padded: $(TEST_GF64_FENGER_PADDED_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_PADDED_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
 # Phase 3 microbench (issue #28 — Todo 8): wall-clock throughput of
 # gf64_fenger_matvec vs explicit Cauchy reference. Same source set as
 # test_gf64_fenger_pipeline. Built with -fopenmp to expose the multi-threaded
 # execute path via the prepare/execute/release API.
-bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) -fopenmp $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) ../gf64_fenger.c ../gf64_mpe.c ../gf64_subproduct.c ../gf64_barycentric.c ../gf64_invert_ita.c ../gf64_invert.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_single.c
+bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+	$(CC) $(CFLAGS) -fopenmp $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
 clean:
 	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded bench_gf64_fenger_vs_cauchy
