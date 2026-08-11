@@ -39,6 +39,16 @@
  *   - The disjointness condition (no x_c coincides with y_r) is enforced
  *     by gf64_fenger_matvec itself via the V(y_r) inverse.
  *
+ *   A padded route (gf64_fenger_prepare_padded) exists in gf64_fenger.c
+ *   for non-power-of-2 shapes and is bit-exact for small N (see
+ *   test_gf64_fenger_padded, 9/9 PASS at N <= 1000). It is NOT routed
+ *   from production dispatch here because its underlying tree-prep
+ *   (schoolbook EGCD inv cache) and MPE (schoolbook divmod) are
+ *   O(N^2), making it asymptotically slower than the O(N*R) legacy
+ *   fallback it would replace. Subquadratic prep (Newton/reverse-poly
+ *   invmod) and subquadratic MPE (FFT divmod) are Phase A follow-ups;
+ *   until those land, non-power-of-2 falls through to the legacy path.
+ *
  * THREADING
  * ---------
  *   Per-thread sharding across the B-axis: the prepare phase builds the
@@ -77,6 +87,17 @@ extern "C" gf64_fenger_ctx *gf64_fenger_prepare(
 	size_t N,
 	size_t R
 );
+/* Padded route exists for bit-exact correctness on small N; not routed
+ * from production dispatch (see FALLBACK above and header comment). */
+extern "C" gf64_fenger_ctx *gf64_fenger_prepare_padded(
+	uint64_t firstInput,
+	uint64_t firstRecovery,
+	size_t numInputs,
+	size_t numRecovery,
+	size_t numInputsPadded,
+	size_t numRecoveryPadded,
+	uint64_t syntheticInputBase
+);
 extern "C" void gf64_fenger_execute(
 	const gf64_fenger_ctx *ctx,
 	const gf64_t *in,  size_t B,
@@ -94,24 +115,6 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 ) {
 	/* Trivial-input short-circuit, matching the engine convention. */
 	if (numInputs == 0 || numRecovery == 0 || blockSize64 == 0) {
-		return;
-	}
-
-	/* Power-of-2 gate for the subproduct tree. If the workload isn't
-	 * power-of-2, fall back to the legacy path (which is bit-exact and
-	 * works for any shape). Future padding work (Phase 2b follow-up)
-	 * will lift this constraint by padding N up to the next power of 2
-	 * with synthetic zero-weight inputs. */
-	int numInputs_pow2  = (numInputs  >= 1) && ((numInputs  & (numInputs  - 1)) == 0);
-	int numRecovery_pow2 = (numRecovery >= 1) && ((numRecovery & (numRecovery - 1)) == 0);
-	if (!numInputs_pow2 || !numRecovery_pow2) {
-		GF64Controller::ComputeRecoveryBlocks(
-			inputs, numInputs,
-			recovery, numRecovery,
-			blockSize64,
-			firstInput, firstRecovery,
-			/* numThreads */ 0
-		);
 		return;
 	}
 
@@ -136,7 +139,27 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 		if (numThreads < 1) numThreads = 1;
 	}
 
-	/* Prepare the shared pipeline state. */
+	/* Power-of-2 gate for the subproduct tree. If the workload isn't
+	 * power-of-2, fall back to the legacy path (which is bit-exact and
+	 * works for any shape). A padded Fenger route exists in
+	 * gf64_fenger.c (gf64_fenger_prepare_padded) and is bit-exact for
+	 * small N (see test_gf64_fenger_padded), but its underlying tree-prep
+	 * and MPE are O(N^2) — slower than the legacy O(N*R) path it would
+	 * replace. Subquadratic prep is a Phase A follow-up (issue #46); the
+	 * padded route is therefore NOT routed from production dispatch here. */
+	int numInputs_pow2  = (numInputs  >= 1) && ((numInputs  & (numInputs  - 1)) == 0);
+	int numRecovery_pow2 = (numRecovery >= 1) && ((numRecovery & (numRecovery - 1)) == 0);
+	if (!numInputs_pow2 || !numRecovery_pow2) {
+		GF64Controller::ComputeRecoveryBlocks(
+			inputs, numInputs,
+			recovery, numRecovery,
+			blockSize64,
+			firstInput, firstRecovery,
+			/* numThreads */ 0
+		);
+		return;
+	}
+
 	gf64_fenger_ctx *ctx = gf64_fenger_prepare(
 		firstInput, firstRecovery, numInputs, numRecovery
 	);

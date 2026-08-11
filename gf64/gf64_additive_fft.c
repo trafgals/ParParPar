@@ -82,6 +82,18 @@ extern void gf64_poly_mul_karatsuba(
 #define GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN ((size_t)128)
 
 /*
+ * HQC FFT crossover for gf64_poly_mul_internal dispatch. Empirically
+ * (gf64/test/bench_hqc_vs_karatsuba, 2026-08-11, WSL2, -march=native, -O3):
+ * HQC FFT (scalar) beats Karatsuba from n >= 96; HQC FFT (AVX-512) from
+ * n >= 64. We use 96 as the conservative threshold so the dispatch picks
+ * HQC FFT only when it's unambiguously profitable on both code paths.
+ *
+ * Upper cap: GF64_HQC_MAX_LM_N = 131072 (defined in gf64_additive_fft_hqc2026.c).
+ * The HQC dispatch tier checks both bounds before promoting.
+ */
+#define GF64_HQC_FFT_MIN ((size_t)96)
+
+/*
  * Dispatch-probe counters. Incremented once per gf64_poly_mul_internal
  * invocation per code path taken. Read by test_gf64_poly_mul_karatsuba's
  * threshold-boundary assertions (n == 127 -> schoolbook, n == 128 ->
@@ -104,6 +116,7 @@ typedef struct gf64_dispatch_counts {
 	uint64_t karatsuba;
 	uint64_t toom3;
 	uint64_t fft;
+	uint64_t hqc_fft;  /* Phase 2 — HQC 2026 TCHES §2.3 additive FFT */
 } gf64_dispatch_counts_t;
 
 extern gf64_dispatch_counts_t gf64_dispatch_counts;
@@ -323,13 +336,14 @@ static void gf64_assert_no_output_alias(
  * polynomial-heavy T6/T7/T8 primitives to O(n^1.585) without the
  * research-grade FFT work.
  */
-gf64_dispatch_counts_t gf64_dispatch_counts = {0, 0, 0, 0};
+gf64_dispatch_counts_t gf64_dispatch_counts = {0, 0, 0, 0, 0};
 
 void gf64_dispatch_counts_reset(void) {
 	gf64_dispatch_counts.schoolbook = 0;
 	gf64_dispatch_counts.karatsuba = 0;
 	gf64_dispatch_counts.toom3 = 0;
 	gf64_dispatch_counts.fft = 0;
+	gf64_dispatch_counts.hqc_fft = 0;
 }
 
 static void gf64_poly_mul_internal(
@@ -346,14 +360,52 @@ static void gf64_poly_mul_internal(
 		return;
 	}
 
+	/* HQC FFT tier. Phase 2 — beats Karatsuba from n >= 96 (see benchmark
+	 * in gf64/test/bench_hqc_vs_karatsuba.c). Pads internally to
+	 * next_pow2(2*max(len_a,len_b) - 1); the per-call scratch is sized
+	 * for that padded n. We require ALL of (len_a, len_b, out_len) to be
+	 * at-or-above the crossover so we don't pay HQC's setup overhead when
+	 * one operand is small (asymmetric case, schoolbook wins).
+	 *
+	 * Cap: GF64_HQC_MAX_LM_N = 131072 (defined in the HQC TU). Sizes
+	 * outside this cap fall through to Karatsuba. */
+	if (len_a >= GF64_HQC_FFT_MIN &&
+	    len_b >= GF64_HQC_FFT_MIN &&
+	    out_len >= GF64_HQC_FFT_MIN &&
+	    len_a <= GF64_HQC_MAX_LM_N &&
+	    len_b <= GF64_HQC_MAX_LM_N) {
+		/* Compute the padded n the HQC FFT will use internally.
+		 * The function pads to next_pow2(max(2*max_len - 1, out_len))
+		 * because out_len > 2*max_len - 1 when the caller truncates
+		 * the output (e.g., Newton-iteration invmod calls with out_len
+		 * = final_n and len_a = m < final_n). Mirror that here. */
+		size_t max_len = (len_a > len_b) ? len_a : len_b;
+		size_t full_len = 2 * max_len - 1;
+		if (out_len > full_len) full_len = out_len;
+		size_t n_pad = 1;
+		while (n_pad < full_len) n_pad <<= 1;
+		size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n_pad);
+		gf64_t *scratch = (gf64_t *)malloc(sw * sizeof(gf64_t));
+		if (scratch == NULL) abort();
+		gf64_dispatch_counts.hqc_fft++;
+		if (gf64_current_method == GF64_AVX512) {
+			gf64_addfft64_poly_mul_recursive_scratch_avx512(
+				out, a, len_a, b, len_b, out_len, scratch, sw);
+		} else {
+			gf64_addfft64_poly_mul_recursive_scratch(
+				out, a, len_a, b, len_b, out_len, scratch, sw);
+		}
+		free(scratch);
+		return;
+	}
+
 	/* Karatsuba above the threshold. We require ALL of (len_a, len_b,
 	 * out_len) to be at-or-above the crossover so we don't pay Karatsuba's
 	 * malloc/scratch overhead when the operands are small (the schoolbook
 	 * base case would fire immediately anyway, but with extra setup cost).
 	 *
-	 * Only Karatsuba is wired into production at this point; Toom-3, FFT,
-	 * and HQC belong to deferred waves (todos 7-9). Their counter slots
-	 * remain 0 to prove no silent promotion. */
+	 * Karatsuba handles the (96..128) range miss (HQC FFT threshold gap),
+	 * any n > 131072 (above the HQC cap), and asymmetric cases. */
 	if (len_a >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
 	    len_b >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
 	    out_len >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN) {

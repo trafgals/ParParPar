@@ -52,7 +52,7 @@ gf64_region_coupled_muladd_arr_fn gf64_region_coupled_muladd_arr;
 gf64_region_fused_output_muladd_arr_fn gf64_region_fused_output_muladd_arr;
 gf64_region_2d_muladd_arr_fn gf64_region_2d_muladd_arr;
 gf64_inverse_batch_fn gf64_inverse_batch;
-GF64Method gf64_current_method;
+GF64Method gf64_current_method = GF64_SCALAR;
 
 /* WSL2/Hyper-V workaround: poll detection 5 times, accept AVX512 if
  * any single poll (1 of 5) reports it. WSL2 doesn't honor sched_setaffinity

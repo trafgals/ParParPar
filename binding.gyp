@@ -164,6 +164,7 @@
         "gf64/gf64_square.c",
         "gf64/gf64_invert_ita.c",
         "gf64/gf64_additive_fft.c",
+        "gf64/gf64_additive_fft_hqc2026.c",
         "gf64/gf64_subproduct.c",
         "gf64/gf64_barycentric.c",
         "gf64/gf64_mpe.c",

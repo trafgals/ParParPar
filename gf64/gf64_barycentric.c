@@ -166,8 +166,20 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	 * point returns 0 by convention. The barycentric weight is therefore
 	 * 0 for that j — matching the "duplicate input -> zero weight"
 	 * edge case in the plan.
+	 *
+	 * gf64_invert_ita_batch is compiled with __attribute__((target
+	 * ("avx512f,vpclmulqdq"))) and executes ZMM instructions
+	 * UNCONDITIONALLY — calling it on an AVX2-only host SIGILLs. Gate it
+	 * on the runtime dispatch (set by gf64_init_dispatch / gf64_apply_method)
+	 * and fall back to the scalar one-at-a-time inverter otherwise.
 	 */
-	gf64_invert_ita_batch(weights_out, deriv_at_points, N);
+	if (gf64_current_method == GF64_AVX512) {
+		gf64_invert_ita_batch(weights_out, deriv_at_points, N);
+	} else {
+		for (size_t j = 0; j < N; j++) {
+			weights_out[j] = gf64_invert_ita_one(deriv_at_points[j]);
+		}
+	}
 
 	free(deriv_at_points);
 	free(deriv);
