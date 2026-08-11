@@ -199,8 +199,13 @@ bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURC
 
 # HQC FFT vs Karatsuba polynomial multiplication benchmark.
 # Establishes GF64_HQC_FFT_MIN crossover — informs Step 5 dispatch wiring.
-bench_hqc_vs_karatsuba: $(BENCH_HQC_VS_KARATSUBA_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_invert.c ../gf64_single.c
-	$(CC) $(CFLAGS) -O3 $(LDFLAGS) -o $@ $(BENCH_HQC_VS_KARATSUBA_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_additive_fft.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_invert.c ../gf64_single.c
+# HQC FFT vs Karatsuba polynomial multiplication benchmark.
+# Establishes GF64_HQC_FFT_MIN crossover — informs Step 5 dispatch wiring.
+# Uses the full GF64_SOURCES set so the dispatch counter symbol
+# (gf64_dispatch_counts, gf64_current_method) and its transitive deps
+# (gf64_dispatch.c → gf64_invert_avx2.c → cpu_detect.c) link cleanly.
+bench_hqc_vs_karatsuba: $(BENCH_HQC_VS_KARATSUBA_SOURCES) $(GF64_SOURCES)
+	$(CC) $(CFLAGS) $(GF64_INCLUDES) -O3 $(LDFLAGS) -o $@ $(BENCH_HQC_VS_KARATSUBA_SOURCES) $(GF64_SOURCES)
 
 clean:
 	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba

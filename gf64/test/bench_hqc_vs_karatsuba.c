@@ -15,7 +15,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "/mnt/c/code/trafgals/parparpar/gf64/gf64_additive_fft.h"
+#include "gf64_additive_fft.h"
 
 extern void gf64_poly_mul_karatsuba(
     uint64_t *out, const uint64_t *a, size_t la,
