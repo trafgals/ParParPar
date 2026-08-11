@@ -36,6 +36,18 @@ extern gf64_region_fused_output_muladd_arr_fn gf64_region_fused_output_muladd_ar
 extern gf64_region_2d_muladd_arr_fn gf64_region_2d_muladd_arr;
 extern gf64_inverse_batch_fn gf64_inverse_batch;
 extern GF64Method gf64_current_method;
+/* Host-availability flag for VPCLMULQDQ (carryless multiplication on
+ * AVX-512F). Set once by gf64_init_dispatch from CPUID leaf 7 sub-leaf 0
+ * ECX bit 11. Distinct from gf64_current_method, which is workload-chosen
+ * (PD2 downclock heuristic can downgrade it to GF64_AVX2 even on a host
+ * that supports VPCLMULQDQ). Code paths that call into
+ * __attribute__((target("avx512f,vpclmulqdq"))) functions (ITA batch
+ * invert, HQC FFT butterfly AVX-512) MUST gate on this flag, NOT on
+ * gf64_current_method. */
+extern int gf64_has_vpclmulqdq;
+/* Probe function used by gf64_init_dispatch. Reads cpuid 7.0 ECX bit 11
+ * + XCR0 — returns 1 if VPCLMULQDQ is available, 0 otherwise. */
+int gf64_has_vpclmulqdq_probe(void);
 extern gf64_t gf64_inverse(gf64_t a);
 
 GF64Method gf64_detect_method(void);

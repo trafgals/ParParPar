@@ -53,6 +53,10 @@ gf64_region_fused_output_muladd_arr_fn gf64_region_fused_output_muladd_arr;
 gf64_region_2d_muladd_arr_fn gf64_region_2d_muladd_arr;
 gf64_inverse_batch_fn gf64_inverse_batch;
 GF64Method gf64_current_method = GF64_SCALAR;
+/* Set by gf64_init_dispatch from cpu_detect's VPCLMULQDQ CPUID probe.
+ * Distinct from gf64_current_method — the latter can downgrade mid-workload
+ * via the PD2 downclock heuristic, but the host capability is fixed. */
+int gf64_has_vpclmulqdq = 0;
 
 /* WSL2/Hyper-V workaround: poll detection 5 times, accept AVX512 if
  * any single poll (1 of 5) reports it. WSL2 doesn't honor sched_setaffinity
@@ -100,6 +104,12 @@ int gf64_init_dispatch(void) {
 	 * the "force off" downgrade case, and we want a single deterministic
 	 * detection result for the fallthrough. The 5-poll aggregate is cheap. */
 	GF64Method detected = gf64_detect_method();
+	/* Host-availability flag for VPCLMULQDQ (set BEFORE the env-override
+	 * branch so the flag reflects actual CPUID capability regardless of
+	 * the workload dispatch choice). Distinct from gf64_current_method,
+	 * which the PD2 heuristic may downgrade to GF64_AVX2 even on a host
+	 * that supports VPCLMULQDQ. */
+	gf64_has_vpclmulqdq = gf64_has_vpclmulqdq_probe();
 	int use_avx512_forced;
 	if (parse_avx512_force_env(detected, &use_avx512_forced)) {
 		if (use_avx512_forced == 1) {

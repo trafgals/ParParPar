@@ -129,6 +129,24 @@ static int run_case(size_t deg_g, size_t deg_f, uint64_t seed) {
 		}
 	}
 
+	/* Normalized-form contract: max(deg(u)) < deg_f. The congruence alone
+	 * would be satisfied by u + k*f (any k), so without this check a
+	 * refactored invmod returning a higher-degree representative would
+	 * still pass. u[] was sized to deg_f, so scan u[0..deg_f-1] for the
+	 * highest nonzero coefficient. */
+	{
+		size_t deg_u = (size_t)-1;
+		for (size_t i = deg_f; i-- > 0; ) {
+			if (u[i] != 0) { deg_u = i; break; }
+		}
+		if (deg_u == (size_t)-1) deg_u = 0;  /* u == 0 — degenerate */
+		if (deg_u >= deg_f) {
+			printf("    (deg_g=%zu, deg_f=%zu) deg(u) = %zu, want < deg_f\n",
+			       deg_g, deg_f, deg_u);
+			ok = 0;
+		}
+	}
+
 cleanup:
 	free(g); free(f); free(u); free(prod); free(red);
 	return ok;

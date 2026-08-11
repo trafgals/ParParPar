@@ -51,7 +51,12 @@
  *      mapping is a safety net only).
  *   2. Batch-invert the numInputs denominators via gf64_invert_ita_batch
  *      (T5: Itoh-Tsujii, AVX-512 vectorized with scalar tail; 63
- *      squarings + 62 multiplies per element, 8 lanes/iter).
+ *      squarings + 62 multiplies per element, 8 lanes/iter) on hosts
+ *      with VPCLMULQDQ; otherwise dispatch through gf64_inverse_batch
+ *      (scalar/SSSE3/AVX-2 specialised batch inverters bound at
+ *      gf64_init_dispatch time). Input and output buffers are kept
+ *      distinct to satisfy HEDLEY_RESTRICT — see the coeffs_tls/denoms_tls
+ *      pair declared below.
  *   3. For each input column c, accumulate in[c][w] * coeff into
  *      out[r][w] via gf64_region_muladd_arr, where coeff is the inverted
  *      Cauchy coefficient. n_coeff = 1: each call multiplies a single
@@ -116,22 +121,33 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 	 * Thread-local scratch for the per-row denominator buffer. Reused
 	 * across rows; resized on the fly if numInputs grows between calls.
 	 *
-	 * Per-row memory: numInputs * sizeof(gf64_t). The "denoms" buffer
-	 * plays a double role:
-	 *   (a) before invert: holds x_c ^ y_r (raw Cauchy denominators)
-	 *   (b) after invert: holds 1 / (x_c ^ y_r) (Cauchy coefficients)
-	 * In-place aliasing is supported by gf64_invert_ita_batch.
+	 * Per-row memory: numInputs * sizeof(gf64_t) for the raw denominators
+	 * (`denoms_tls`) PLUS numInputs * sizeof(gf64_t) for the inverted
+	 * coefficients (`coeffs_tls`). The two buffers are deliberately
+	 * distinct: gf64_inverse_batch's non-aliasing HEDLEY_RESTRICT contract
+	 * forbids passing the same array as both input and output. Cubic
+	 * review 4891289950 (item 3) flagged the prior in-place scalar
+	 * Itoh-Tsujii fallback for losing the SIMD batch path on AVX2/SSSE3
+	 * hosts and on the PD2 downclock downgrade; the fix is to ship a
+	 * separate output buffer and dispatch through gf64_inverse_batch in
+	 * the fallback branch.
 	 */
 	static thread_local std::vector<gf64_t> denoms_tls;
 	if (denoms_tls.size() < numInputs) denoms_tls.resize(numInputs);
 	gf64_t* denoms = denoms_tls.data();
 
+	static thread_local std::vector<gf64_t> coeffs_tls;
+	if (coeffs_tls.size() < numInputs) coeffs_tls.resize(numInputs);
+	gf64_t* coeffs = coeffs_tls.data();
+
 	/*
 	 * For each recovery row r:
 	 *   1. Compute raw denominators x_c ^ y_r, mapping 0 -> 1 to keep the
 	 *      batched inversion safe (ita_batch returns 0 for input 0).
-	 *   2. Batch-invert the row of denominators in place.
-	 *   3. Build out[r] = XOR_c in[c] * denoms[c] via numInputs region-
+	 *   2. Batch-invert the row of denominators into a separate output
+	 *      buffer (denoms[] -> coeffs[]) — see gf64_inverse_batch's
+	 *      HEDLEY_RESTRICT non-aliasing contract.
+	 *   3. Build out[r] = XOR_c in[c] * coeffs[c] via numInputs region-
 	 *      muladd calls (n_coeff = 1 each).
 	 *
 	 * The output row is zeroed before the accumulators run so the
@@ -150,21 +166,39 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 
 		/* Step 2: batched Itoh-Tsujii inversion (T5).
 		 *
-		 * gf64_invert_ita_batch is compiled with __attribute__((target
-		 * ("avx512f,vpclmulqdq"))) and would SIGILL on an AVX2-only host,
-		 * so gate it on the runtime dispatch (bound by gf64_init_dispatch
-		 * above) and fall back to the scalar one-at-a-time inverter. */
-		if (gf64_current_method == GF64_AVX512) {
-			gf64_invert_ita_batch(denoms, denoms, numInputs);
+		 * The VPCLMULQDQ codepath uses gf64_invert_ita_batch, which
+		 * __attribute__((target("avx512f,vpclmulqdq")))-compiles and
+		 * would SIGILL on a host without VPCLMULQDQ. Gate on
+		 * gf64_has_vpclmulqdq (a host-availability flag set once from
+		 * CPUID), NOT on gf64_current_method — the latter is workload-
+		 * chosen and the PD2 downclock heuristic may downgrade it to
+		 * GF64_AVX2 even when the host supports the VPCLMULQDQ codepath.
+		 *
+		 * The non-VPCLMULQDQ fallback dispatches through the GF64Method
+		 * table's gf64_inverse_batch (scalar / SSSE3 / AVX-2 / AVX-512
+		 * inverted batch on the free side). This preserves the
+		 * AVX2/SSSE3 SIMD batch path the cubic review (4891289950,
+		 * item 3) flagged as lost by the prior scalar Itoh-Tsujii loop.
+		 * The function pointer carries HEDLEY_RESTRICT on both
+		 * arguments, so input (`denoms`) and output (`coeffs`) must be
+		 * distinct arrays. */
+		if (gf64_has_vpclmulqdq) {
+			gf64_invert_ita_batch(coeffs, denoms, numInputs);
 		} else {
-			for (size_t c = 0; c < numInputs; c++) denoms[c] = gf64_invert_ita_one(denoms[c]);
+			gf64_inverse_batch(coeffs, denoms, numInputs);
 		}
 
-		/* Step 3: out[r][w] = XOR_c in[c][w] * denoms[c].
+		/* Step 3: out[r][w] = XOR_c in[c][w] * coeffs[c].
 		 *
 		 * gf64_region_muladd_arr performs out[w] ^= in[w] * coeff[w]
 		 * for the n_coeff = 1 special case. The dispatch picks the
 		 * ISA-appropriate path (scalar / SSSE3 / AVX-2 / AVX-512).
+		 *
+		 * `coeffs[c]` is the inverted Cauchy coefficient 1 / (x_c ^ y_r),
+		 * written into the per-row output scratch by Step 2's batch
+		 * inversion (gf64_invert_ita_batch or the dispatched
+		 * gf64_inverse_batch fallback). The raw `denoms` buffer holds
+		 * the pre-inversion inputs and is not re-read.
 		 *
 		 * Zero out_row first so the XOR-accumulator below builds the
 		 * Cauchy row from scratch (no need to depend on the caller's
@@ -174,7 +208,7 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 		std::memset(out_row, 0, blockSize64 * sizeof(gf64_t));
 
 		for (size_t c = 0; c < numInputs; c++) {
-			const gf64_t coeff = denoms[c];
+			const gf64_t coeff = coeffs[c];
 			gf64_region_muladd_arr(
 				out_row,
 				inputs + c * blockSize64,

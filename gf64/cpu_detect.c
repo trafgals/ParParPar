@@ -279,7 +279,7 @@ static int try_zmm_insn(void) {
  */
 GF64Method gf64_detect_method_internal(void) {
 	unsigned int eax, ebx, ecx, edx;
-	
+
 	/* Check AVX-512F (cpuid 7.0 EBX bit 16) + VPOPCNTDQ (cpuid 7.0 ECX bit 14) */
 	gf64_cpuid(7, 0, &eax, &ebx, &ecx, &edx);
 	if ((ebx & (1 << 16)) && (ecx & (1 << 14))) {
@@ -299,18 +299,50 @@ GF64Method gf64_detect_method_internal(void) {
 			}
 		}
 	}
-	
+
 	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
 	if ((ecx & (1 << 28)) && (ecx & (1 << 12)) && (ecx & (1 << 27))) {
 		return GF64_AVX2;
 	}
-	
+
 	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
 	if ((ecx & (1 << 0)) && (ecx & (1 << 1))) {
 		return GF64_SSSE3;
 	}
-	
+
 	return GF64_SCALAR;
+}
+
+/* Probe VPCLMULQDQ (cpuid 7.0 ECX bit 11). This is a host-availability flag
+ * distinct from the workload-chosen gf64_current_method: PD2 can downgrade
+ * the latter to GF64_AVX2 mid-workload to avoid the Zen4 downclock, but the
+ * ISA capability itself is fixed. Code paths that call
+ * __attribute__((target("avx512f,vpclmulqdq"))) functions MUST gate on the
+ * return value of this probe, NOT on gf64_current_method.
+ *
+ * Returns 1 if CPUID+XCR0 report VPCLMULQDQ available, 0 otherwise. Does NOT
+ * perform the ZMM SIGILL probe — VPCLMULQDQ without working ZMM is moot,
+ * but the call sites that need VPCLMULQDQ also need working ZMM, so the
+ * cost is paid elsewhere (the gf64_current_method==GF64_AVX512 path or the
+ * per-function ZMM probe). */
+int gf64_has_vpclmulqdq_probe(void) {
+	unsigned int eax, ebx, ecx, edx;
+
+	/* VPCLMULQDQ = cpuid leaf 7, sub-leaf 0, ECX bit 11 */
+	gf64_cpuid(7, 0, &eax, &ebx, &ecx, &edx);
+	if (!(ecx & (1 << 11))) return 0;
+
+	/* Same XCR0 check as gf64_detect_method_internal: VPCLMULQDQ requires
+	 * the AVX-512 state components (opmask + ZMM/H) to be enabled by the
+	 * OS — without them the instruction UD2s even if CPUID reports the
+	 * feature bit. */
+	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
+	if (!(ecx & (1 << 27))) return 0;  /* OSXSAVE */
+	{
+		uint64_t xcr0 = gf64_xgetbv(0);
+		if ((xcr0 & 0x27ULL) != 0x27ULL) return 0;
+	}
+	return 1;
 }
 
 HEDLEY_END_C_DECLS

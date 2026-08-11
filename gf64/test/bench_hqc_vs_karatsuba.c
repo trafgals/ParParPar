@@ -21,6 +21,14 @@ extern void gf64_poly_mul_karatsuba(
     uint64_t *out, const uint64_t *a, size_t la,
     const uint64_t *b, size_t lb, size_t out_len);
 
+/* Host-availability probe for VPCLMULQDQ (cpuid 7.0 ECX bit 11 + XCR0).
+ * The bench's AVX-512 path calls gf64_addfft64_poly_mul_recursive_scratch_avx512
+ * (compiled with __attribute__((target("avx512f,vpclmulqdq")))), which
+ * SIGILLs on hosts that lack VPCLMULQDQ even when CPUID reports AVX-512F.
+ * Probe directly rather than going through gf64_init_dispatch() — the
+ * latter pulls in gf64_region_*_arr TUs the bench doesn't otherwise need. */
+extern int gf64_has_vpclmulqdq_probe(void);
+
 static uint64_t state = 0xc0ffee01;
 static uint64_t splitmix64(void) {
     uint64_t z = (state += 0x9e3779b97f4a7c15ULL);
@@ -32,6 +40,12 @@ static uint64_t splitmix64(void) {
 static double time_one_poly_mul_recursive(size_t n_actual, uint64_t *a, uint64_t *b,
                                           uint64_t *out, uint64_t *scratch,
                                           int use_avx512, int iters) {
+    /* Force the AVX-512 path off on hosts that lack VPCLMULQDQ. The
+     * probe runs once per call (CPUID is cheap; the original concern
+     * was a one-shot init). Without this guard, calling the _avx512
+     * entry on a non-AVX-512 host SIGILLs the bench process. */
+    if (use_avx512 && !gf64_has_vpclmulqdq_probe()) use_avx512 = 0;
+
     size_t n_pad = 1;
     while (n_pad < 2 * n_actual - 1) n_pad <<= 1;
     size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n_pad);
@@ -86,10 +100,19 @@ static double bench_one(size_t n, int iters) {
 }
 
 int main(void) {
+    /* One-shot probe so we can warn up front. The per-call probe lives
+     * inside time_one_poly_mul_recursive (CPUID is ~50 cycles; fine). */
+    int has_vpclmulqdq = gf64_has_vpclmulqdq_probe();
+
     printf("%-7s %-10s %-10s %-10s %-7s %-7s\n",
            "n", "karatsuba", "hqc-scalar", "hqc-avx512", "vs-kara", "avx-gain");
     printf("%-7s %-10s %-10s %-10s %-7s %-7s\n",
            "-------", "----------", "----------", "----------", "-------", "-------");
+
+    if (!has_vpclmulqdq) {
+        printf("\nNote: VPCLMULQDQ not available on this host; AVX-512 "
+               "column will mirror the scalar column.\n");
+    }
 
     /* Small crossover sweep */
     size_t small[] = {16, 32, 48, 64, 96, 128, 192};

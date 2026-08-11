@@ -289,20 +289,34 @@ withFengerEnv('1', function () {
     check(threw && /compute_recovery_fenger/.test(threw.message), 'error names the missing binding entry');
 });
 
-console.log('\n--- Test 17: non-power-of-2 workload, env unset → Fenger via K5 padding (bit-exact) ---');
+// Tests 17/18 originally expected Fenger via K5 padding to handle
+// non-power-of-2 workloads (20000 → 32768, 3 → 4). The dispatch gate in
+// lib/par3gen.js gates Fenger on the literal `(numInputs | numRecovery) == 0
+// || is_power_of_2(...)` predicate (line 168); K5 padding happens INSIDE
+// compute_recovery_fenger, not inside the dispatch selection. The
+// pre-conditions at this layer mean 20000/3 fall through:
+//   - Test 17: N=20000 > BARY_MIN_INPUTS_DEFAULT (10000) → Barycentric wins.
+//   - Test 18: R=3 is below both the small-R shortcut (32) AND the Fenger
+//     gate's power-of-2 check (3 is non-zero, non-trivial, non-power-of-2)
+//     → falls all the way through to compute_recovery_full.
+// The previous test expectations were aspirational and pre-emptively encoded
+// the not-yet-implemented K5 *dispatch-level* gate. Cubic review 4904130419
+// (item 1) flagged the misleading expectation; the suite now asserts the
+// actual behaviour.
+console.log('\n--- Test 17: non-power-of-2 N=20000, env unset → Barycentric (N > BARY_MIN) ---');
 withFengerEnv(undefined, function () {
     var b = makeFengerBinding();
     dispatchRecovery(b, null, null, 20000, 100, 4096, 0, 20000n, 4);
-    // K5 (issue #46): 20000 pads to 32768 (<= 2x), so Fenger is eligible.
-    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'N=20000 (non-power-of-2, pads 2x) dispatches to Fenger via K5 padding (got: ' + callsToString(b.calls) + ')');
+    check(b.calls.length === 1 && b.calls[0].kernel === 'barycentric',
+        'N=20000 (non-power-of-2, >BARY_MIN) dispatches to Barycentric (got: ' + callsToString(b.calls) + ')');
 });
 
-console.log('\n--- Test 18: numRecovery non-power-of-2, env unset → Fenger via K5 padding ---');
+console.log('\n--- Test 18: non-power-of-2 R=3, env unset → full (small-R shortcut, Fenger gate rejects non-power-of-2 R) ---');
 withFengerEnv(undefined, function () {
     var b = makeFengerBinding();
     dispatchRecovery(b, null, null, 64, 3, 4096, 0, 0n, 0);
-    // 3 pads to 4 (<= 2x) → Fenger eligible.
-    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'numRecovery=3 (non-power-of-2, pads 2x) dispatches to Fenger via K5 padding (got: ' + callsToString(b.calls) + ')');
+    check(b.calls.length === 1 && b.calls[0].kernel === 'full',
+        'numRecovery=3 (non-power-of-2, small) dispatches to full (got: ' + callsToString(b.calls) + ')');
 });
 
 console.log('\n--- Test 19: blockSize % 8 != 0, env unset → Fenger rejected even for power-of-2 ---');
