@@ -74,6 +74,112 @@ void gf64_poly_mul_padded(
 	size_t out_len
 );
 
+/*
+ * HQC 2026 TCHES §2.3 Algorithm 2 (LCH14) additive FFT — Cantor-basis
+ * variant implemented in gf64_additive_fft_hqc2026.c.
+ *
+ * Same O(N log N) complexity as the Gao-Mateer variant above, but uses the
+ * nested vanishing-subspace decomposition V_{i-1} ⊂ V_i with basis vectors
+ * {v_0, ..., v_{LM-1}} (see gf64_cantor_basis.h). The forward transform
+ * evaluates f at the affine line a + V_{logn}; the inverse evaluates the
+ * novel polynomial representation.
+ *
+ * PUBLIC API — scratch-required, two-tier length caps.
+ *
+ *   Every entry point takes a caller-allocated scratch buffer and a
+ *   scratch_words size. Use the companion *_scratch_words(n) function to
+ *   size the buffer. Mirrors the convention established by
+ *   gf64_poly_divmod_scratch (gf64_mpe.h:115).
+ *
+ * Length caps (two tiers; sizes in (131072, 2^20] require General
+ * Algorithm 1, filed as a separate work item):
+ *
+ *   GF64_HQC_MAX_MATRIXFORM_N = 16384   — matrix-form path (cache-backed)
+ *                                          _fwd_scratch, _inv_scratch,
+ *                                          _poly_mul_scratch
+ *   GF64_HQC_MAX_LM_N = 131072          — matrix-free recursive path
+ *                                          _fwd_recursive_scratch,
+ *                                          _inv_recursive_scratch,
+ *                                          _poly_mul_recursive_scratch
+ *
+ *   gf64_addfft64_poly_mul_recursive_scratch
+ *       has the largest scratch demand (4n) — it is the recommended entry
+ *       for production dispatch once the caller knows n <= 131072.
+ *
+ * Bit-exact for n <= 4096 (see test/test_gf64_additive_fft_hqc2026.c);
+ * recursive path additionally verified at n in {4, 8, 32, 512, 131072}
+ * (the simple-2-term decomposition sizes, including the LM_N cap).
+ */
+
+/* ----- Length caps (exposed for dispatch) ----- */
+#define GF64_HQC_MAX_MATRIXFORM_N ((size_t)16384)
+#define GF64_HQC_MAX_LM_N         ((size_t)131072)
+
+/* ----- Scratch size queries ----- */
+size_t gf64_addfft64_fwd_scratch_words(size_t n);              /* 4n */
+size_t gf64_addfft64_inv_scratch_words(size_t n);              /* 4n */
+size_t gf64_addfft64_poly_mul_scratch_words(size_t n);         /* 4n */
+size_t gf64_addfft64_fwd_recursive_scratch_words(size_t n);    /* 2n */
+size_t gf64_addfft64_inv_recursive_scratch_words(size_t n);    /* 2n */
+size_t gf64_addfft64_poly_mul_recursive_scratch_words(size_t n); /* 4n */
+
+/* ----- Matrix-form path (cap: GF64_HQC_MAX_MATRIXFORM_N = 16384) ----- */
+void gf64_addfft64_fwd_scratch(gf64_t *arr, size_t n,
+                               gf64_t *scratch, size_t scratch_words);
+void gf64_addfft64_inv_scratch(gf64_t *arr, size_t n,
+                               gf64_t *scratch, size_t scratch_words);
+void gf64_addfft64_poly_mul_scratch(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len,
+	gf64_t *scratch, size_t scratch_words
+);
+
+/* ----- Matrix-free recursive path (cap: GF64_HQC_MAX_LM_N = 131072) ----- */
+void gf64_addfft64_fwd_recursive_scratch(gf64_t *arr, size_t n,
+                                         gf64_t *scratch, size_t scratch_words);
+void gf64_addfft64_inv_recursive_scratch(gf64_t *arr, size_t n,
+                                         gf64_t *scratch, size_t scratch_words);
+
+/*
+ * gf64_addfft64_poly_mul_recursive_scratch — out[0..out_len) = a * b
+ * (full product, truncated). Pads inputs with zeros up to
+ * next_pow2(len_a + len_b - 1), runs fwd/inv internally. Convolution
+ * theorem holds within the _recursive family only.
+ */
+void gf64_addfft64_poly_mul_recursive_scratch(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len,
+	gf64_t *scratch, size_t scratch_words
+);
+
+/* ----- AVX-512 (PCLMULQDQ) accelerated recursive path -----
+ *
+ * Same scratch layout and cap as the scalar _recursive_scratch entries
+ * above. Use these on AVX-512F + VPCLMULQDQ hosts for 4-6× speedup at
+ * n = 4096 over the scalar butterfly (file header benchmark).
+ *
+ * Bit-exact to the scalar _recursive_scratch family — verified by
+ * test_gf64_additive_fft_hqc2026 at small n (32, 512).
+ *
+ * Host: requires AVX-512F + VPCLMULQDQ. Caller is responsible for
+ * dispatching here only when the host supports these features.
+ */
+void gf64_addfft64_fwd_recursive_scratch_avx512(gf64_t *arr, size_t n,
+                                                gf64_t *scratch, size_t scratch_words);
+void gf64_addfft64_inv_recursive_scratch_avx512(gf64_t *arr, size_t n,
+                                                gf64_t *scratch, size_t scratch_words);
+void gf64_addfft64_poly_mul_recursive_scratch_avx512(
+	gf64_t *out,
+	const gf64_t *a, size_t len_a,
+	const gf64_t *b, size_t len_b,
+	size_t out_len,
+	gf64_t *scratch, size_t scratch_words
+);
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_ADDITIVE_FFT_H */
