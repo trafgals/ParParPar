@@ -97,23 +97,33 @@ void gf64_poly_mul_padded(
  *   GF64_HQC_MAX_MATRIXFORM_N = 16384   — matrix-form path (cache-backed)
  *                                          _fwd_scratch, _inv_scratch,
  *                                          _poly_mul_scratch
- *   GF64_HQC_MAX_LM_N = 131072          — matrix-free recursive path
+ *   GF64_HQC_MAX_LM_N = 2^20 = 1048576  — matrix-free recursive path
  *                                          _fwd_recursive_scratch,
  *                                          _inv_recursive_scratch,
  *                                          _poly_mul_recursive_scratch
  *
  *   gf64_addfft64_poly_mul_recursive_scratch
  *       has the largest scratch demand (4n) — it is the recommended entry
- *       for production dispatch once the caller knows n <= 131072.
+ *       for production dispatch once the caller knows n <= 2^20.
  *
  * Bit-exact for n <= 4096 (see test/test_gf64_additive_fft_hqc2026.c);
- * recursive path additionally verified at n in {4, 8, 32, 512, 131072}
- * (the simple-2-term decomposition sizes, including the LM_N cap).
+ * recursive path additionally verified at all powers of 2 up to 2^20
+ * (the LM_N cap), including non-simple-2-term sizes (65536, 262144,
+ * etc.) that Chen 2018 Algorithm 1 (the basisCvt_recursive_v2 polyeval
+ * port) handles directly via 2-term XOR-shift division at every level.
  */
 
 /* ----- Length caps (exposed for dispatch) ----- */
 #define GF64_HQC_MAX_MATRIXFORM_N ((size_t)16384)
-#define GF64_HQC_MAX_LM_N         ((size_t)131072)
+/* Matrix-free recursive path: Chen 2018 Algorithm 1 general case. At
+ * power-of-2 n ≤ 2^20 (= 1 M), the polyeval-form `hqc_cvt` /
+ * `basisCvt_recursive_v2` does 2-term XOR-shift divisions at multiple
+ * scales within the poly block, yielding the O(n log n) recursion
+ * described in PR #49 /tmp/general_algorithm_1_research.md. Pure XOR
+ * + a single gf64_mul_reference in the butterfly → trivially host-
+ * portable (no AVX-512 gating needed, since gf64_mul_reference is
+ * ISA-agnostic). */
+#define GF64_HQC_MAX_LM_N         ((size_t)(1 << 20))
 
 /* ----- Scratch size queries ----- */
 size_t gf64_addfft64_fwd_scratch_words(size_t n);              /* 4n */

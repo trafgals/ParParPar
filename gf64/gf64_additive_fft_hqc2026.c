@@ -58,11 +58,19 @@
  *       — matrix-form path, capped at GF64_HQC_MAX_MATRIXFORM_N = 16384
  *   void gf64_addfft64_fwd_recursive_scratch / _inv_recursive_scratch /
  *   _poly_mul_recursive_scratch
- *       — matrix-free recursive path, capped at GF64_HQC_MAX_LM_N = 131072
+ *       — matrix-free recursive path, capped at GF64_HQC_MAX_LM_N = 2^20
  *
  * Length caps: see gf64_additive_fft.h for the rationale and the full
- * _scratch_words queries. Sizes in (131072, 2^20] require General
- * Algorithm 1 (FIX-3a follow-up).
+ * _scratch_words queries. The recursive path now uses Chen 2018 General
+ * Algorithm 1 (the polyeval port `basisCvt_recursive_v2`/`ibasisCvt_
+ * recursive_v2`) at every power-of-2 n ≤ 2^20 — no longer restricted to
+ * the simple-2-term-prefix sizes {4, 8, 32, 512, 131072}. Verified at
+ * the boundary sizes {131072, 262144, 1048576} in
+ * test_gf64_additive_fft_hqc2026.c [Test 4 + 5]. The decomposition is
+ * the 2-term XOR-shift divide `hqc_cvt_div_blk` (`(x^si - x)` only)
+ * applied at every level — see lines 671-718 for the recursion. Pure
+ * XOR + a single gf64_mul_reference in the butterfly → trivially host-
+ * portable (no AVX-512 gating needed for the polyeval recursion).
  */
 
 #include "gf64_additive_fft.h"

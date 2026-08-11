@@ -29,6 +29,10 @@
 #include "../gf64_global.h"
 #include "../gf64_additive_fft.h"
 
+/* ISA-agnostic field multiply used by the poly_mul_recursive schoolbook
+ * reference and by the butterfly routines. Lives in gf64_single.c. */
+extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
+
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
 /* PRNG state — splitmix64. */
@@ -203,11 +207,20 @@ static int test_boundary(void) {
      *   n = 2^(2^k + 1) for k = 0..4: {4, 8, 32, 512, 131072}
      * Test those — the largest exercises the new cap. */
 
-    /* 65536 (2^16) is NOT a simple-recursion size, so it would fall back
-     * to matrix-form via basisCvt_recursive's !k_is_pow2 branch — which
-     * uses the cache (still capped at 16384). So we only test the LM_N
-     * sizes here. */
-    size_t valid_sizes[] = {4, 8, 32, 512, 131072};
+    /* The recursive path is now lifted to GF64_HQC_MAX_LM_N = 2^20 via
+     * the Algorithm 1 polyeval port (basisCvt_recursive_v2 in
+     * gf64_additive_fft_hqc2026.c). This port works at ALL powers of 2
+     * up to 2^20 — not just the simple-2-term-prefix sizes {4, 8, 32,
+     * 512, 131072}, because `hqc_cvt` / `hqc_icvt` decompose at each
+     * level via `x^si - x` (only 2 nonzero coeffs), independent of
+     * whether log2(n) - 1 is itself a power of 2. Sizes in the test
+     * set below are chosen to:
+     *   (a) span both simple-2-term sizes (legacy support)
+     *   (b) cover non-simple powers of 2 (65536 = 2^16, 262144 = 2^18)
+     *   (c) hit the new cap (1048576 = 2^20)
+     *   (d) include the previously-attempted matrix-form fallback size
+     *       (65536) so the regression suite locks in the new path. */
+    size_t valid_sizes[] = {4, 8, 32, 512, 131072, 65536, 262144, 1048576};
     size_t n_sizes = sizeof(valid_sizes) / sizeof(valid_sizes[0]);
 
     reseed(TEST_SEED);
@@ -243,7 +256,75 @@ static int test_boundary(void) {
     return failures;
 }
 
-/* ---------- Test 6: AVX-512 PCLMULQDQ bit-exactness ----------
+/* ---------- Test 6: poly_mul_recursive at the new cap ----------
+ *
+ * Cross-check _poly_mul_recursive_scratch against schoolbook at the
+ * non-simple-2-term powers-of-2 in the lifted-cap range. (The simple
+ * path is already exercised by the existing test_2/test_3 boundary
+ * checks up to n = 4096.) We cap the schoolbook reference at la*lb
+ * ≈ 8×10^7 GF(2^64) multiplies (a few seconds on a reference host):
+ *   n = 131072 → la = lb = 256 (schoolbook = 65536 ops)
+ *   n = 262144 → la = lb = 256 (schoolbook = 65536 ops, FFT portion
+ *                          scales with n)
+ *   n = 1048576 → la = lb = 256 (schoolbook = 65536 ops, FFT portion
+ *                           scales with n)
+ * The fwd+inv- portion grows with n independently, so even with a fixed
+ * schoolbook budget we still exercise the Algorithm 1 polyeval recursion
+ * at the new 2^20 cap.
+ */
+
+static int test_poly_mul_recursive_boundary(void) {
+    int failures = 0;
+    /* non-simple-2-term powers of 2 in the lifted range */
+    size_t sizes[] = {131072, 262144, 1048576};
+    /* operands fixed at la = lb = 256 to keep schoolbook budget small. */
+    size_t la = 256, lb = 256;
+
+    for (size_t s = 0; s < sizeof(sizes)/sizeof(sizes[0]); s++) {
+        size_t n = sizes[s];
+        size_t out_len = la + lb - 1;
+        size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n);
+
+        gf64_t *a = malloc(la * sizeof(gf64_t));
+        gf64_t *b = malloc(lb * sizeof(gf64_t));
+        gf64_t *got = malloc(out_len * sizeof(gf64_t));
+        gf64_t *ref = calloc(out_len, sizeof(gf64_t));
+        gf64_t *scratch = malloc(sw * sizeof(gf64_t));
+        if (!a || !b || !got || !ref || !scratch) {
+            fprintf(stderr, "OOM at n=%zu\n", n);
+            free(a); free(b); free(got); free(ref); free(scratch);
+            failures++;
+            continue;
+        }
+
+        reseed(TEST_SEED);
+        for (size_t i = 0; i < la; i++) a[i] = splitmix64();
+        for (size_t i = 0; i < lb; i++) b[i] = splitmix64();
+
+        /* Reference: schoolbook poly_mul. la*lb GF(2^64) muls. */
+        for (size_t i = 0; i < la; i++) {
+            for (size_t j = 0; j < lb; j++) {
+                ref[i + j] ^= gf64_mul_reference(a[i], b[j]);
+            }
+        }
+
+        gf64_addfft64_poly_mul_recursive_scratch(got, a, la, b, lb,
+                                                 out_len, scratch, sw);
+
+        int ok = 1;
+        for (size_t i = 0; i < out_len; i++) {
+            if (got[i] != ref[i]) { ok = 0; break; }
+        }
+        printf("  poly_mul_recursive n=%7zu (la=%zu,lb=%zu)  %s\n",
+               n, la, lb, ok ? "OK" : "FAIL");
+        if (!ok) failures++;
+
+        free(a); free(b); free(got); free(ref); free(scratch);
+    }
+    return failures;
+}
+
+/* ---------- Test 7: AVX-512 PCLMULQDQ bit-exactness ----------
  *
  * Verifies that the _avx512 variants produce results identical to the
  * scalar _recursive_scratch entries at small n (32, 512). Larger n is
@@ -383,12 +464,14 @@ int main(void) {
     int rc3 = test_recursive_match();
     printf("\n[4] boundary tests at the new recursive cap:\n");
     int rc4 = test_boundary();
-    printf("\n[5] _scratch_words query values:\n");
-    int rc5 = test_scratch_words();
-    printf("\n[6] AVX-512 PCLMULQDQ bit-exactness:\n");
-    int rc6 = test_avx512_bit_exact();
+    printf("\n[5] poly_mul_recursive at the new cap:\n");
+    int rc5 = test_poly_mul_recursive_boundary();
+    printf("\n[6] _scratch_words query values:\n");
+    int rc6 = test_scratch_words();
+    printf("\n[7] AVX-512 PCLMULQDQ bit-exactness:\n");
+    int rc7 = test_avx512_bit_exact();
 
-    int total = rc1 + rc2 + rc3 + rc4 + rc5 + rc6;
+    int total = rc1 + rc2 + rc3 + rc4 + rc5 + rc6 + rc7;
     printf("\n");
     if (total == 0) {
         printf("ALL PASS\n");
