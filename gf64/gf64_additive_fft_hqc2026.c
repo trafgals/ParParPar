@@ -788,7 +788,17 @@ static void butterfly_inv(gf64_t *f, int n, int n_table, gf64_t a,
  */
 #define GF64_HQC_BUTTERFLY_AVX512_LANES 8
 
-__attribute__((target("avx512f,vpclmulqdq")))
+/* Per-function target attribute (GCC/Clang). On MSVC the equivalent is
+ * the /arch:AVX512 compile flag on the gf64_avx512_arr vcxproj (set in
+ * binding.gyp), which enables AVX-512F + VPCLMULQDQ for the whole TU;
+ * the static helpers then need no attribute. */
+#if defined(__GNUC__) && !defined(__clang__)
+#define GF64_HQC_TARGET_AVX512_PCLMUL __attribute__((target("avx512f,vpclmulqdq")))
+#else
+#define GF64_HQC_TARGET_AVX512_PCLMUL
+#endif
+
+GF64_HQC_TARGET_AVX512_PCLMUL
 static void butterfly_fwd_avx512(gf64_t *f, int n, int n_table, gf64_t a,
                                 const gf64_t *v_table, int logn) {
     if (n == 2) {
@@ -834,7 +844,7 @@ static void butterfly_fwd_avx512(gf64_t *f, int n, int n_table, gf64_t a,
                         v_table, logn - 1);
 }
 
-__attribute__((target("avx512f,vpclmulqdq")))
+GF64_HQC_TARGET_AVX512_PCLMUL
 static void butterfly_inv_avx512(gf64_t *f, int n, int n_table, gf64_t a,
                                 const gf64_t *v_table, int logn) {
     if (n == 2) {
