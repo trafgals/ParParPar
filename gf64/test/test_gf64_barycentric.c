@@ -352,8 +352,13 @@ static void test_duplicates_produce_zero(void) {
  *        build; future hardening would use a portable InitOnce.
  *
  *   This test verifies the dispatch preservation contract:
- *     (a) Workload-chosen dispatch (PD2 downgrade to GF64_AVX2)
+ *     (a) Workload-chosen dispatch (PD2 downgrade to GF64_SCALAR)
  *         survives a call to gf64_barycentric_weights().
+ *         (Cubic review 4916023985 P2 finding 3: the rebind target
+ *         was changed from GF64_AVX2 to GF64_SCALAR so the test is
+ *         host-portable — GF64_AVX2 would SIGILL on SSSE3-only hosts
+ *         that the library officially supports. The contract under
+ *         test is PRESERVATION, not whether the rebound method runs.)
  *     (b) Bare call (no prior init) does bring up dispatch once.
  *     (c) Calling gf64_barycentric_weights twice in a row does not
  *         re-run init_dispatch (no clobber of an externally-set
