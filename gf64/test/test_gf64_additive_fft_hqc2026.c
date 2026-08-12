@@ -435,6 +435,118 @@ static int test_avx512_bit_exact(void) {
 
 /* ---------- Test 5: _scratch_words query values ---------- */
 
+/* ---------- Test 8: gf64_hqc_supports_size cap query ----------
+ *
+ * Cubic review 4910960162 P1 demanded that any future dispatcher that
+ * routes to the recursive path MUST check `n_pad = next_pow2(la+lb-1)`
+ * against `GF64_HQC_MAX_LM_N` before calling the library, otherwise
+ * the in-library assert aborts (debug) or the size-overflow UB fires
+ * (release). The query `gf64_hqc_supports_size(n)` is the
+ * cap-aware gate — but it is untested. This test pins down the
+ * boundary so the dispatcher contract cannot silently regress.
+ *
+ * Boundary contract (mirroring gf64_additive_fft_hqc2026.c:985-990):
+ *   - n < 2                   → 0 (the FFT path requires at least 2 points)
+ *   - n > GF64_HQC_MAX_LM_N   → 0 (cap exceeded — release-mode UB)
+ *   - n & (n-1) != 0          → 0 (must be a power of 2)
+ *   - else                    → 1
+ *
+ * The cap is GF64_HQC_MAX_LM_N = 2^20. We verify:
+ *   - 1                                 → 0 (trivial reject)
+ *   - 2                                 → 1 (smallest valid)
+ *   - 4, 8, 32, 512, 131072             → 1 (legacy simple-2-term sizes)
+ *   - 65536, 262144, 1048576            → 1 (Algorithm 1 sizes lifted in
+ *                                            PR #49 / commit 0619e80)
+ *   - 2^20 (= cap)                      → 1 (exact-cap boundary)
+ *   - 2^20 + 1                          → 0 (one past cap)
+ *   - 2^21                              → 0 (the 600000-element case
+ *                                            from the cubic review)
+ *   - 3, 5, 7, 9, 100, 1000000          → 0 (non-power-of-2)
+ */
+static int test_hqc_supports_size(void) {
+    int failures = 0;
+
+    /* Reject: too small. */
+    if (gf64_hqc_supports_size(0) != 0) {
+        printf("  hqc_supports_size(0)  FAIL (expected 0)\n");
+        failures++;
+    } else {
+        printf("  hqc_supports_size(0)  OK\n");
+    }
+    if (gf64_hqc_supports_size(1) != 0) {
+        printf("  hqc_supports_size(1)  FAIL (expected 0)\n");
+        failures++;
+    } else {
+        printf("  hqc_supports_size(1)  OK\n");
+    }
+
+    /* Accept: small valid power-of-2 sizes. */
+    size_t accept[] = {2, 4, 8, 16, 32, 64, 128, 256, 512, 1024,
+                       2048, 4096, 8192, 16384, 32768, 65536,
+                       131072, 262144, 524288, 1048576};
+    for (size_t i = 0; i < sizeof(accept) / sizeof(accept[0]); i++) {
+        size_t n = accept[i];
+        if (n > GF64_HQC_MAX_LM_N) continue; /* past the cap — handled below */
+        int got = gf64_hqc_supports_size(n);
+        if (got != 1) {
+            printf("  hqc_supports_size(%zu)  FAIL (expected 1, got %d)\n", n, got);
+            failures++;
+        } else {
+            printf("  hqc_supports_size(%zu)  OK\n", n);
+        }
+    }
+
+    /* Reject: just past the cap and the 600000-element example. */
+    size_t over_cap[] = {
+        ((size_t)1 << 20) + 1,            /* 2^20 + 1 (one past) */
+        ((size_t)1 << 21),                /* 2^21 (the cubic-review case) */
+        ((size_t)1 << 21) + 1,            /* 2^21 + 1 */
+        ((size_t)2 << 20),                /* 2 * 2^20 (way past) */
+        ((size_t)1 << 25),                /* large stress case */
+        SIZE_MAX - 1                      /* near SIZE_MAX — must not crash */
+    };
+    for (size_t i = 0; i < sizeof(over_cap) / sizeof(over_cap[0]); i++) {
+        size_t n = over_cap[i];
+        int got = gf64_hqc_supports_size(n);
+        if (got != 0) {
+            printf("  hqc_supports_size(%zu)  FAIL (expected 0, got %d)\n", n, got);
+            failures++;
+        } else {
+            printf("  hqc_supports_size(%zu)  OK\n", n);
+        }
+    }
+
+    /* Reject: not a power of 2. */
+    size_t not_pow2[] = {3, 5, 6, 7, 9, 15, 17, 100, 1000, 100000,
+                         600000, 600001, ((size_t)1 << 20) - 1};
+    for (size_t i = 0; i < sizeof(not_pow2) / sizeof(not_pow2[0]); i++) {
+        size_t n = not_pow2[i];
+        if (n > GF64_HQC_MAX_LM_N) continue;
+        int got = gf64_hqc_supports_size(n);
+        if (got != 0) {
+            printf("  hqc_supports_size(%zu)  FAIL (expected 0, got %d)\n", n, got);
+            failures++;
+        } else {
+            printf("  hqc_supports_size(%zu)  OK\n", n);
+        }
+    }
+
+    /* Exact-cap boundary: 2^20 is the cap and MUST be accepted. */
+    {
+        size_t n = ((size_t)1 << 20);
+        int got = gf64_hqc_supports_size(n);
+        if (got != 1) {
+            printf("  hqc_supports_size(2^20)  FAIL (expected 1, got %d) "
+                   "— exact-cap boundary broken\n", n, got);
+            failures++;
+        } else {
+            printf("  hqc_supports_size(2^20)  OK  (exact-cap boundary)\n");
+        }
+    }
+
+    return failures;
+}
+
 static int test_scratch_words(void) {
     int failures = 0;
     size_t n;
@@ -488,8 +600,10 @@ int main(void) {
     int rc6 = test_scratch_words();
     printf("\n[7] AVX-512 PCLMULQDQ bit-exactness:\n");
     int rc7 = test_avx512_bit_exact();
+    printf("\n[8] gf64_hqc_supports_size cap query (cubic review 4910960162 P1):\n");
+    int rc8 = test_hqc_supports_size();
 
-    int total = rc1 + rc2 + rc3 + rc4 + rc5 + rc6 + rc7;
+    int total = rc1 + rc2 + rc3 + rc4 + rc5 + rc6 + rc7 + rc8;
     printf("\n");
     if (total == 0) {
         printf("ALL PASS\n");

@@ -265,7 +265,7 @@ static int try_zmm_insn(void) {
 #endif
 #endif
 
-/* ----- Public ZMM probe (cubic review 4914681432 P1, 4915459866 P1) -----
+/* ----- Public ZMM probe (cubic review 4914681432 P1, 4915459866 P1, 4915648282 P1) -----
  *
  * Cached one-shot wrapper around the static try_zmm_insn() above. The
  * probe is the runtime defence against WSL2/Hyper-V hosts which report
@@ -278,59 +278,96 @@ static int try_zmm_insn(void) {
  * gf64_apply_method) share the same probe result, paying the SIGILL
  * handler cost only once.
  *
- * Thread safety (cubic review 4915459866 P1): on POSIX, the SIGILL
- * handler is a process-wide resource — if thread A's probe is in
- * flight and thread B takes an unrelated SIGILL (e.g. an off-the-shelf
- * third-party library that overflows a buffer), thread A's handler
- * would longjmp to thread A's per-thread sigsetjmp save point. The
- * probe and its handler installation must therefore be one-time per
- * process.
+ * Thread safety (cubic review 4915459866 P1, 4915648282 P1): on POSIX,
+ * the SIGILL handler is a process-wide resource — if thread A's probe
+ * is in flight and thread B takes an unrelated SIGILL (e.g. an
+ * off-the-shelf third-party library that overflows a buffer), thread
+ * A's handler would longjmp to thread A's per-thread sigsetjmp save
+ * point. The probe and its handler installation must therefore be
+ * one-time per process.
  *
  * On Windows MSVC, try_zmm_insn is a no-op (returns 0 — no ZMM
  * hardware on 32-bit x86 or ARM), so the SIGILL-handler concern does
  * not apply; the cache write is benign either way. We still use the
  * same portable guard for consistency.
  *
- * Implementation: portable "init exactly once" using a flag protected
- * by the compiler's atomic CAS. On GCC/Clang this is __atomic_*; on
- * MSVC this is _InterlockedCompareExchange. Both are intrinsics and
- * require no external header. We deliberately do NOT use
- * pthread_once (not available on Windows) or C11 call_once (not
- * available in c99 mode that this TU compiles under). */
+ * Memory ordering (cubic review 4915648282 P1): a CAS alone does NOT
+ * publish the result of the probe body to concurrent readers. The
+ * cache write MUST use release semantics and the fast-path read MUST
+ * use acquire semantics — otherwise a thread that sees the cache
+ * populated may also read stale data written before the cache was
+ * filled. The CAS serialises entry (only one thread runs the probe),
+ * and the release-acquire pair publishes the result; together they
+ * form a "store-with-publish" pattern that is correct under both
+ * TSO (x86) and relaxed architectures.
+ *
+ * On Windows MSVC, x86 strong ordering means plain reads/writes are
+ * already acquire/release in practice; we still mark the writes
+ * with _WriteBarrier() for documentation and to prevent the
+ * compiler from reordering them past the cache-state transition.
+ *
+ * Implementation: portable "init exactly once" using a flag
+ * protected by the compiler's atomic CAS, with release/acquire
+ * load-store. On GCC/Clang: __atomic_* with explicit memory
+ * orders. On MSVC: _InterlockedCompareExchange for CAS; x86 strong
+ * ordering with explicit compiler barriers for load/store. We
+ * deliberately do NOT use pthread_once (not on Windows) or C11
+ * call_once (not in c99 mode that this TU compiles under). */
 static int zmm_probe_cached = -1;  /* -1 = not yet probed, 0 = no, 1 = yes */
 int gf64_zmm_works = 0;
 
 #if defined(_MSC_VER)
 #include <intrin.h>
+/* On MSVC, the only Windows arch in question is x86 where ordinary
+ * loads have acquire semantics and ordinary stores have release
+ * semantics in practice. We mark the boundaries with explicit
+ * compiler barriers to prevent the compiler from reordering
+ * unrelated reads/writes past the cache transition. */
+#define gf64_atomic_load_acquire(p) (_ReadWriteBarrier(), *(p))
+#define gf64_atomic_store_release(p, v) do { *(p) = (v); _ReadWriteBarrier(); } while (0)
 #define gf64_atomic_cas(ptr, expected, desired) \
 	(_InterlockedCompareExchange((volatile long*)(ptr), (long)(desired), (long)(*(expected))) == (long)(*(expected)))
 #else
+#define gf64_atomic_load_acquire(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
+#define gf64_atomic_store_release(p, v) __atomic_store_n((p), (v), __ATOMIC_RELEASE)
 #define gf64_atomic_cas(ptr, expected, desired) \
-	__atomic_compare_exchange_n((ptr), (expected), (desired), 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)
+	__atomic_compare_exchange_n((ptr), (expected), (desired), 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
 #endif
 
 /* One-shot guard for the probe body. The first thread to CAS the flag
  * from 0 to 1 runs the probe; concurrent CAS attempts fail and skip
- * the probe. The cache is then populated by exactly one thread. */
+ * the probe. The cache is then populated by exactly one thread with
+ * release semantics; concurrent readers see the result via acquire
+ * loads. */
 static volatile int zmm_probe_once = 0;
 
 int gf64_zmm_probe(void) {
-	/* Fast path: cache hit. */
-	if (zmm_probe_cached != -1) {
-		return zmm_probe_cached;
+	/* Fast path: cache hit. Acquire load synchronises with the
+	 * release store in the probing thread that published the result. */
+	int cached = gf64_atomic_load_acquire(&zmm_probe_cached);
+	if (cached != -1) {
+		return cached;
 	}
 	/* Slow path: try to be the one thread that runs the probe. */
 	int expected = 0;
 	if (gf64_atomic_cas(&zmm_probe_once, &expected, 1)) {
 		int r = try_zmm_insn();
-		zmm_probe_cached = r;
+		/* Publish the cache first (release), then the legacy
+		 * gf64_zmm_works global. The release ordering guarantees
+		 * that any thread observing zmm_probe_cached != -1 also
+		 * observes the updated gf64_zmm_works. (On x86 the order
+		 * of the two stores does not matter due to TSO, but the
+		 * release semantic is required for ARM/other weakly
+		 * ordered archs the same TU might be built for in the
+		 * future.) */
+		gf64_atomic_store_release(&zmm_probe_cached, r);
 		gf64_zmm_works = r;
 		return r;
 	}
 	/* Another thread is running the probe; spin-wait briefly for the
 	 * cache to be populated. The probe is short (single vpaddd zmm
 	 * instruction under a SIGILL handler) so the wait is bounded. */
-	while (zmm_probe_cached == -1) {
+	while (gf64_atomic_load_acquire(&zmm_probe_cached) == -1) {
 		/* Hint that we're spinning. */
 #if defined(_MSC_VER)
 		_mm_pause();
