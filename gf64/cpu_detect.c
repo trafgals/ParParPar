@@ -265,6 +265,39 @@ static int try_zmm_insn(void) {
 #endif
 #endif
 
+/* ----- Public ZMM probe (cubic review 4914681432 P1) -----
+ *
+ * Cached one-shot wrapper around the static try_zmm_insn() above. The
+ * probe is the runtime defence against WSL2/Hyper-V hosts which report
+ * AVX-512F in CPUID but SIGILL on the actual ZMM instruction. The
+ * cached result is exposed as gf64_zmm_works for code paths that
+ * require a working ZMM (e.g. gf64_barycentric_weights which calls
+ * gf64_invert_ita_batch — VPCLMULQDQ + ZMM unconditionally).
+ *
+ * The cache is process-lifetime. Multiple callers (gf64_init_dispatch,
+ * gf64_apply_method) share the same probe result, paying the SIGILL
+ * handler cost only once.
+ *
+ * NOT thread-safe across first-concurrent-calls: the cache flag is
+ * a plain int. In the rare concurrent-first-call case, two threads
+ * might both run the SIGILL probe; the result is the same either way
+ * (the probe is deterministic), so the worst outcome is two SIGILL
+ * probes (one wins, both store the same result). Subsequent calls see
+ * the cached value. The library is single-threaded for the dispatch
+ * init path, so this is acceptable. */
+static int zmm_probe_cached = -1;  /* -1 = not yet probed */
+int gf64_zmm_works = 0;
+
+int gf64_zmm_probe(void) {
+	if (zmm_probe_cached != -1) {
+		return zmm_probe_cached;
+	}
+	int r = try_zmm_insn();
+	zmm_probe_cached = r;
+	gf64_zmm_works = r;
+	return r;
+}
+
 /* ----- Detection entry point (exported, called by gf64_dispatch.c post-T1) -----
  *
  * Mirrors the body of gf64_dispatch.c's static gf64_detect_method_internal,
@@ -329,7 +362,7 @@ GF64Method gf64_detect_method_internal(void) {
 	return GF64_SCALAR;
 }
 
-/* Probe VPCLMULQDQ (cpuid 7.0 ECX bit 11). This is a host-availability flag
+/* Probe VPCLMULQDQ (cpuid 7.0 ECX bit 10). This is a host-availability flag
  * distinct from the workload-chosen gf64_current_method: PD2 can downgrade
  * the latter to GF64_AVX2 mid-workload to avoid the Zen4 downclock, but the
  * ISA capability itself is fixed. Code paths that call
@@ -340,7 +373,15 @@ GF64Method gf64_detect_method_internal(void) {
  * perform the ZMM SIGILL probe — VPCLMULQDQ without working ZMM is moot,
  * but the call sites that need VPCLMULQDQ also need working ZMM, so the
  * cost is paid elsewhere (the gf64_current_method==GF64_AVX512 path or the
- * per-function ZMM probe). */
+ * per-function ZMM probe).
+ *
+ * IMPORTANT (cubic review 4914681432 P1): callers that route to VPCLMULQDQ
+ * code paths AND the gf64_current_method dispatch state independently
+ * (e.g. gf64_barycentric_weights) must additionally require that
+ * gf64_current_method == GF64_AVX512. CPUID+XCR0 alone is NOT sufficient
+ * on WSL2/Hyper-V hosts which report VPCLMULQDQ via CPUID but SIGILL on
+ * the actual ZMM instruction. See gf64_init_dispatch() and the
+ * gf64_has_vpclmulqdq global for the runtime check pattern. */
 int gf64_has_vpclmulqdq_probe(void) {
 	unsigned int eax, ebx, ecx, edx;
 

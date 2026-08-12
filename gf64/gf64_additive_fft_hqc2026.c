@@ -971,7 +971,17 @@ size_t gf64_addfft64_poly_mul_recursive_scratch_words(size_t n) {
  *
  * EXAMPLE: two operands of length 600000 pad to next_pow2(1.2 M - 1) =
  * 2^21 = 2097152 → this query returns 0 → dispatcher should fall
- * through to Karatsuba (or another non-HQC kernel). */
+ * through to Karatsuba (or another non-HQC kernel).
+ *
+ * Wiring status (cubic review 4914681432 P3): the dispatcher wiring
+ * into par3_engine.cc / gf64_poly_mul_internal is a separate work
+ * item (tracked in PR #49 follow-up). The query is shipped as a
+ * standalone gate so the cap is exposed for both (a) future dispatch
+ * callers and (b) runtime cap assertions in callers that already
+ * have the size known. The current test suite exercises the public
+ * *_recursive_scratch entries directly with sizes <= 2^20 — the
+ * gate is therefore covered indirectly by the test of those entries
+ * (any oversized call aborts in debug; undefined in release). */
 int gf64_hqc_supports_size(size_t n) {
     if (n < 2) return 0;
     if (n > GF64_HQC_MAX_LM_N) return 0;

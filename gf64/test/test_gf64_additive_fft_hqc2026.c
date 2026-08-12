@@ -288,8 +288,9 @@ static int test_boundary(void) {
  * Operand sizing: la + lb - 1 forced to round up to the TARGET n
  * (not next_pow2(la+lb-1) which would overshoot by one bit). This is
  * the bug that the previous version of this test had — see cubic
- * review 4910960162 P1. Concretely:
- *   n = 131072 → la = lb = 65537 = (n+1)/2   → out_len = n
+ * review 4910960162 P1. Concretely (la + lb - 1 == n, asymmetric):
+ *   n = 131072 → la = n/2 + 1 = 65537, lb = n - la + 1 = 65536
+ *                → out_len = la + lb - 1 = 131072 = n
  *
  * Wall-clock budget: ~30 s on Zen4, ~100 s on WSL2 with reference
  * mul. Total test budget (Tests 1-7) stays well under 540 s. */

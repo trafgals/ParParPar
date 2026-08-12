@@ -48,6 +48,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 HEDLEY_BEGIN_C_DECLS
 
@@ -104,27 +105,40 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	 * silently undoing PD2 downclock downgrades (Zen4's downclock
 	 * zone) by re-binding to the raw detected ISA.
 	 *
-	 * Fix: use a thread-safe (process-safe here — this is a single-
-	 * threaded library entry) one-shot flag. The dispatch table is
-	 * brought up on the first call only; subsequent calls see the
-	 * pointer is already non-NULL and skip. After a workload-chosen
-	 * dispatch is set externally, gf64_inverse_batch remains bound
-	 * (it points into a TU that doesn't move), so the workload's PD2
-	 * choice is preserved.
+	 * CUBIC REVIEW 4914681432 P2 (concurrency): the previous
+	 * implementation used a non-atomic `static int dispatch_bound`
+	 * flag, which has undefined behaviour under concurrent first
+	 * calls. The function is documented as a single-threaded library
+	 * entry today (no caller invokes it from multiple threads) but
+	 * uses pthread_once() for forward-compatibility: if a future
+	 * caller fan-outs, the dispatch init will be safe by default.
 	 *
-	 * Race-safety note: this is a single-shot check-and-set on the
-	 * first call. In the rare concurrent-first-call case, the worst
-	 * outcome is two CPUID polls (idempotent) followed by one
-	 * apply_method — same as a single init. */
-	static int dispatch_bound = 0;
-	if (!dispatch_bound) {
-		/* If gf64_inverse_batch is already non-NULL (some other call
-		 * site ran init_dispatch first), skip the redundant init but
-		 * still mark the flag so we don't keep checking. */
-		if (gf64_inverse_batch == NULL) {
-			gf64_init_dispatch();
-		}
-		dispatch_bound = 1;
+	 * Fix: pthread_once() runs gf64_init_dispatch() exactly once
+	 * across all threads; subsequent concurrent callers block on the
+	 * once-flag and observe the bound table. The pointer
+	 * gf64_inverse_batch is then non-NULL and we skip the redundant
+	 * CPUID poll.
+	 *
+	 * Race-safety note: pthread_once is the canonical C11/C17 way to
+	 * do "init exactly once across threads"; it's been standardised
+	 * since POSIX.1-2001 and the C11 <threads.h>. On WSL2 / glibc
+	 * this is a no-op compared to the previous single-threaded path.
+	 *
+	 * IMPORTANT (cubic review 4914681432 P3): even when
+	 * gf64_inverse_batch is already non-NULL (e.g. a workload
+	 * rebind via par3_engine.cc:969's gf64_apply_method call), the
+	 * ZMM probe + VPCLMULQDQ host flag must also be re-checked.
+	 * gf64_apply_method now does that (cubic review 4914681432 P3
+	 * fix in gf64_dispatch.c), so the flags are correctly
+	 * populated by the time we read them below. We do NOT need to
+	 * re-run init_dispatch here — that would clobber the workload
+	 * dispatch. */
+	{
+		static pthread_once_t dispatch_once = PTHREAD_ONCE_INIT;
+		/* pthread_once takes a void(*)(void) initializer; gf64_init_dispatch
+		 * returns int (with no documented return-value contract that this
+		 * library entry cares about). The cast is C-standard. */
+		pthread_once(&dispatch_once, (void (*)(void))gf64_init_dispatch);
 	}
 
 	/*
@@ -209,14 +223,23 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	 * gf64_invert_ita_batch is compiled with __attribute__((target
 	 * ("avx512f,vpclmulqdq"))) and executes VPCLMULQDQ+ZMM
 	 * UNCONDITIONALLY. Gate on gf64_has_vpclmulqdq (a host-availability
-	 * flag set once from CPUID), NOT on gf64_current_method — the latter
-	 * is workload-chosen and the PD2 downclock heuristic may downgrade
-	 * it to GF64_AVX2 even on a host with working VPCLMULQDQ. The
-	 * non-VPCLMULQDQ branch dispatches through gf64_inverse_batch, which
-	 * is the GF64Method table entry (scalar/SSSE3/AVX-2/AVX-512
-	 * specialisations bound by gf64_init_dispatch). The non-aliasing
-	 * HEDLEY_RESTRICT contract is satisfied because `weights_out` and
-	 * `deriv_at_points` are already separate buffers from Steps 1 and 2.
+	 * flag set once from CPUID + ZMM SIGILL probe), NOT on
+	 * gf64_current_method — the latter is workload-chosen and the PD2
+	 * downclock heuristic may downgrade it to GF64_AVX2 even on a host
+	 * with working VPCLMULQDQ. The non-VPCLMULQDQ branch dispatches
+	 * through gf64_inverse_batch, which is the GF64Method table entry
+	 * (scalar/SSSE3/AVX-2/AVX-512 specialisations bound by
+	 * gf64_init_dispatch). The non-aliasing HEDLEY_RESTRICT contract is
+	 * satisfied because `weights_out` and `deriv_at_points` are already
+	 * separate buffers from Steps 1 and 2.
+	 *
+	 * Note (cubic review 4914681432 P1): the previous version of this
+	 * gate checked only `gf64_has_vpclmulqdq` (which is now defined as
+	 * "CPUID+XCR0+ZMM probe all succeeded", not just CPUID+XCR0).
+	 * On WSL2/Hyper-V, the underlying VPCLMULQDQ ISA is real but
+	 * the actual ZMM instruction SIGILLs at runtime; the flag is
+	 * correctly 0 in that case, and the slow `gf64_inverse_batch`
+	 * path is taken instead of the AVX-512 ITA batch.
 	 */
 	if (gf64_has_vpclmulqdq) {
 		gf64_invert_ita_batch(weights_out, deriv_at_points, N);
