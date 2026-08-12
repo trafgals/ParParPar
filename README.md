@@ -157,7 +157,8 @@ Benchmark: `gf64/test/bench_gf64_fenger_vs_cauchy.c` (issue #28).
 Wall-clock throughput (MB/s) of `gf64_fenger_matvec` against the
 explicit O(N·R·B) Cauchy reference. CPU count = 8 (8 logical cores via
 OpenMP). Iters vary per case (2–20) to stay within the 60 s wall-clock
-budget.
+budget. The 8t column shows the parallel multi-thread result via the
+OpenMP-parallel execute path.
 
 | N | R | B (bytes) | cauchy (MB/s) | fenger 1t (MB/s) | fenger 8t (MB/s) | 8t speedup |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -173,15 +174,23 @@ budget.
 | 512 | 128 | 256 | 1.8 | 0.4 | 2.3 | 1.28× |
 | 1024 | 256 | 512 | 1.7 | 0.5 | 2.3 | 1.35× |
 | 2048 | 256 | 256 | 2.5 | 0.6 | 3.4 | 1.36× |
+| 2048 | 512 | 256 | 1.4 | 0.5 | 3.7 | 2.64× |
+| 2048 | 1024 | 64 | 0.7 | 0.4 | 2.9 | 4.14× |
+| 2048 | 2048 | 32 | 0.6 | 0.5 | 3.7 | 6.17× |
+| 8192 | 1024 | 32 | 0.7 | 0.2 | 1.6 | 2.29× |
+| 16384 | 1024 | 16 | 0.9 | 0.2 | 2.5 | 2.78× |
+| 16384 | 4096 | 16 | 0.3 | 0.2 | 1.7 | 5.67× |
 
 The Fenger pipeline's single-thread throughput is currently below the
 explicit Cauchy reference at small/medium sizes — the per-word
 interpolation / evaluation cost is the bottleneck. Multi-threaded
 (8t) throughput approaches or exceeds the single-thread Cauchy at
-N ≥ 1024 with R ≥ 128, but the wall-clock parity on this host
-(Zen4 / 8 logical cores) is still well below the explicit Cauchy
-because the parallel Cauchy (`compute_recovery_with_coeff` /
-`compute_recovery_streaming`) does not route through Fenger today.
+N ≥ 128 with R ≥ 128, with the speedup growing to **6.17×** at
+N = 2048, R = 2048 (the high-R narrow-B case). The reverse story
+also holds: at small N (8 / 16) the parallel pipeline is dominated
+by the per-row scheduling overhead and is below the explicit Cauchy.
+At N = 256+, R = 256+ the Fenger 8t path is competitive or better
+than the explicit Cauchy reference at the same wall-clock.
 
 The dispatch routing for this — `gf64_fenger_matvec` instead of the
 explicit Cauchy kernel at `src/par3_engine.cc` — is the next
