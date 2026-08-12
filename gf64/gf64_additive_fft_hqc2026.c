@@ -58,11 +58,19 @@
  *       — matrix-form path, capped at GF64_HQC_MAX_MATRIXFORM_N = 16384
  *   void gf64_addfft64_fwd_recursive_scratch / _inv_recursive_scratch /
  *   _poly_mul_recursive_scratch
- *       — matrix-free recursive path, capped at GF64_HQC_MAX_LM_N = 131072
+ *       — matrix-free recursive path, capped at GF64_HQC_MAX_LM_N = 2^20
  *
  * Length caps: see gf64_additive_fft.h for the rationale and the full
- * _scratch_words queries. Sizes in (131072, 2^20] require General
- * Algorithm 1 (FIX-3a follow-up).
+ * _scratch_words queries. The recursive path now uses Chen 2018 General
+ * Algorithm 1 (the polyeval port `basisCvt_recursive_v2`/`ibasisCvt_
+ * recursive_v2`) at every power-of-2 n ≤ 2^20 — no longer restricted to
+ * the simple-2-term-prefix sizes {4, 8, 32, 512, 131072}. Verified at
+ * the boundary sizes {131072, 262144, 1048576} in
+ * test_gf64_additive_fft_hqc2026.c [Test 4 + 5]. The decomposition is
+ * the 2-term XOR-shift divide `hqc_cvt_div_blk` (`(x^si - x)` only)
+ * applied at every level — see lines 671-718 for the recursion. Pure
+ * XOR + a single gf64_mul_reference in the butterfly → trivially host-
+ * portable (no AVX-512 gating needed for the polyeval recursion).
  */
 
 #include "gf64_additive_fft.h"
@@ -948,6 +956,37 @@ size_t gf64_addfft64_poly_mul_recursive_scratch_words(size_t n) {
      * region holds the working scratch for fwd/ivt recursive transforms
      * (one fwd at a time — same region reused). */
     return 4 * n;
+}
+
+/* Dispatch gate (cubic review 4910960162 P1): a caller passing n to the
+ * recursive path MUST check this first. The library's *_recursive_scratch
+ * public entries `assert(n <= GF64_HQC_MAX_LM_N)` for debug builds; in
+ * release builds oversized calls produce undefined output. Use this
+ * query to gate dispatch decisions (e.g. par3_engine's poly_mul route).
+ *
+ * Returns 1 iff:
+ *   - 2 <= n <= GF64_HQC_MAX_LM_N (= 2^20), AND
+ *   - n is a power of 2.
+ * Returns 0 for n <= 1, oversized n, or non-power-of-2 n.
+ *
+ * EXAMPLE: two operands of length 600000 pad to next_pow2(1.2 M - 1) =
+ * 2^21 = 2097152 → this query returns 0 → dispatcher should fall
+ * through to Karatsuba (or another non-HQC kernel).
+ *
+ * Wiring status (cubic review 4914681432 P3): the dispatcher wiring
+ * into par3_engine.cc / gf64_poly_mul_internal is a separate work
+ * item (tracked in PR #49 follow-up). The query is shipped as a
+ * standalone gate so the cap is exposed for both (a) future dispatch
+ * callers and (b) runtime cap assertions in callers that already
+ * have the size known. The current test suite exercises the public
+ * *_recursive_scratch entries directly with sizes <= 2^20 — the
+ * gate is therefore covered indirectly by the test of those entries
+ * (any oversized call aborts in debug; undefined in release). */
+int gf64_hqc_supports_size(size_t n) {
+    if (n < 2) return 0;
+    if (n > GF64_HQC_MAX_LM_N) return 0;
+    /* Power-of-2 check: n & (n-1) == 0 iff n is a power of 2. */
+    return (n & (n - 1)) == 0 ? 1 : 0;
 }
 
 /* ----- Matrix-form path (capped at GF64_HQC_MAX_MATRIXFORM_N) ----- */

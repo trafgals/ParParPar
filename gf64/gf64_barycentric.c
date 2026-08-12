@@ -90,6 +90,60 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	const size_t N = tree->num_points;
 
 	/*
+	 * Bind the dispatch table once on first call. gf64_inverse_batch is a
+	 * function pointer; its value is NULL until gf64_init_dispatch runs.
+	 * Most call sites (e.g. ComputeRecoveryBlocksBarycentric) bind it
+	 * themselves; this ensures the library entry is self-contained for
+	 * callers that skip that step (the unit test, for example).
+	 *
+	 * CUBIC REVIEW 4910826158 P2: we previously called
+	 * gf64_init_dispatch() unconditionally here. That re-runs the
+	 * 5-poll CPUID detection AND calls gf64_apply_method(detected),
+	 * which OVERWRITES the workload-chosen dispatch state established
+	 * by callers like par3_engine.cc via gf64_method_for_workload() —
+	 * silently undoing PD2 downclock downgrades (Zen4's downclock
+	 * zone) by re-binding to the raw detected ISA.
+	 *
+	 * CUBIC REVIEW 4914681432 P3 / 4915459866 P1: the original
+	 * implementation used a non-atomic `static int dispatch_bound`
+	 * flag, which has undefined behaviour under concurrent first
+	 * calls. The function is documented as a single-threaded library
+	 * entry today (no caller invokes it from multiple threads) but
+	 * the flag check is augmented with a `gf64_inverse_batch == NULL`
+	 * guard so that workload rebinds (par3_engine.cc:969's
+	 * gf64_apply_method call) are preserved — the dispatch table
+	 * is brought up on the first call only if NO dispatch is yet
+	 * bound. After a workload-chosen dispatch is set externally,
+	 * gf64_inverse_batch is non-NULL and we skip the redundant init,
+	 * preserving the workload's PD2 choice. Concurrent first-calls
+	 * from multiple threads is still UB in this implementation; a
+	 * future hardening could use InitOnceExecuteOnce (Windows) /
+	 * pthread_once (POSIX) via a small portable helper.
+	 *
+	 * IMPORTANT (cubic review 4914681432 P3): even when
+	 * gf64_inverse_batch is already non-NULL (e.g. a workload
+	 * rebind via par3_engine.cc:969's gf64_apply_method call), the
+	 * ZMM probe + VPCLMULQDQ host flag must also be re-checked.
+	 * gf64_apply_method now does that (cubic review 4914681432 P3
+	 * fix in gf64_dispatch.c), so the flags are correctly
+	 * populated by the time we read them below. We do NOT need to
+	 * re-run init_dispatch here — that would clobber the workload
+	 * dispatch. */
+	static int dispatch_bound = 0;
+	if (!dispatch_bound) {
+		/* If gf64_inverse_batch is already non-NULL (some other call
+		 * site ran init_dispatch first, or a workload-rebind via
+		 * gf64_apply_method set the dispatch), skip the redundant
+		 * init but still mark the flag so we don't keep checking.
+		 * Without this guard, a workload-rebind's AVX-2 PD2 choice
+		 * would be silently clobbered back to the raw detected ISA. */
+		if (gf64_inverse_batch == NULL) {
+			gf64_init_dispatch();
+		}
+		dispatch_bound = 1;
+	}
+
+	/*
 	 * Step 1: Formal derivative of the root polynomial.
 	 *
 	 * The root polynomial at level_data[0] has degree N, so it occupies
@@ -162,23 +216,37 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	 *
 	 * weights_out[j] = 1 / deriv_at_points[j].
 	 * For inputs equal to 0 (which arise when some x_j is duplicated, so
-	 * that point is a repeated root of P), the invert_ita_batch entry
-	 * point returns 0 by convention. The barycentric weight is therefore
-	 * 0 for that j — matching the "duplicate input -> zero weight"
-	 * edge case in the plan.
+	 * that point is a repeated root of P), gf64_invert_ita_batch returns
+	 * 0 by convention. gf64_inverse_batch_scalar has matching behaviour
+	 * (it uses gf64_inverse, which returns 0 for input 0). The
+	 * barycentric weight is therefore 0 for that j — matching the
+	 * "duplicate input -> zero weight" edge case in the plan.
 	 *
 	 * gf64_invert_ita_batch is compiled with __attribute__((target
-	 * ("avx512f,vpclmulqdq"))) and executes ZMM instructions
-	 * UNCONDITIONALLY — calling it on an AVX2-only host SIGILLs. Gate it
-	 * on the runtime dispatch (set by gf64_init_dispatch / gf64_apply_method)
-	 * and fall back to the scalar one-at-a-time inverter otherwise.
+	 * ("avx512f,vpclmulqdq"))) and executes VPCLMULQDQ+ZMM
+	 * UNCONDITIONALLY. Gate on gf64_has_vpclmulqdq (a host-availability
+	 * flag set once from CPUID + ZMM SIGILL probe), NOT on
+	 * gf64_current_method — the latter is workload-chosen and the PD2
+	 * downclock heuristic may downgrade it to GF64_AVX2 even on a host
+	 * with working VPCLMULQDQ. The non-VPCLMULQDQ branch dispatches
+	 * through gf64_inverse_batch, which is the GF64Method table entry
+	 * (scalar/SSSE3/AVX-2/AVX-512 specialisations bound by
+	 * gf64_init_dispatch). The non-aliasing HEDLEY_RESTRICT contract is
+	 * satisfied because `weights_out` and `deriv_at_points` are already
+	 * separate buffers from Steps 1 and 2.
+	 *
+	 * Note (cubic review 4914681432 P1): the previous version of this
+	 * gate checked only `gf64_has_vpclmulqdq` (which is now defined as
+	 * "CPUID+XCR0+ZMM probe all succeeded", not just CPUID+XCR0).
+	 * On WSL2/Hyper-V, the underlying VPCLMULQDQ ISA is real but
+	 * the actual ZMM instruction SIGILLs at runtime; the flag is
+	 * correctly 0 in that case, and the slow `gf64_inverse_batch`
+	 * path is taken instead of the AVX-512 ITA batch.
 	 */
-	if (gf64_current_method == GF64_AVX512) {
+	if (gf64_has_vpclmulqdq) {
 		gf64_invert_ita_batch(weights_out, deriv_at_points, N);
 	} else {
-		for (size_t j = 0; j < N; j++) {
-			weights_out[j] = gf64_invert_ita_one(deriv_at_points[j]);
-		}
+		gf64_inverse_batch(weights_out, deriv_at_points, N);
 	}
 
 	free(deriv_at_points);

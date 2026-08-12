@@ -265,6 +265,130 @@ static int try_zmm_insn(void) {
 #endif
 #endif
 
+/* ----- Public ZMM probe (cubic review 4914681432 P1, 4915459866 P1, 4915648282 P1) -----
+ *
+ * Cached one-shot wrapper around the static try_zmm_insn() above. The
+ * probe is the runtime defence against WSL2/Hyper-V hosts which report
+ * AVX-512F in CPUID but SIGILL on the actual ZMM instruction. The
+ * cached result is exposed as gf64_zmm_works for code paths that
+ * require a working ZMM (e.g. gf64_barycentric_weights which calls
+ * gf64_invert_ita_batch — VPCLMULQDQ + ZMM unconditionally).
+ *
+ * The cache is process-lifetime. Multiple callers (gf64_init_dispatch,
+ * gf64_apply_method) share the same probe result, paying the SIGILL
+ * handler cost only once.
+ *
+ * Thread safety (cubic review 4915459866 P1, 4915648282 P1): on POSIX,
+ * the SIGILL handler is a process-wide resource — if thread A's probe
+ * is in flight and thread B takes an unrelated SIGILL (e.g. an
+ * off-the-shelf third-party library that overflows a buffer), thread
+ * A's handler would longjmp to thread A's per-thread sigsetjmp save
+ * point. The probe and its handler installation must therefore be
+ * one-time per process.
+ *
+ * On Windows MSVC, try_zmm_insn is a no-op (returns 0 — no ZMM
+ * hardware on 32-bit x86 or ARM), so the SIGILL-handler concern does
+ * not apply; the cache write is benign either way. We still use the
+ * same portable guard for consistency.
+ *
+ * Memory ordering (cubic review 4915648282 P1): a CAS alone does NOT
+ * publish the result of the probe body to concurrent readers. The
+ * cache write MUST use release semantics and the fast-path read MUST
+ * use acquire semantics — otherwise a thread that sees the cache
+ * populated may also read stale data written before the cache was
+ * filled. The CAS serialises entry (only one thread runs the probe),
+ * and the release-acquire pair publishes the result; together they
+ * form a "store-with-publish" pattern that is correct under both
+ * TSO (x86) and relaxed architectures.
+ *
+ * On Windows MSVC, x86 strong ordering means plain reads/writes are
+ * already acquire/release in practice; we still mark the writes
+ * with _WriteBarrier() for documentation and to prevent the
+ * compiler from reordering them past the cache-state transition.
+ *
+ * Implementation: portable "init exactly once" using a flag
+ * protected by the compiler's atomic CAS, with release/acquire
+ * load-store. On GCC/Clang: __atomic_* with explicit memory
+ * orders. On MSVC: _InterlockedCompareExchange for CAS; x86 strong
+ * ordering with explicit compiler barriers for load/store. We
+ * deliberately do NOT use pthread_once (not on Windows) or C11
+ * call_once (not in c99 mode that this TU compiles under). */
+static int zmm_probe_cached = -1;  /* -1 = not yet probed, 0 = no, 1 = yes */
+int gf64_zmm_works = 0;
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+/* On MSVC, the only Windows arch in question is x86 where ordinary
+ * loads have acquire semantics and ordinary stores have release
+ * semantics in practice. We mark the boundaries with explicit
+ * compiler barriers to prevent the compiler from reordering
+ * unrelated reads/writes past the cache transition. */
+#define gf64_atomic_load_acquire(p) (_ReadWriteBarrier(), *(p))
+#define gf64_atomic_store_release(p, v) do { *(p) = (v); _ReadWriteBarrier(); } while (0)
+#define gf64_atomic_cas(ptr, expected, desired) \
+	(_InterlockedCompareExchange((volatile long*)(ptr), (long)(desired), (long)(*(expected))) == (long)(*(expected)))
+#else
+#define gf64_atomic_load_acquire(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
+#define gf64_atomic_store_release(p, v) __atomic_store_n((p), (v), __ATOMIC_RELEASE)
+#define gf64_atomic_cas(ptr, expected, desired) \
+	__atomic_compare_exchange_n((ptr), (expected), (desired), 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
+#endif
+
+/* One-shot guard for the probe body. The first thread to CAS the flag
+ * from 0 to 1 runs the probe; concurrent CAS attempts fail and skip
+ * the probe. The cache is then populated by exactly one thread with
+ * release semantics; concurrent readers see the result via acquire
+ * loads. */
+static volatile int zmm_probe_once = 0;
+
+int gf64_zmm_probe(void) {
+	/* Fast path: cache hit. Acquire load synchronises with the
+	 * release store in the probing thread that published the result. */
+	int cached = gf64_atomic_load_acquire(&zmm_probe_cached);
+	if (cached != -1) {
+		return cached;
+	}
+	/* Slow path: try to be the one thread that runs the probe. */
+	int expected = 0;
+	if (gf64_atomic_cas(&zmm_probe_once, &expected, 1)) {
+		int r = try_zmm_insn();
+		/* Publish the legacy gf64_zmm_works global FIRST, then the
+		 * release store on the cache. The release-store barrier
+		 * flushes the earlier gf64_zmm_works write to memory so any
+		 * thread that subsequently acquire-loads the cache and sees
+		 * cached != -1 ALSO observes the updated gf64_zmm_works.
+		 *
+		 * (Cubic review 4916023985 P2 finding 4: the previous order
+		 * published the cache first then the legacy global. A
+		 * concurrent dispatcher reading gf64_zmm_works directly
+		 * could see the stale 0 even after a successful probe —
+		 * because there was no synchronisation between the cache
+		 * release-store and the gf64_zmm_works plain write. With
+		 * the cache release-store as the LAST action, the
+		 * happens-before relation is now:
+		 *   probe-thread: write(works) ; release-store(cached)
+		 *   reader:       acquire-load(cached) ; read(works)
+		 * On x86 the order does not matter (TSO), but on weakly
+		 * ordered architectures the reversed order is required.)
+		 */
+		gf64_zmm_works = r;
+		gf64_atomic_store_release(&zmm_probe_cached, r);
+		return r;
+	}
+	/* Another thread is running the probe; spin-wait briefly for the
+	 * cache to be populated. The probe is short (single vpaddd zmm
+	 * instruction under a SIGILL handler) so the wait is bounded. */
+	while (gf64_atomic_load_acquire(&zmm_probe_cached) == -1) {
+		/* Hint that we're spinning. */
+#if defined(_MSC_VER)
+		_mm_pause();
+#else
+		__builtin_ia32_pause();
+#endif
+	}
+	return zmm_probe_cached;
+}
+
 /* ----- Detection entry point (exported, called by gf64_dispatch.c post-T1) -----
  *
  * Mirrors the body of gf64_dispatch.c's static gf64_detect_method_internal,
@@ -279,7 +403,7 @@ static int try_zmm_insn(void) {
  */
 GF64Method gf64_detect_method_internal(void) {
 	unsigned int eax, ebx, ecx, edx;
-	
+
 	/* Check AVX-512F (cpuid 7.0 EBX bit 16) + VPOPCNTDQ (cpuid 7.0 ECX bit 14) */
 	gf64_cpuid(7, 0, &eax, &ebx, &ecx, &edx);
 	if ((ebx & (1 << 16)) && (ecx & (1 << 14))) {
@@ -293,24 +417,119 @@ GF64Method gf64_detect_method_internal(void) {
 				 * probe ZMM execution to defeat any hypervisor that masks
 				 * CPUID only partially or fakes XCR0 without honouring
 				 * lazy XSAVE state loading. If SIGILL fires, fall through. */
-				if (try_zmm_insn()) {
-					return GF64_AVX512;
+				if (gf64_zmm_probe()) {
+					/* (cubic review 4915459866 P2): route through the
+					 * cached probe wrapper instead of try_zmm_insn()
+					 * directly. Detection is called 5+ times via
+					 * gf64_detect_method's poll aggregate; routing the
+					 * SIGILL probe through the cache makes it run
+					 * exactly once per process. The Layer 2 (VPCLMULQDQ
+					 * gate) and other behaviour are unchanged. */
+					/* Layer 2 (cubic review 4910826158, P1+x): the
+					 * AVX-512 codepath is gated on VPCLMULQDQ support,
+					 * even for routines that don't use PCLMULQDQ directly.
+					 * Reason: gf64_region_muladd_arr[_avx512] is __attribute__
+					 * __target__("avx512f,vpclmulqdq") and SIGILLs on
+					 * AVX-512-only-no-VPCLMULQDQ hosts (e.g. AVX-512 VNNI
+					 * without the carryless-multiply quadword extension).
+					 * Without this downgrade, dispatching AVX-512 here
+					 * selects the VPCLMULQDQ codepath for the region
+					 * muladd which then SIGILLs at runtime in
+					 * gf64_inverse_batch / gf64_invert_ita_batch / the
+					 * polynomial-mul butterfly. Force a downgrade to AVX-2
+					 * if VPCLMULQDQ is absent. */
+					if (gf64_has_vpclmulqdq_probe()) {
+						return GF64_AVX512;
+					}
+					/* Fall through to AVX-2 detection below. */
 				}
 			}
 		}
 	}
-	
+
 	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
 	if ((ecx & (1 << 28)) && (ecx & (1 << 12)) && (ecx & (1 << 27))) {
 		return GF64_AVX2;
 	}
-	
+
 	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
 	if ((ecx & (1 << 0)) && (ecx & (1 << 1))) {
 		return GF64_SSSE3;
 	}
-	
+
 	return GF64_SCALAR;
+}
+
+/* Probe VPCLMULQDQ (cpuid 7.0 ECX bit 10). This is a host-availability flag
+ * distinct from the workload-chosen gf64_current_method: PD2 can downgrade
+ * the latter to GF64_AVX2 mid-workload to avoid the Zen4 downclock, but the
+ * ISA capability itself is fixed. Code paths that call
+ * __attribute__((target("avx512f,vpclmulqdq"))) functions MUST gate on the
+ * return value of this probe, NOT on gf64_current_method.
+ *
+ * Returns 1 if CPUID+XCR0 report VPCLMULQDQ available, 0 otherwise. Does NOT
+ * perform the ZMM SIGILL probe — VPCLMULQDQ without working ZMM is moot,
+ * but the call sites that need VPCLMULQDQ also need working ZMM, so the
+ * cost is paid elsewhere (the gf64_current_method==GF64_AVX512 path or the
+ * per-function ZMM probe).
+ *
+ * IMPORTANT (cubic review 4914681432 P1): callers that route to VPCLMULQDQ
+ * code paths AND the gf64_current_method dispatch state independently
+ * (e.g. gf64_barycentric_weights) must additionally require that
+ * gf64_current_method == GF64_AVX512. CPUID+XCR0 alone is NOT sufficient
+ * on WSL2/Hyper-V hosts which report VPCLMULQDQ via CPUID but SIGILL on
+ * the actual ZMM instruction. See gf64_init_dispatch() and the
+ * gf64_has_vpclmulqdq global for the runtime check pattern. */
+int gf64_has_vpclmulqdq_probe(void) {
+	unsigned int eax, ebx, ecx, edx;
+
+	/* VPCLMULQDQ = cpuid leaf 7, sub-leaf 0, ECX bit 10.
+	 *
+	 * NOT bit 11 — that is AVX512_VNNI (VPDPBUSD etc.). The drift from
+	 * 10 to 11 was a copy-paste bug present since the probe was first
+	 * introduced; the consequence is that hosts with VPCLMULQDQ +
+	 * AVX512_F but WITHOUT AVX512_VNNI (rare today but legal per Intel SDM)
+	 * would take the fallback path and miss the PCLMULQDQ acceleration,
+	 * while hosts with AVX512_VNNI but no actual VPCLMULQDQ
+	 * implementation would falsely enter the VPCLMULQDQ codepath and
+	 * SIGILL on the first AVX-512 PCLMULQDQ instruction.
+	 *
+	 * Cross-checked against:
+	 *   - Linux kernel X86_FEATURE_VPCLMULQDQ = 16*32+10 (bit 10, leaf 7.0
+	 *     ECX). See arch/x86/include/asm/cpufeatures.h.
+	 *   - Intel SDM Vol. 2, CPUID instruction table for leaf 7 sub-leaf 0.
+	 *   - Intel Intrinsics Guide entry for `_mm512_clmulepi64_epi128`,
+	 *     which documents the same bit.
+	 *
+	 * Other ECX bits in this sub-leaf for disambiguation:
+	 *   - bit 9  = SSBD (Speculative Store Bypass Disable)
+	 *   - bit 10 = AVX512_VL? NO — bit 10 is VPCLMULQDQ (this probe).
+	 *   - bit 11 = AVX512_VNNI
+	 *   - bit 12 = AVX512_BITALG
+	 *   - bit 14 = AVX512_VPOPCNTDQ
+	 */
+	gf64_cpuid(7, 0, &eax, &ebx, &ecx, &edx);
+	if (!(ecx & (1 << 10))) return 0;
+
+	/* XCR0 mask 0xE6 = bits 1, 2, 5, 6, 7:
+	 *   bit 1 = SSE state (XMM)
+	 *   bit 2 = AVX state (YMM)
+	 *   bit 5 = AVX-512 opmask (k0..k7)
+	 *   bit 6 = AVX-512 ZMM_HI256 (high 256 of each ZMM register)
+	 *   bit 7 = AVX-512 Hi16_ZMM (ZMM16..ZMM31)
+	 *
+	 * Without bits 6 and 7 set, OS_XSAVE is reported but ZMM
+	 * instructions SIGILL even when CPUID advertises VPCLMULQDQ.
+	 * (The legacy mask 0x27 = bits 0,1,2,5 used elsewhere in this file
+	 * is sufficient for AVX-512F detection but not enough to actually
+	 * run ZMM — see XSAVE state-component requirements in the SDM.) */
+	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
+	if (!(ecx & (1 << 27))) return 0;  /* OSXSAVE */
+	{
+		uint64_t xcr0 = gf64_xgetbv(0);
+		if ((xcr0 & 0xE6ULL) != 0xE6ULL) return 0;
+	}
+	return 1;
 }
 
 HEDLEY_END_C_DECLS

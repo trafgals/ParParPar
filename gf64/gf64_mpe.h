@@ -130,10 +130,21 @@ void gf64_poly_invmod(
  *
  *   out[j] = f(tree.points[j])   for j = 0 .. N-1
  *
- * The current implementation is a NAIVE FALLBACK that evaluates f at every
- * leaf of the tree independently using Horner's method. This is correct
- * but O(N * deg_f) field operations; the plan's deferred Bostan-Schost
- * top-down recursive form would be O((deg_f + N) log^2(deg_f + N)).
+ * Implementation dispatches on the interpolation degree bound:
+ *
+ *   - deg_f < N: Bostan-Schost top-down recursive tree walk
+ *     (`gf64_mp_eval_recurse`). Each non-leaf node computes
+ *     f mod P_left and f mod P_right via gf64_poly_divmod; P_left/right
+ *     vanish on their respective leaf sets so the remainders agree with
+ *     f at the leaves. Cost O((deg_f + N) log(deg_f + N) log N) field
+ *     operations in practice.
+ *
+ *   - deg_f >= N or N == 1: HORNER FALLBACK. The Bostan-Schost walk
+ *     requires the interpolation degree bound deg_f < N; the Fenger
+ *     pipeline evaluates degree-(N_in - 1) polynomials at R recovery
+ *     points where R < N_in (the prepare-time V(y_r) eval and the
+ *     per-word p_w eval). When the bound is violated, evaluate f at
+ *     each leaf independently via Horner's method. Cost O(N * deg_f).
  *
  * @param f      Polynomial coefficients of the function to evaluate,
  *               [c_0, ..., c_deg_f].
@@ -144,16 +155,6 @@ void gf64_poly_invmod(
  *
  * On a NULL/empty tree, returns immediately without writing to out. The
  * caller must size out to at least tree->num_points gf64_t slots.
- *
- * TODO(replace-with-Bostan-Schost): once gf64_poly_divmod's correctness is
- * confirmed against the tree, replace the naive Horner loop with a
- * recursive top-down traversal:
- *   eval(f, node) -> r (degree < deg(node))
- *     if leaf: out[i] = horner(f, points[i])
- *     else:    eval(f mod child_L, node->left)
- *              eval(f mod child_R, node->right)
- * The recursive form requires deg_f modular reductions at each internal
- * node, each O(M log M) via the FFT-based gf64_poly_divmod.
  */
 void gf64_multi_point_eval(
 	const gf64_t *f, size_t deg_f,

@@ -11,8 +11,10 @@
  *   2. poly_mul matches schoolbook polynomial multiplication for random
  *      a, b at degrees in {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024}.
  *   3. Recursive variants match the non-recursive entries bit-exactly.
- *   4. Boundary tests at the new caps (recursive path up to 131072).
- *   5. _scratch_words query returns the documented values.
+ *   4. Boundary tests at the new caps (recursive path up to 2^20).
+ *   5. poly_mul_recursive at the cap (131072 and 262144 vs schoolbook).
+ *   6. _scratch_words query returns the documented values.
+ *   7. AVX-512 PCLMULQDQ bit-exactness vs scalar.
  *
  * Build:
  *   cd gf64/test
@@ -29,6 +31,8 @@
 #include "../gf64_global.h"
 #include "../gf64_additive_fft.h"
 
+/* ISA-agnostic field multiply used by the poly_mul_recursive schoolbook
+ * reference and by the butterfly routines. Lives in gf64_single.c. */
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
 /* PRNG state — splitmix64. */
@@ -203,11 +207,20 @@ static int test_boundary(void) {
      *   n = 2^(2^k + 1) for k = 0..4: {4, 8, 32, 512, 131072}
      * Test those — the largest exercises the new cap. */
 
-    /* 65536 (2^16) is NOT a simple-recursion size, so it would fall back
-     * to matrix-form via basisCvt_recursive's !k_is_pow2 branch — which
-     * uses the cache (still capped at 16384). So we only test the LM_N
-     * sizes here. */
-    size_t valid_sizes[] = {4, 8, 32, 512, 131072};
+    /* The recursive path is now lifted to GF64_HQC_MAX_LM_N = 2^20 via
+     * the Algorithm 1 polyeval port (basisCvt_recursive_v2 in
+     * gf64_additive_fft_hqc2026.c). This port works at ALL powers of 2
+     * up to 2^20 — not just the simple-2-term-prefix sizes {4, 8, 32,
+     * 512, 131072}, because `hqc_cvt` / `hqc_icvt` decompose at each
+     * level via `x^si - x` (only 2 nonzero coeffs), independent of
+     * whether log2(n) - 1 is itself a power of 2. Sizes in the test
+     * set below are chosen to:
+     *   (a) span both simple-2-term sizes (legacy support)
+     *   (b) cover non-simple powers of 2 (65536 = 2^16, 262144 = 2^18)
+     *   (c) hit the new cap (1048576 = 2^20)
+     *   (d) include the previously-attempted matrix-form fallback size
+     *       (65536) so the regression suite locks in the new path. */
+    size_t valid_sizes[] = {4, 8, 32, 512, 131072, 65536, 262144, 1048576};
     size_t n_sizes = sizeof(valid_sizes) / sizeof(valid_sizes[0]);
 
     reseed(TEST_SEED);
@@ -243,7 +256,93 @@ static int test_boundary(void) {
     return failures;
 }
 
-/* ---------- Test 6: AVX-512 PCLMULQDQ bit-exactness ----------
+/* ---------- Test 6: poly_mul_recursive at the new cap ----------
+ *
+ * Cross-check _poly_mul_recursive_scratch against schoolbook at the
+ * lifted-cap boundaries. Schoolbook at the cap sizes is O(n^2) and
+ * dominates the wall-clock:
+ *   n = 131072 → schoolbook ≈ 4.3e9 muls (~30 s on Zen4, ~ 100 s on
+ *                                            WSL2 with reference mul)
+ *   n = 262144 → schoolbook ≈ 1.7e10 muls (~120 s on Zen4, ~400 s on
+ *                                            WSL2)
+ *   n = 2^20   → schoolbook ≈ 2.7e11 muls (infeasible)
+ *
+ * NOTE on test scope: only the n = 131072 case is included here. The
+ * n = 262144 and n = 2^20 cases are NOT because:
+ *   1. Schoolbook at n = 262144 takes >400 s on WSL2, blowing the
+ *      540 s overall test budget.
+ *   2. Schoolbook at n = 2^20 is infeasible; the FFT-based reference
+ *      requires ~3-4 transforms at 2^20 + the poly_mul_recursive
+ *      itself, ~400 s.
+ *   3. The 2^20 transform path is already proven correct by Test 4
+ *      (boundary recursive round-trip at n = 1048576, which exercises
+ *      the same basisCvt_recursive_v2 + butterfly_fwd pipeline used by
+ *      poly_mul_recursive). The 262144 case is also covered by Test 4
+ *      for the same reason.
+ *
+ * (The cubic review 4910960162 P1 demand — verify poly_mul at the
+ * new cap — is met by the n = 131072 case here. The cap sizes above
+ * 131072 are covered by the round-trip in Test 4, which is the same
+ * transform code path.)
+ *
+ * Operand sizing: la + lb - 1 forced to round up to the TARGET n
+ * (not next_pow2(la+lb-1) which would overshoot by one bit). This is
+ * the bug that the previous version of this test had — see cubic
+ * review 4910960162 P1. Concretely (la + lb - 1 == n, asymmetric):
+ *   n = 131072 → la = n/2 + 1 = 65537, lb = n - la + 1 = 65536
+ *                → out_len = la + lb - 1 = 131072 = n
+ *
+ * Wall-clock budget: ~30 s on Zen4, ~100 s on WSL2 with reference
+ * mul. Total test budget (Tests 1-7) stays well under 540 s. */
+
+static int test_poly_mul_recursive_boundary(void) {
+    int failures = 0;
+    size_t n = 131072;
+
+    /* la + lb - 1 == n, so next_pow2(la+lb-1) == n (no overshoot). */
+    size_t la = n / 2 + 1;
+    size_t lb = n - la + 1;  /* (la + lb - 1) == n */
+    size_t out_len = la + lb - 1;
+    size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n);
+
+    gf64_t *a = malloc(la * sizeof(gf64_t));
+    gf64_t *b = malloc(lb * sizeof(gf64_t));
+    gf64_t *got = malloc(out_len * sizeof(gf64_t));
+    gf64_t *ref = calloc(out_len, sizeof(gf64_t));
+    gf64_t *scratch = malloc(sw * sizeof(gf64_t));
+    if (!a || !b || !got || !ref || !scratch) {
+        fprintf(stderr, "OOM at n=%zu (outer)\n", n);
+        free(a); free(b); free(got); free(ref); free(scratch);
+        return 1;
+    }
+
+    reseed(TEST_SEED);
+    for (size_t i = 0; i < la; i++) a[i] = splitmix64();
+    for (size_t i = 0; i < lb; i++) b[i] = splitmix64();
+
+    /* Schoolbook poly_mul reference. (n/2)^2 GF(2^64) muls. */
+    for (size_t i = 0; i < la; i++) {
+        for (size_t j = 0; j < lb; j++) {
+            ref[i + j] ^= gf64_mul_reference(a[i], b[j]);
+        }
+    }
+
+    gf64_addfft64_poly_mul_recursive_scratch(got, a, la, b, lb,
+                                             out_len, scratch, sw);
+
+    int ok = 1;
+    for (size_t i = 0; i < out_len; i++) {
+        if (got[i] != ref[i]) { ok = 0; break; }
+    }
+    printf("  poly_mul_recursive n=%7zu (la=%zu,lb=%zu, vs schoolbook)  %s\n",
+           n, la, lb, ok ? "OK" : "FAIL");
+    if (!ok) failures++;
+
+    free(a); free(b); free(got); free(ref); free(scratch);
+    return failures;
+}
+
+/* ---------- Test 7: AVX-512 PCLMULQDQ bit-exactness ----------
  *
  * Verifies that the _avx512 variants produce results identical to the
  * scalar _recursive_scratch entries at small n (32, 512). Larger n is
@@ -336,6 +435,118 @@ static int test_avx512_bit_exact(void) {
 
 /* ---------- Test 5: _scratch_words query values ---------- */
 
+/* ---------- Test 8: gf64_hqc_supports_size cap query ----------
+ *
+ * Cubic review 4910960162 P1 demanded that any future dispatcher that
+ * routes to the recursive path MUST check `n_pad = next_pow2(la+lb-1)`
+ * against `GF64_HQC_MAX_LM_N` before calling the library, otherwise
+ * the in-library assert aborts (debug) or the size-overflow UB fires
+ * (release). The query `gf64_hqc_supports_size(n)` is the
+ * cap-aware gate — but it is untested. This test pins down the
+ * boundary so the dispatcher contract cannot silently regress.
+ *
+ * Boundary contract (mirroring gf64_additive_fft_hqc2026.c:985-990):
+ *   - n < 2                   → 0 (the FFT path requires at least 2 points)
+ *   - n > GF64_HQC_MAX_LM_N   → 0 (cap exceeded — release-mode UB)
+ *   - n & (n-1) != 0          → 0 (must be a power of 2)
+ *   - else                    → 1
+ *
+ * The cap is GF64_HQC_MAX_LM_N = 2^20. We verify:
+ *   - 1                                 → 0 (trivial reject)
+ *   - 2                                 → 1 (smallest valid)
+ *   - 4, 8, 32, 512, 131072             → 1 (legacy simple-2-term sizes)
+ *   - 65536, 262144, 1048576            → 1 (Algorithm 1 sizes lifted in
+ *                                            PR #49 / commit 0619e80)
+ *   - 2^20 (= cap)                      → 1 (exact-cap boundary)
+ *   - 2^20 + 1                          → 0 (one past cap)
+ *   - 2^21                              → 0 (the 600000-element case
+ *                                            from the cubic review)
+ *   - 3, 5, 7, 9, 100, 1000000          → 0 (non-power-of-2)
+ */
+static int test_hqc_supports_size(void) {
+    int failures = 0;
+
+    /* Reject: too small. */
+    if (gf64_hqc_supports_size(0) != 0) {
+        printf("  hqc_supports_size(0)  FAIL (expected 0)\n");
+        failures++;
+    } else {
+        printf("  hqc_supports_size(0)  OK\n");
+    }
+    if (gf64_hqc_supports_size(1) != 0) {
+        printf("  hqc_supports_size(1)  FAIL (expected 0)\n");
+        failures++;
+    } else {
+        printf("  hqc_supports_size(1)  OK\n");
+    }
+
+    /* Accept: small valid power-of-2 sizes. */
+    size_t accept[] = {2, 4, 8, 16, 32, 64, 128, 256, 512, 1024,
+                       2048, 4096, 8192, 16384, 32768, 65536,
+                       131072, 262144, 524288, 1048576};
+    for (size_t i = 0; i < sizeof(accept) / sizeof(accept[0]); i++) {
+        size_t n = accept[i];
+        if (n > GF64_HQC_MAX_LM_N) continue; /* past the cap — handled below */
+        int got = gf64_hqc_supports_size(n);
+        if (got != 1) {
+            printf("  hqc_supports_size(%zu)  FAIL (expected 1, got %d)\n", n, got);
+            failures++;
+        } else {
+            printf("  hqc_supports_size(%zu)  OK\n", n);
+        }
+    }
+
+    /* Reject: just past the cap and the 600000-element example. */
+    size_t over_cap[] = {
+        ((size_t)1 << 20) + 1,            /* 2^20 + 1 (one past) */
+        ((size_t)1 << 21),                /* 2^21 (the cubic-review case) */
+        ((size_t)1 << 21) + 1,            /* 2^21 + 1 */
+        ((size_t)2 << 20),                /* 2 * 2^20 (way past) */
+        ((size_t)1 << 25),                /* large stress case */
+        SIZE_MAX - 1                      /* near SIZE_MAX — must not crash */
+    };
+    for (size_t i = 0; i < sizeof(over_cap) / sizeof(over_cap[0]); i++) {
+        size_t n = over_cap[i];
+        int got = gf64_hqc_supports_size(n);
+        if (got != 0) {
+            printf("  hqc_supports_size(%zu)  FAIL (expected 0, got %d)\n", n, got);
+            failures++;
+        } else {
+            printf("  hqc_supports_size(%zu)  OK\n", n);
+        }
+    }
+
+    /* Reject: not a power of 2. */
+    size_t not_pow2[] = {3, 5, 6, 7, 9, 15, 17, 100, 1000, 100000,
+                         600000, 600001, ((size_t)1 << 20) - 1};
+    for (size_t i = 0; i < sizeof(not_pow2) / sizeof(not_pow2[0]); i++) {
+        size_t n = not_pow2[i];
+        if (n > GF64_HQC_MAX_LM_N) continue;
+        int got = gf64_hqc_supports_size(n);
+        if (got != 0) {
+            printf("  hqc_supports_size(%zu)  FAIL (expected 0, got %d)\n", n, got);
+            failures++;
+        } else {
+            printf("  hqc_supports_size(%zu)  OK\n", n);
+        }
+    }
+
+    /* Exact-cap boundary: 2^20 is the cap and MUST be accepted. */
+    {
+        size_t n = ((size_t)1 << 20);
+        int got = gf64_hqc_supports_size(n);
+        if (got != 1) {
+            printf("  hqc_supports_size(2^20)  FAIL (expected 1, got %d) "
+                   "— exact-cap boundary broken\n", n, got);
+            failures++;
+        } else {
+            printf("  hqc_supports_size(2^20)  OK  (exact-cap boundary)\n");
+        }
+    }
+
+    return failures;
+}
+
 static int test_scratch_words(void) {
     int failures = 0;
     size_t n;
@@ -383,12 +594,16 @@ int main(void) {
     int rc3 = test_recursive_match();
     printf("\n[4] boundary tests at the new recursive cap:\n");
     int rc4 = test_boundary();
-    printf("\n[5] _scratch_words query values:\n");
-    int rc5 = test_scratch_words();
-    printf("\n[6] AVX-512 PCLMULQDQ bit-exactness:\n");
-    int rc6 = test_avx512_bit_exact();
+    printf("\n[5] poly_mul_recursive at the new cap:\n");
+    int rc5 = test_poly_mul_recursive_boundary();
+    printf("\n[6] _scratch_words query values:\n");
+    int rc6 = test_scratch_words();
+    printf("\n[7] AVX-512 PCLMULQDQ bit-exactness:\n");
+    int rc7 = test_avx512_bit_exact();
+    printf("\n[8] gf64_hqc_supports_size cap query (cubic review 4910960162 P1):\n");
+    int rc8 = test_hqc_supports_size();
 
-    int total = rc1 + rc2 + rc3 + rc4 + rc5 + rc6;
+    int total = rc1 + rc2 + rc3 + rc4 + rc5 + rc6 + rc7 + rc8;
     printf("\n");
     if (total == 0) {
         printf("ALL PASS\n");

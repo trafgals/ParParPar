@@ -53,6 +53,10 @@ gf64_region_fused_output_muladd_arr_fn gf64_region_fused_output_muladd_arr;
 gf64_region_2d_muladd_arr_fn gf64_region_2d_muladd_arr;
 gf64_inverse_batch_fn gf64_inverse_batch;
 GF64Method gf64_current_method = GF64_SCALAR;
+/* Set by gf64_init_dispatch from cpu_detect's VPCLMULQDQ CPUID probe.
+ * Distinct from gf64_current_method — the latter can downgrade mid-workload
+ * via the PD2 downclock heuristic, but the host capability is fixed. */
+int gf64_has_vpclmulqdq = 0;
 
 /* WSL2/Hyper-V workaround: poll detection 5 times, accept AVX512 if
  * any single poll (1 of 5) reports it. WSL2 doesn't honor sched_setaffinity
@@ -100,6 +104,22 @@ int gf64_init_dispatch(void) {
 	 * the "force off" downgrade case, and we want a single deterministic
 	 * detection result for the fallthrough. The 5-poll aggregate is cheap. */
 	GF64Method detected = gf64_detect_method();
+	/* Host-availability flag for VPCLMULQDQ (set BEFORE the env-override
+	 * branch so the flag reflects actual CPUID capability regardless of
+	 * the workload dispatch choice). Distinct from gf64_current_method,
+	 * which the PD2 heuristic may downgrade to GF64_AVX2 even on a host
+	 * that supports VPCLMULQDQ.
+	 *
+	 * The flag is now "VPCLMULQDQ actually works" (cubic review
+	 * 4914681432 P1): CPUID+XCR0 AND a successful ZMM SIGILL probe
+	 * (gf64_zmm_probe). On WSL2/Hyper-V the CPUID+XCR0 probe alone
+	 * returns 1 but the actual ZMM instruction SIGILLs; without
+	 * this AND, the flag would falsely advertise VPCLMULQDQ and the
+	 * barycentric ITA batch path would SIGILL at runtime. The ZMM
+	 * probe is cached inside gf64_zmm_probe() — first call here runs
+	 * the SIGILL probe, subsequent calls return the cached result. */
+	gf64_zmm_probe();  /* populates gf64_zmm_works as a side effect */
+	gf64_has_vpclmulqdq = gf64_has_vpclmulqdq_probe() & gf64_zmm_works;
 	int use_avx512_forced;
 	if (parse_avx512_force_env(detected, &use_avx512_forced)) {
 		if (use_avx512_forced == 1) {
@@ -126,6 +146,29 @@ int gf64_init_dispatch(void) {
 }
 
 void gf64_apply_method(GF64Method method) {
+	/* Cubic review 4914681432 P3: when binding to AVX-512 via the
+	 * workload-rebind path (e.g. par3_engine.cc:969 calling
+	 * gf64_apply_method(gf64_method_for_workload(...))), we may bypass
+	 * gf64_init_dispatch entirely. That call site doesn't set
+	 * gf64_has_vpclmulqdq — historically a latent ordering-dependence.
+	 *
+	 * To remove the drift, mirror the host-capability flag here: if
+	 * we're binding to AVX-512, VPCLMULQDQ+ZMM must have been validated
+	 * (or the dispatch will SIGILL at first kernel call). If they
+	 * haven't been validated, the caller's bind is unsafe; we
+	 * explicitly do NOT silently flip the flag to 1 — the dispatch
+	 * binding proceeds but the call sites that read
+	 * gf64_has_vpclmulqdq will see the underlying (possibly 0) value.
+	 * (gf64_init_dispatch() is the canonical entry for full validation;
+	 * the par3_engine.cc:969 caller previously ran gf64_init_dispatch
+	 * earlier in the pipeline, so gf64_zmm_probe's cache is already
+	 * populated.) */
+	if (method == GF64_AVX512) {
+		/* Probe the ZMM execution; safe to call after init_dispatch
+		 * because the result is cached. Re-runs cheaply via the cache. */
+		gf64_zmm_probe();
+		gf64_has_vpclmulqdq = gf64_has_vpclmulqdq_probe() & gf64_zmm_works;
+	}
 	switch (method) {
 		case GF64_AVX512:
 			gf64_region_mul = gf64_region_mul_avx512;

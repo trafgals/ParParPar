@@ -44,6 +44,7 @@ TEST_GF64_SUBPRODUCT_TREE_SOURCES := test_gf64_subproduct_tree.c
 TEST_GF64_BARYCENTRIC_SOURCES := test_gf64_barycentric.c
 TEST_GF64_MPE_SOURCES := test_gf64_mpe.c
 TEST_CPU_DETECT_SOURCES := test_cpu_detect.c
+TEST_GF64_ZMM_PROBE_SOURCES := test_gf64_zmm_probe.c
 TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 TEST_GF64_FENGER_KERNEL_SOURCES := test_gf64_fenger_kernel.c
 TEST_GF64_FENGER_PIPELINE_SOURCES := test_gf64_fenger_pipeline.c
@@ -53,9 +54,9 @@ TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES := test_gf64_additive_fft_hqc2026.c
 BENCH_GF64_FENGER_VS_CAUCHY_SOURCES := bench_gf64_fenger_vs_cauchy.c
 BENCH_HQC_VS_KARATSUBA_SOURCES := bench_hqc_vs_karatsuba.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_additive_fft_hqc2026 bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_additive_fft_hqc2026 bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_additive_fft_hqc2026 bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_additive_fft_hqc2026 bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -151,6 +152,18 @@ test_gf64_mpe: $(TEST_GF64_MPE_SOURCES) $(GF64_SOURCES)
 test_cpu_detect: $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
 	$(CC) $(CFLAGS) -DGF64_CPU_DETECT_STANDALONE $(LDFLAGS) -o $@ $(TEST_CPU_DETECT_SOURCES) ../cpu_detect.c
 
+# Test for the cached one-shot ZMM probe (cubic review 4915648282 P1). The
+# test exercises the real release/acquire publish pattern in gf64_zmm_probe()
+# without mocking CPUID or the SIGILL probe body — we link the real
+# cpu_detect.c (not the -DGF64_CPU_DETECT_STANDALONE compile mode used by
+# test_cpu_detect above) and the test simply reads back what the probe
+# populated. The probe is host-deterministic (SIGILL or not), so any
+# disagreement across calls or threads indicates a real memory-ordering
+# bug. The multithreaded test (Test 5) is gated on _POSIX_THREADS so the
+# build remains portable to non-POSIX hosts.
+test_gf64_zmm_probe: $(TEST_GF64_ZMM_PROBE_SOURCES) ../cpu_detect.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -pthread -o $@ $(TEST_GF64_ZMM_PROBE_SOURCES) ../cpu_detect.c
+
 # Karatsuba dispatch test (par3-cauchy-fft-kernel Phase 2a — Todo 5). Tests
 # both gf64_poly_mul_karatsuba (the new T6 helper) and the dispatch into it
 # from gf64_poly_mul_internal inside gf64_additive_fft.c. The additive FFT
@@ -206,8 +219,10 @@ bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURC
 # (defines the HQC symbols), gf64_poly_mul_karatsuba.c (defines the
 # Karatsuba helper), and the scalar/AVX-512 primitives they call
 # (gf64_mul_reference, gf64_mul_avx512, gf64_inverse, gf64_square).
-bench_hqc_vs_karatsuba: $(BENCH_HQC_VS_KARATSUBA_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_invert.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(GF64_INCLUDES) -O3 $(LDFLAGS) -o $@ $(BENCH_HQC_VS_KARATSUBA_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_invert.c ../gf64_single.c
+# cpu_detect.c is linked solely for the VPCLMULQDQ probe
+# (gf64_has_vpclmulqdq_probe) used to gate the AVX-512 column.
+bench_hqc_vs_karatsuba: $(BENCH_HQC_VS_KARATSUBA_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_invert.c ../gf64_single.c ../cpu_detect.c
+	$(CC) $(CFLAGS) $(GF64_INCLUDES) -O3 $(LDFLAGS) -o $@ $(BENCH_HQC_VS_KARATSUBA_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_invert.c ../gf64_single.c ../cpu_detect.c
 
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_additive_fft_hqc2026 bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
