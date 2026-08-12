@@ -155,14 +155,6 @@ void gf64_poly_invmod(
  *
  * On a NULL/empty tree, returns immediately without writing to out. The
  * caller must size out to at least tree->num_points gf64_t slots.
- *
- * recursive top-down traversal:
- *   eval(f, node) -> r (degree < deg(node))
- *     if leaf: out[i] = horner(f, points[i])
- *     else:    eval(f mod child_L, node->left)
- *              eval(f mod child_R, node->right)
- * The recursive form requires deg_f modular reductions at each internal
- * node, each O(M log M) via the FFT-based gf64_poly_divmod.
  */
 void gf64_multi_point_eval(
 	const gf64_t *f, size_t deg_f,

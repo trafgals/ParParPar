@@ -296,13 +296,18 @@ withFengerEnv('1', function () {
 // compute_recovery_fenger, not inside the dispatch selection. The
 // pre-conditions at this layer mean 20000/3 fall through:
 //   - Test 17: N=20000 > BARY_MIN_INPUTS_DEFAULT (10000) → Barycentric wins.
-//   - Test 18: R=3 is below both the small-R shortcut (32) AND the Fenger
-//     gate's power-of-2 check (3 is non-zero, non-trivial, non-power-of-2)
-//     → falls all the way through to compute_recovery_full.
+//   - Test 18: (N=64, R=3) — N=64 is NOT > BARY_MIN_INPUTS_DEFAULT so the
+//     Barycentric gate is FALSE, AND R=3 is non-power-of-2 so the Fenger
+//     gate is ALSO FALSE → dispatcher falls all the way through to
+//     compute_recovery_full. The "small-R shortcut (32)" cited in the
+//     previous version of this comment is misleading — that gate lives
+//     INSIDE ComputeRecoveryBlocksBarycentric (a C++ kernel that this
+//     mock-binding test never invokes); at the dispatch layer the reason
+//     is purely that N is too small for Barycentric.
 // The previous test expectations were aspirational and pre-emptively encoded
 // the not-yet-implemented K5 *dispatch-level* gate. Cubic review 4904130419
-// (item 1) flagged the misleading expectation; the suite now asserts the
-// actual behaviour.
+// (item 1) flagged the misleading expectation; cubic review 4910960162
+// P3 restated the rationale. The suite now asserts the actual behaviour.
 console.log('\n--- Test 17: non-power-of-2 N=20000, env unset → Barycentric (N > BARY_MIN) ---');
 withFengerEnv(undefined, function () {
     var b = makeFengerBinding();
@@ -311,7 +316,7 @@ withFengerEnv(undefined, function () {
         'N=20000 (non-power-of-2, >BARY_MIN) dispatches to Barycentric (got: ' + callsToString(b.calls) + ')');
 });
 
-console.log('\n--- Test 18: non-power-of-2 R=3, env unset → full (small-R shortcut, Fenger gate rejects non-power-of-2 R) ---');
+console.log('\n--- Test 18: N=64 (≤BARY_MIN) R=3 (non-power-of-2), env unset → full (Bary+Fenger both gate out) ---');
 withFengerEnv(undefined, function () {
     var b = makeFengerBinding();
     dispatchRecovery(b, null, null, 64, 3, 4096, 0, 0n, 0);

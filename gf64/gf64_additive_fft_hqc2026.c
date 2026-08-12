@@ -958,6 +958,27 @@ size_t gf64_addfft64_poly_mul_recursive_scratch_words(size_t n) {
     return 4 * n;
 }
 
+/* Dispatch gate (cubic review 4910960162 P1): a caller passing n to the
+ * recursive path MUST check this first. The library's *_recursive_scratch
+ * public entries `assert(n <= GF64_HQC_MAX_LM_N)` for debug builds; in
+ * release builds oversized calls produce undefined output. Use this
+ * query to gate dispatch decisions (e.g. par3_engine's poly_mul route).
+ *
+ * Returns 1 iff:
+ *   - 2 <= n <= GF64_HQC_MAX_LM_N (= 2^20), AND
+ *   - n is a power of 2.
+ * Returns 0 for n <= 1, oversized n, or non-power-of-2 n.
+ *
+ * EXAMPLE: two operands of length 600000 pad to next_pow2(1.2 M - 1) =
+ * 2^21 = 2097152 → this query returns 0 → dispatcher should fall
+ * through to Karatsuba (or another non-HQC kernel). */
+int gf64_hqc_supports_size(size_t n) {
+    if (n < 2) return 0;
+    if (n > GF64_HQC_MAX_LM_N) return 0;
+    /* Power-of-2 check: n & (n-1) == 0 iff n is a power of 2. */
+    return (n & (n - 1)) == 0 ? 1 : 0;
+}
+
 /* ----- Matrix-form path (capped at GF64_HQC_MAX_MATRIXFORM_N) ----- */
 
 void gf64_addfft64_fwd_scratch(gf64_t *arr, size_t n,

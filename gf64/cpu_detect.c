@@ -294,7 +294,23 @@ GF64Method gf64_detect_method_internal(void) {
 				 * CPUID only partially or fakes XCR0 without honouring
 				 * lazy XSAVE state loading. If SIGILL fires, fall through. */
 				if (try_zmm_insn()) {
-					return GF64_AVX512;
+					/* Layer 2 (cubic review 4910826158, P1+x): the
+					 * AVX-512 codepath is gated on VPCLMULQDQ support,
+					 * even for routines that don't use PCLMULQDQ directly.
+					 * Reason: gf64_region_muladd_arr[_avx512] is __attribute__
+					 * __target__("avx512f,vpclmulqdq") and SIGILLs on
+					 * AVX-512-only-no-VPCLMULQDQ hosts (e.g. AVX-512 VNNI
+					 * without the carryless-multiply quadword extension).
+					 * Without this downgrade, dispatching AVX-512 here
+					 * selects the VPCLMULQDQ codepath for the region
+					 * muladd which then SIGILLs at runtime in
+					 * gf64_inverse_batch / gf64_invert_ita_batch / the
+					 * polynomial-mul butterfly. Force a downgrade to AVX-2
+					 * if VPCLMULQDQ is absent. */
+					if (gf64_has_vpclmulqdq_probe()) {
+						return GF64_AVX512;
+					}
+					/* Fall through to AVX-2 detection below. */
 				}
 			}
 		}
@@ -328,19 +344,51 @@ GF64Method gf64_detect_method_internal(void) {
 int gf64_has_vpclmulqdq_probe(void) {
 	unsigned int eax, ebx, ecx, edx;
 
-	/* VPCLMULQDQ = cpuid leaf 7, sub-leaf 0, ECX bit 11 */
+	/* VPCLMULQDQ = cpuid leaf 7, sub-leaf 0, ECX bit 10.
+	 *
+	 * NOT bit 11 — that is AVX512_VNNI (VPDPBUSD etc.). The drift from
+	 * 10 to 11 was a copy-paste bug present since the probe was first
+	 * introduced; the consequence is that hosts with VPCLMULQDQ +
+	 * AVX512_F but WITHOUT AVX512_VNNI (rare today but legal per Intel SDM)
+	 * would take the fallback path and miss the PCLMULQDQ acceleration,
+	 * while hosts with AVX512_VNNI but no actual VPCLMULQDQ
+	 * implementation would falsely enter the VPCLMULQDQ codepath and
+	 * SIGILL on the first AVX-512 PCLMULQDQ instruction.
+	 *
+	 * Cross-checked against:
+	 *   - Linux kernel X86_FEATURE_VPCLMULQDQ = 16*32+10 (bit 10, leaf 7.0
+	 *     ECX). See arch/x86/include/asm/cpufeatures.h.
+	 *   - Intel SDM Vol. 2, CPUID instruction table for leaf 7 sub-leaf 0.
+	 *   - Intel Intrinsics Guide entry for `_mm512_clmulepi64_epi128`,
+	 *     which documents the same bit.
+	 *
+	 * Other ECX bits in this sub-leaf for disambiguation:
+	 *   - bit 9  = SSBD (Speculative Store Bypass Disable)
+	 *   - bit 10 = AVX512_VL? NO — bit 10 is VPCLMULQDQ (this probe).
+	 *   - bit 11 = AVX512_VNNI
+	 *   - bit 12 = AVX512_BITALG
+	 *   - bit 14 = AVX512_VPOPCNTDQ
+	 */
 	gf64_cpuid(7, 0, &eax, &ebx, &ecx, &edx);
-	if (!(ecx & (1 << 11))) return 0;
+	if (!(ecx & (1 << 10))) return 0;
 
-	/* Same XCR0 check as gf64_detect_method_internal: VPCLMULQDQ requires
-	 * the AVX-512 state components (opmask + ZMM/H) to be enabled by the
-	 * OS — without them the instruction UD2s even if CPUID reports the
-	 * feature bit. */
+	/* XCR0 mask 0xE6 = bits 1, 2, 5, 6, 7:
+	 *   bit 1 = SSE state (XMM)
+	 *   bit 2 = AVX state (YMM)
+	 *   bit 5 = AVX-512 opmask (k0..k7)
+	 *   bit 6 = AVX-512 ZMM_HI256 (high 256 of each ZMM register)
+	 *   bit 7 = AVX-512 Hi16_ZMM (ZMM16..ZMM31)
+	 *
+	 * Without bits 6 and 7 set, OS_XSAVE is reported but ZMM
+	 * instructions SIGILL even when CPUID advertises VPCLMULQDQ.
+	 * (The legacy mask 0x27 = bits 0,1,2,5 used elsewhere in this file
+	 * is sufficient for AVX-512F detection but not enough to actually
+	 * run ZMM — see XSAVE state-component requirements in the SDM.) */
 	gf64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
 	if (!(ecx & (1 << 27))) return 0;  /* OSXSAVE */
 	{
 		uint64_t xcr0 = gf64_xgetbv(0);
-		if ((xcr0 & 0x27ULL) != 0x27ULL) return 0;
+		if ((xcr0 & 0xE6ULL) != 0xE6ULL) return 0;
 	}
 	return 1;
 }

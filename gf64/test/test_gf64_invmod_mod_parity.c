@@ -86,7 +86,13 @@ static int run_case(size_t deg_g, size_t deg_f, uint64_t seed) {
 	int ok = 1;
 	gf64_t *g     = (gf64_t *)calloc(deg_g + 1, sizeof(gf64_t));
 	gf64_t *f     = (gf64_t *)calloc(deg_f + 1, sizeof(gf64_t));
-	gf64_t *u     = (gf64_t *)calloc(deg_f,     sizeof(gf64_t));
+	/* u sized to 2*deg_f + 1 (cubic review 4910826158 P2): the previous
+	 * allocation of exactly deg_f slots made the degree check vacuously
+	 * true (any scan over u[0..deg_f-1] yields deg_u < deg_f). With the
+	 * extra headroom, a refactored invmod returning a higher-degree
+	 * representative u + k*f (extra coefficients at index >= deg_f)
+	 * can now be detected by the degree check below. */
+	gf64_t *u     = (gf64_t *)calloc(2 * deg_f + 1, sizeof(gf64_t));
 	gf64_t *prod  = (gf64_t *)calloc(deg_g + deg_f, sizeof(gf64_t));
 	gf64_t *red   = (gf64_t *)calloc(deg_f + 1, sizeof(gf64_t));
 	if (!g || !f || !u || !prod || !red) {
@@ -132,16 +138,23 @@ static int run_case(size_t deg_g, size_t deg_f, uint64_t seed) {
 	/* Normalized-form contract: max(deg(u)) < deg_f. The congruence alone
 	 * would be satisfied by u + k*f (any k), so without this check a
 	 * refactored invmod returning a higher-degree representative would
-	 * still pass. u[] was sized to deg_f, so scan u[0..deg_f-1] for the
-	 * highest nonzero coefficient. */
+	 * still pass. u[] is sized to 2*deg_f + 1 (see comment at the
+	 * allocation above) so a scan up to index 2*deg_f would catch any
+	 * representative whose coefficients overflow the normalized range. */
 	{
 		size_t deg_u = (size_t)-1;
-		for (size_t i = deg_f; i-- > 0; ) {
+		/* Scan the full u[] buffer (up to 2*deg_f inclusive). On the
+		 * conforming implementation the highest nonzero coefficient
+		 * must be at index < deg_f. Scan the WHOLE buffer so we
+		 * catch a refactored invmod that wrote above deg_f. */
+		size_t max_idx = 2 * deg_f;
+		for (size_t i = max_idx + 1; i-- > 0; ) {
 			if (u[i] != 0) { deg_u = i; break; }
 		}
 		if (deg_u == (size_t)-1) deg_u = 0;  /* u == 0 — degenerate */
 		if (deg_u >= deg_f) {
-			printf("    (deg_g=%zu, deg_f=%zu) deg(u) = %zu, want < deg_f\n",
+			printf("    (deg_g=%zu, deg_f=%zu) deg(u) = %zu, want < deg_f "
+			       "(representative overflow)\n",
 			       deg_g, deg_f, deg_u);
 			ok = 0;
 		}

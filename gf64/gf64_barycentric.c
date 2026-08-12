@@ -95,8 +95,37 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	 * Most call sites (e.g. ComputeRecoveryBlocksBarycentric) bind it
 	 * themselves; this ensures the library entry is self-contained for
 	 * callers that skip that step (the unit test, for example).
-	 */
-	gf64_init_dispatch();
+	 *
+	 * CUBIC REVIEW 4910826158 P2: we previously called
+	 * gf64_init_dispatch() unconditionally here. That re-runs the
+	 * 5-poll CPUID detection AND calls gf64_apply_method(detected),
+	 * which OVERWRITES the workload-chosen dispatch state established
+	 * by callers like par3_engine.cc via gf64_method_for_workload() —
+	 * silently undoing PD2 downclock downgrades (Zen4's downclock
+	 * zone) by re-binding to the raw detected ISA.
+	 *
+	 * Fix: use a thread-safe (process-safe here — this is a single-
+	 * threaded library entry) one-shot flag. The dispatch table is
+	 * brought up on the first call only; subsequent calls see the
+	 * pointer is already non-NULL and skip. After a workload-chosen
+	 * dispatch is set externally, gf64_inverse_batch remains bound
+	 * (it points into a TU that doesn't move), so the workload's PD2
+	 * choice is preserved.
+	 *
+	 * Race-safety note: this is a single-shot check-and-set on the
+	 * first call. In the rare concurrent-first-call case, the worst
+	 * outcome is two CPUID polls (idempotent) followed by one
+	 * apply_method — same as a single init. */
+	static int dispatch_bound = 0;
+	if (!dispatch_bound) {
+		/* If gf64_inverse_batch is already non-NULL (some other call
+		 * site ran init_dispatch first), skip the redundant init but
+		 * still mark the flag so we don't keep checking. */
+		if (gf64_inverse_batch == NULL) {
+			gf64_init_dispatch();
+		}
+		dispatch_bound = 1;
+	}
 
 	/*
 	 * Step 1: Formal derivative of the root polynomial.

@@ -122,8 +122,23 @@ void gf64_poly_mul_padded(
  * described in PR #49 /tmp/general_algorithm_1_research.md. Pure XOR
  * + a single gf64_mul_reference in the butterfly → trivially host-
  * portable (no AVX-512 gating needed, since gf64_mul_reference is
- * ISA-agnostic). */
+ * ISA-agnostic).
+ *
+ * IMPORTANT (cubic review 4910960162 P1): any future dispatcher that
+ * routes to the recursive path MUST check the padded transform size
+ * `n_pad = next_pow2(la + lb - 1)` against this cap BEFORE calling
+ * the library. E.g. inputs (600000, 600000) pad to n_pad = 2^21 > cap
+ * — the library's public entries assert this and abort in debug;
+ * release builds have it as a documented undefined-behaviour input.
+ * Use the query `gf64_hqc_supports_size(n)` (declared below) for the
+ * cap-aware gate. */
 #define GF64_HQC_MAX_LM_N         ((size_t)(1 << 20))
+
+/* Returns 1 if every *_recursive_scratch public entry accepts n (i.e.
+ * n <= GF64_HQC_MAX_LM_N AND n is a power of 2), 0 otherwise. Use this
+ * in dispatcher code to decide whether HQC FFT is a valid path before
+ * passing the padded size to the library. */
+int gf64_hqc_supports_size(size_t n);
 
 /* ----- Scratch size queries ----- */
 size_t gf64_addfft64_fwd_scratch_words(size_t n);              /* 4n */
