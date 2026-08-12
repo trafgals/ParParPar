@@ -352,16 +352,27 @@ int gf64_zmm_probe(void) {
 	int expected = 0;
 	if (gf64_atomic_cas(&zmm_probe_once, &expected, 1)) {
 		int r = try_zmm_insn();
-		/* Publish the cache first (release), then the legacy
-		 * gf64_zmm_works global. The release ordering guarantees
-		 * that any thread observing zmm_probe_cached != -1 also
-		 * observes the updated gf64_zmm_works. (On x86 the order
-		 * of the two stores does not matter due to TSO, but the
-		 * release semantic is required for ARM/other weakly
-		 * ordered archs the same TU might be built for in the
-		 * future.) */
-		gf64_atomic_store_release(&zmm_probe_cached, r);
+		/* Publish the legacy gf64_zmm_works global FIRST, then the
+		 * release store on the cache. The release-store barrier
+		 * flushes the earlier gf64_zmm_works write to memory so any
+		 * thread that subsequently acquire-loads the cache and sees
+		 * cached != -1 ALSO observes the updated gf64_zmm_works.
+		 *
+		 * (Cubic review 4916023985 P2 finding 4: the previous order
+		 * published the cache first then the legacy global. A
+		 * concurrent dispatcher reading gf64_zmm_works directly
+		 * could see the stale 0 even after a successful probe —
+		 * because there was no synchronisation between the cache
+		 * release-store and the gf64_zmm_works plain write. With
+		 * the cache release-store as the LAST action, the
+		 * happens-before relation is now:
+		 *   probe-thread: write(works) ; release-store(cached)
+		 *   reader:       acquire-load(cached) ; read(works)
+		 * On x86 the order does not matter (TSO), but on weakly
+		 * ordered architectures the reversed order is required.)
+		 */
 		gf64_zmm_works = r;
+		gf64_atomic_store_release(&zmm_probe_cached, r);
 		return r;
 	}
 	/* Another thread is running the probe; spin-wait briefly for the

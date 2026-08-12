@@ -369,34 +369,34 @@ static void test_duplicates_produce_zero(void) {
  * ==================================================================== */
 
 static int test_dispatch_preserved_across_workload_rebind(void) {
-	printf("Test 5a: workload-rebind to GF64_AVX2 then "
-	       "gf64_barycentric_weights preserves GF64_AVX2...\n");
+	printf("Test 5a: workload-rebind to GF64_SCALAR then "
+	       "gf64_barycentric_weights preserves GF64_SCALAR...\n");
 
 	/*
 	 * Step 1: simulate a workload-rebind by par3_engine.cc:969,
 	 * which would have called gf64_apply_method(gf64_method_for_workload(...)).
-	 * Here we directly call gf64_apply_method(GF64_AVX2).
 	 *
-	 * Note: this may FAIL to dispatch to AVX-2 on a host without
-	 * AVX-2 — gf64_apply_method doesn't gate on host availability,
-	 * so the dispatch table is rebound regardless. The point of
-	 * the test is the PRESERVATION of the rebound, not whether
-	 * AVX-2 actually runs.
+	 * IMPORTANT (cubic review 4916023985 P2 finding 3): we use
+	 * GF64_SCALAR here, NOT GF64_AVX2. GF64_AVX2 would SIGILL on
+	 * SSSE3-only hosts that the library officially supports.
+	 * The point of the test is the PRESERVATION of the rebound
+	 * across gf64_barycentric_weights, NOT whether the rebound
+	 * method actually executes — so any non-AVX-512 method that
+	 * the host can run works. GF64_SCALAR is the only method
+	 * guaranteed to run on every supported host.
 	 */
-	gf64_apply_method(GF64_AVX2);
-	if (gf64_current_method != GF64_AVX2) {
-		fail("Test 5a setup: gf64_apply_method(GF64_AVX2) did not set "
-		     "gf64_current_method to GF64_AVX2");
+	gf64_apply_method(GF64_SCALAR);
+	if (gf64_current_method != GF64_SCALAR) {
+		fail("Test 5a setup: gf64_apply_method(GF64_SCALAR) did not set "
+		     "gf64_current_method to GF64_SCALAR");
 		return 0;  /* can't test the contract if setup fails */
 	}
 
 	/*
 	 * Step 2: build a tiny tree and call gf64_barycentric_weights.
-	 * On a host with gf64_has_vpclmulqdq=1 the call takes the ITA
-	 * batch path; on a WSL2-style host it takes the gf64_inverse_batch
-	 * path. The function pointer bound by gf64_apply_method(GF64_AVX2)
-	 * is gf64_inverse_batch_avx2, so either way the AVX-2 dispatch
-	 * is what the barycentric weight inversion goes through.
+	 * The function pointer bound by gf64_apply_method(GF64_SCALAR)
+	 * is gf64_inverse_batch_scalar, so the scalar dispatch is
+	 * what the barycentric weight inversion goes through.
 	 */
 	const size_t N = 16;
 	gf64_t points[16];
@@ -415,19 +415,19 @@ static int test_dispatch_preserved_across_workload_rebind(void) {
 	gf64_subproduct_tree_free(&tree);
 
 	/*
-	 * Step 3: verify gf64_current_method is STILL GF64_AVX2. The
+	 * Step 3: verify gf64_current_method is STILL GF64_SCALAR. The
 	 * pre-fix bug was that this would silently revert to the
 	 * detected method (which on AVX-512-capable hosts is GF64_AVX512).
 	 */
-	if (gf64_current_method != GF64_AVX2) {
-		printf("    gf64_current_method = %d (want GF64_AVX2 = %d)\n",
-		       (int)gf64_current_method, (int)GF64_AVX2);
+	if (gf64_current_method != GF64_SCALAR) {
+		printf("    gf64_current_method = %d (want GF64_SCALAR = %d)\n",
+		       (int)gf64_current_method, (int)GF64_SCALAR);
 		fail("Test 5a: barycentric_weights clobbered workload-rebind "
 		     "(PD2 downclock downgrade lost)");
 		return 0;
 	}
 
-	pass("Test 5a: workload-rebind to GF64_AVX2 preserved across "
+	pass("Test 5a: workload-rebind to GF64_SCALAR preserved across "
 	     "gf64_barycentric_weights (PD2 contract holds)");
 	return 1;
 }

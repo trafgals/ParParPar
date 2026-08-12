@@ -81,9 +81,16 @@ static int test_cache_sticky(void) {
  * Test 2: legacy gf64_zmm_works global matches probe return value
  *
  * This is the "release publish" check at the API surface. The
- * probe writes gf64_zmm_works AFTER publishing zmm_probe_cached
- * with release semantics; the legacy reader (any code that
- * uses gf64_zmm_works directly) must see a consistent value.
+ * probe writes gf64_zmm_works BEFORE the release-store on
+ * zmm_probe_cached (cubic review 4916023985 P2 finding 4: the
+ * reverse order was a publish-order race). The release-store
+ * barrier flushes the earlier gf64_zmm_works write so any
+ * concurrent reader that observes the cache populated (via
+ * acquire-load) also observes the matching gf64_zmm_works.
+ *
+ * The legacy reader (any code that uses gf64_zmm_works directly)
+ * must therefore see a consistent value relative to the probe
+ * return value.
  * =================================================================== */
 
 static int test_legacy_global(void) {
@@ -110,31 +117,66 @@ static int test_legacy_global(void) {
 /* ===================================================================
  * Test 3: result is consistent with CPUID+XCR0 ground truth
  *
- * The probe must report 1 only when both:
- *   - CPUID+XCR0 advertise VPCLMULQDQ, AND
- *   - a real ZMM instruction executes without SIGILL.
- * We sanity-check the first half via gf64_has_vpclmulqdq_probe().
- * The second half is what the probe itself verifies — the probe
- * reporting 1 when CPUID+XCR0 says 0 would be a real bug; the
- * probe reporting 0 when CPUID+XCR0 says 1 is the WSL2 observer
- * effect (and is the reason the probe exists).
+ * The probe's report must satisfy the one-way implication
+ *
+ *     probed == 1   IMPLIES   gf64_has_vpclmulqdq_probe() == 1
+ *
+ * (the probe is "real ZMM execution", so it cannot succeed if
+ * CPUID+XCR0 didn't even advertise the instruction in the first
+ * place). The REVERSE implication does NOT hold — and that is
+ * exactly the WSL2 / Hyper-V observer-effect case this probe
+ * exists to handle (CPUID says yes, but the underlying ZMM
+ * instruction SIGILLs at runtime because the hypervisor masks
+ * the AVX-512 feature when it detects a binary containing ZMM
+ * instructions). See gf64/cpu_detect.c:5-19 (the WSL2/Hyper-V
+ * "observer effect" header comment) and the linked MS issues.
+ *
+ * What this test checks (and what it does NOT check):
+ *
+ *   checked (one-way):  probed==1 → cpuid_vpclmulqdq==1
+ *                       (a probe claiming ZMM works when CPUID
+ *                        doesn't even advertise it would be a
+ *                        bug — return value mismatch.)
+ *
+ *   NOT checked:        cpuid_vpclmulqdq==1 → probed==1
+ *                       (this is the WSL2 case and is EXPECTED
+ *                        to diverge on affected hosts. The probe
+ *                        is the authoritative signal for "ZMM
+ *                        actually runs".)
+ *
+ * Cubic review 4916023985 P2 finding 5: the test does NOT
+ * hard-fail on the WSL2 case. The only hard-fail assertion is
+ * the one-way implication above (probe=1 requires CPUID=1).
+ * The WSL2 case is reported INFO and noted in the output.
  * =================================================================== */
 
 static int test_consistent_with_cpuid(void) {
 	int probed = gf64_zmm_probe();
 	int cpuid_vpclmulqdq = gf64_has_vpclmulqdq_probe();
 
-	/* If CPUID+XCR0 says no VPCLMULQDQ, the probe must agree. */
-	if (!cpuid_vpclmulqdq && probed) {
-		printf("  cpuid consistency: FAIL  CPUID+XCR0 says no VPCLMULQDQ "
-		       "but probe says 1\n");
+	/* The one-way implication: probed==1 ⇒ cpuid==1. */
+	if (probed && !cpuid_vpclmulqdq) {
+		printf("  cpuid consistency: FAIL  probed=%d but CPUID+XCR0 "
+		       "says VPCLMULQDQ=%d (probe reported ZMM success when "
+		       "CPUID didn't advertise it — that's a probe bug)\n",
+		       probed, cpuid_vpclmulqdq);
 		return 1;
 	}
-	/* If CPUID+XCR0 says yes, the probe may report either 0 (WSL2
-	 * observer effect) or 1 (ZMM works). We only check the reverse
-	 * direction (probe=1 requires CPUID=1) above. */
-	printf("  cpuid consistency: OK  probe=%d cpuid_vpclmulqdq=%d\n",
-	       probed, cpuid_vpclmulqdq);
+
+	/* The REVERSE direction (cpuid=1 but probe=0) is the WSL2 /
+	 * Hyper-V observer-effect case — EXPECTED on affected hosts.
+	 * Report it INFO, do NOT fail. */
+	if (cpuid_vpclmulqdq && !probed) {
+		printf("  cpuid consistency: INFO  CPUID advertises VPCLMULQDQ "
+		       "but probe reports ZMM SIGILL — this is the WSL2/Hyper-V "
+		       "observer-effect case the probe exists to handle. "
+		       "(probed=%d, cpuid_vpclmulqdq=%d)\n",
+		       probed, cpuid_vpclmulqdq);
+	} else {
+		printf("  cpuid consistency: OK  probed=%d cpuid_vpclmulqdq=%d "
+		       "(one-way implication holds)\n",
+		       probed, cpuid_vpclmulqdq);
+	}
 	return 0;
 }
 

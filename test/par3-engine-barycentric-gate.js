@@ -247,11 +247,18 @@ if (probe.phase !== 'ready' && probe.phase !== 'done') {
 	process.exit(1);
 }
 
-// Test parameters: numInputs above the legacy small-R threshold
-// (32), blockSize small to keep wall-clock low. The firstInput
-// and firstRecovery are spaced so no Cauchy denominator is zero.
+// Test parameters: numRecovery must be > 32 to clear the small-R
+// threshold at src/par3_engine_barycentric.cc:103 — below 32 the
+// engine short-circuits to ComputeRecoveryBlocks (legacy 1D-muladd)
+// and the VPCLMULQDQ/ITA batch gate at line 185 NEVER executes.
+// (Cubic review 4916023985 P2 finding 2: the previous numRecovery=8
+// passed on unfixed code because the gate was bypassed.)
+//
+// numInputs above the legacy small-R threshold, blockSize small to
+// keep wall-clock low. The firstInput and firstRecovery are spaced
+// so no Cauchy denominator is zero.
 var numInputs = 64;
-var numRecovery = 8;
+var numRecovery = 64;  // > 32: forces barycentric path with VPCLMULQDQ gate
 var blockSize = 64;
 var firstInput = 0;
 var firstRecovery = numInputs + 1;
