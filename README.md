@@ -79,22 +79,26 @@ averages over 10000 iterations (small n) / 5000 (n ≤ 512) / 500 (n ≤
 | 8192 | 37.349 | 13.890 | 12.338 | 3.03× | 1.13× |
 | 16384 | 111.883 | 49.865 | 46.494 | 2.41× | 1.07× |
 
-HQC FFT beats Karatsuba at **n ≥ 64** (scalar and AVX-512). The peak
+HQC FFT beats Karatsuba at **n ≥ 96** (scalar) and **n ≥ 64**
+(AVX-512). The scalar path loses narrowly at n = 64 (0.012 vs 0.009 ms);
+the AVX-512 path is 11 % faster there (0.008 vs 0.009 ms). The peak
 advantage is **4.61×** at n = 2048. Above n = 8192 the AVX-512 gain
 shrinks to 1.07× (the FFT's O(n log n) asymptotic still wins, but the
 scalar field multiply cost bottoms out the AVX-512 advantage). The
-FFT cap is `GF64_HQC_MAX_LM_N = 2^20`; sizes above 16384 (not
+FFT cap is `GF64_HQC_MAX_LM_N = 131072`; sizes above 16384 (not
 tabulated here for wall-clock budget) follow the same asymptotic
 profile.
 
-The HQC FFT path is currently **not** wired into
-`gf64_poly_mul_internal`'s dispatch (the dispatch tier at
-`gf64_additive_fft.c:335-386` still goes schoolbook → Karatsuba).
-The cap-aware query `gf64_hqc_supports_size(n)` is in place and
-gated on `GF64_HQC_MAX_LM_N = 2^20`. The optimal crossover
-(`GF64_HQC_FFT_MIN`) is **n = 64** from this data;
-`GF64_HQC_FFT_MIN = 64` would be a safe dispatch choice. This is the
-next research step tracked in
+The HQC FFT path is wired into `gf64_poly_mul_internal`'s dispatch
+at `gf64/gf64_additive_fft.c:369-413`. The tier selects HQC FFT
+when all of `(len_a, len_b, out_len)` are in `[GF64_HQC_FFT_MIN,
+GF64_HQC_MAX_LM_N]`, falls through to Karatsuba when only one operand
+is small or n exceeds the cap, and falls back to schoolbook below
+the Karatsuba threshold. The current `GF64_HQC_FFT_MIN = 96` is
+chosen to be safe for the scalar path (matches the scalar crossover
+above). Sizes above 131072 (the matrix-free cap) currently route
+through Karatsuba; lifting that further requires the General
+Algorithm 1 follow-up tracked in
 [issue #51](https://github.com/trafgals/ParParPar/issues/51).
 
 ### Fenger Toeplitz pipeline vs explicit Cauchy matrix-vector product
@@ -112,7 +116,7 @@ case (2–20) to stay within the 60 s wall-clock budget. The 8t column
 shows the parallel multi-thread result via the OpenMP-parallel execute
 path.
 
-| N | R | B (bytes) | cauchy (MB/s) | fenger 1t (MB/s) | fenger 8t (MB/s) | 8t speedup |
+| N | R | B (bytes) | cauchy (MB/s) | fenger 1t (MB/s) | fenger 8t (MB/s) | 8t vs cauchy |
 |---:|---:|---:|---:|---:|---:|---:|
 | 8 | 8 | 4096 | 22.7 | 0.4 | 2.9 | 0.13× |
 | 16 | 16 | 4096 | 12.1 | 0.4 | 2.5 | 0.21× |
@@ -137,12 +141,12 @@ The Fenger pipeline's single-thread throughput is below the
 explicit Cauchy reference at small/medium sizes — the per-word
 interpolation / evaluation cost is the bottleneck. Multi-threaded
 (8t) throughput approaches or exceeds the single-thread Cauchy at
-N ≥ 128 with R ≥ 128, with the speedup growing to **6.17×** at
-N = 2048, R = 2048 (the high-R narrow-B case). At small N (8 / 16)
-the parallel pipeline is dominated by the per-row scheduling overhead
-and is below the explicit Cauchy. At N = 256+, R = 256+ the Fenger 8t
-path is competitive or better than the explicit Cauchy reference at
-the same wall-clock.
+N ≥ 128 with R ≥ 128, with the fenger-8t / cauchy-1t ratio reaching
+**6.17×** at N = 2048, R = 2048 (the high-R narrow-B case). At small
+N (8 / 16) the parallel pipeline is dominated by the per-row
+scheduling overhead and is below the explicit Cauchy. At N = 256+,
+R = 256+ the Fenger 8t path is competitive or better than the
+explicit Cauchy reference at the same wall-clock.
 
 The Fenger pipeline is currently **not** wired into the engine's
 dispatch (the parallel Cauchy path in `src/par3_engine.cc` does not
