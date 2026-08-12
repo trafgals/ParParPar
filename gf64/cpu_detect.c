@@ -265,7 +265,7 @@ static int try_zmm_insn(void) {
 #endif
 #endif
 
-/* ----- Public ZMM probe (cubic review 4914681432 P1) -----
+/* ----- Public ZMM probe (cubic review 4914681432 P1, 4915459866 P1) -----
  *
  * Cached one-shot wrapper around the static try_zmm_insn() above. The
  * probe is the runtime defence against WSL2/Hyper-V hosts which report
@@ -278,24 +278,67 @@ static int try_zmm_insn(void) {
  * gf64_apply_method) share the same probe result, paying the SIGILL
  * handler cost only once.
  *
- * NOT thread-safe across first-concurrent-calls: the cache flag is
- * a plain int. In the rare concurrent-first-call case, two threads
- * might both run the SIGILL probe; the result is the same either way
- * (the probe is deterministic), so the worst outcome is two SIGILL
- * probes (one wins, both store the same result). Subsequent calls see
- * the cached value. The library is single-threaded for the dispatch
- * init path, so this is acceptable. */
-static int zmm_probe_cached = -1;  /* -1 = not yet probed */
+ * Thread safety (cubic review 4915459866 P1): on POSIX, the SIGILL
+ * handler is a process-wide resource — if thread A's probe is in
+ * flight and thread B takes an unrelated SIGILL (e.g. an off-the-shelf
+ * third-party library that overflows a buffer), thread A's handler
+ * would longjmp to thread A's per-thread sigsetjmp save point. The
+ * probe and its handler installation must therefore be one-time per
+ * process.
+ *
+ * On Windows MSVC, try_zmm_insn is a no-op (returns 0 — no ZMM
+ * hardware on 32-bit x86 or ARM), so the SIGILL-handler concern does
+ * not apply; the cache write is benign either way. We still use the
+ * same portable guard for consistency.
+ *
+ * Implementation: portable "init exactly once" using a flag protected
+ * by the compiler's atomic CAS. On GCC/Clang this is __atomic_*; on
+ * MSVC this is _InterlockedCompareExchange. Both are intrinsics and
+ * require no external header. We deliberately do NOT use
+ * pthread_once (not available on Windows) or C11 call_once (not
+ * available in c99 mode that this TU compiles under). */
+static int zmm_probe_cached = -1;  /* -1 = not yet probed, 0 = no, 1 = yes */
 int gf64_zmm_works = 0;
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define gf64_atomic_cas(ptr, expected, desired) \
+	(_InterlockedCompareExchange((volatile long*)(ptr), (long)(desired), (long)(*(expected))) == (long)(*(expected)))
+#else
+#define gf64_atomic_cas(ptr, expected, desired) \
+	__atomic_compare_exchange_n((ptr), (expected), (desired), 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)
+#endif
+
+/* One-shot guard for the probe body. The first thread to CAS the flag
+ * from 0 to 1 runs the probe; concurrent CAS attempts fail and skip
+ * the probe. The cache is then populated by exactly one thread. */
+static volatile int zmm_probe_once = 0;
+
 int gf64_zmm_probe(void) {
+	/* Fast path: cache hit. */
 	if (zmm_probe_cached != -1) {
 		return zmm_probe_cached;
 	}
-	int r = try_zmm_insn();
-	zmm_probe_cached = r;
-	gf64_zmm_works = r;
-	return r;
+	/* Slow path: try to be the one thread that runs the probe. */
+	int expected = 0;
+	if (gf64_atomic_cas(&zmm_probe_once, &expected, 1)) {
+		int r = try_zmm_insn();
+		zmm_probe_cached = r;
+		gf64_zmm_works = r;
+		return r;
+	}
+	/* Another thread is running the probe; spin-wait briefly for the
+	 * cache to be populated. The probe is short (single vpaddd zmm
+	 * instruction under a SIGILL handler) so the wait is bounded. */
+	while (zmm_probe_cached == -1) {
+		/* Hint that we're spinning. */
+#if defined(_MSC_VER)
+		_mm_pause();
+#else
+		__builtin_ia32_pause();
+#endif
+	}
+	return zmm_probe_cached;
 }
 
 /* ----- Detection entry point (exported, called by gf64_dispatch.c post-T1) -----
@@ -326,7 +369,14 @@ GF64Method gf64_detect_method_internal(void) {
 				 * probe ZMM execution to defeat any hypervisor that masks
 				 * CPUID only partially or fakes XCR0 without honouring
 				 * lazy XSAVE state loading. If SIGILL fires, fall through. */
-				if (try_zmm_insn()) {
+				if (gf64_zmm_probe()) {
+					/* (cubic review 4915459866 P2): route through the
+					 * cached probe wrapper instead of try_zmm_insn()
+					 * directly. Detection is called 5+ times via
+					 * gf64_detect_method's poll aggregate; routing the
+					 * SIGILL probe through the cache makes it run
+					 * exactly once per process. The Layer 2 (VPCLMULQDQ
+					 * gate) and other behaviour are unchanged. */
 					/* Layer 2 (cubic review 4910826158, P1+x): the
 					 * AVX-512 codepath is gated on VPCLMULQDQ support,
 					 * even for routines that don't use PCLMULQDQ directly.

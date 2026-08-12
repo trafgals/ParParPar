@@ -48,7 +48,6 @@
 
 #include <stdint.h>
 #include <stdlib.h>
-#include <pthread.h>
 
 HEDLEY_BEGIN_C_DECLS
 
@@ -105,24 +104,21 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	 * silently undoing PD2 downclock downgrades (Zen4's downclock
 	 * zone) by re-binding to the raw detected ISA.
 	 *
-	 * CUBIC REVIEW 4914681432 P2 (concurrency): the previous
+	 * CUBIC REVIEW 4914681432 P3 / 4915459866 P1: the original
 	 * implementation used a non-atomic `static int dispatch_bound`
 	 * flag, which has undefined behaviour under concurrent first
 	 * calls. The function is documented as a single-threaded library
 	 * entry today (no caller invokes it from multiple threads) but
-	 * uses pthread_once() for forward-compatibility: if a future
-	 * caller fan-outs, the dispatch init will be safe by default.
-	 *
-	 * Fix: pthread_once() runs gf64_init_dispatch() exactly once
-	 * across all threads; subsequent concurrent callers block on the
-	 * once-flag and observe the bound table. The pointer
-	 * gf64_inverse_batch is then non-NULL and we skip the redundant
-	 * CPUID poll.
-	 *
-	 * Race-safety note: pthread_once is the canonical C11/C17 way to
-	 * do "init exactly once across threads"; it's been standardised
-	 * since POSIX.1-2001 and the C11 <threads.h>. On WSL2 / glibc
-	 * this is a no-op compared to the previous single-threaded path.
+	 * the flag check is augmented with a `gf64_inverse_batch == NULL`
+	 * guard so that workload rebinds (par3_engine.cc:969's
+	 * gf64_apply_method call) are preserved — the dispatch table
+	 * is brought up on the first call only if NO dispatch is yet
+	 * bound. After a workload-chosen dispatch is set externally,
+	 * gf64_inverse_batch is non-NULL and we skip the redundant init,
+	 * preserving the workload's PD2 choice. Concurrent first-calls
+	 * from multiple threads is still UB in this implementation; a
+	 * future hardening could use InitOnceExecuteOnce (Windows) /
+	 * pthread_once (POSIX) via a small portable helper.
 	 *
 	 * IMPORTANT (cubic review 4914681432 P3): even when
 	 * gf64_inverse_batch is already non-NULL (e.g. a workload
@@ -133,12 +129,18 @@ void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	 * populated by the time we read them below. We do NOT need to
 	 * re-run init_dispatch here — that would clobber the workload
 	 * dispatch. */
-	{
-		static pthread_once_t dispatch_once = PTHREAD_ONCE_INIT;
-		/* pthread_once takes a void(*)(void) initializer; gf64_init_dispatch
-		 * returns int (with no documented return-value contract that this
-		 * library entry cares about). The cast is C-standard. */
-		pthread_once(&dispatch_once, (void (*)(void))gf64_init_dispatch);
+	static int dispatch_bound = 0;
+	if (!dispatch_bound) {
+		/* If gf64_inverse_batch is already non-NULL (some other call
+		 * site ran init_dispatch first, or a workload-rebind via
+		 * gf64_apply_method set the dispatch), skip the redundant
+		 * init but still mark the flag so we don't keep checking.
+		 * Without this guard, a workload-rebind's AVX-2 PD2 choice
+		 * would be silently clobbered back to the raw detected ISA. */
+		if (gf64_inverse_batch == NULL) {
+			gf64_init_dispatch();
+		}
+		dispatch_bound = 1;
 	}
 
 	/*
