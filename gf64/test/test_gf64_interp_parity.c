@@ -429,12 +429,16 @@ static void test_null_safe_contract(void) {
 	gf64_multi_point_interp_weights(NULL, NULL, NULL, NULL);
 
 	/* Empty (zero-initialized) tree must be a no-op that leaves out
-	 * untouched. */
+	 * untouched. values is NON-NULL here so the call reaches the N == 0
+	 * branch — a NULL values array would return at the NULL-guard
+	 * instead and never exercise the empty-tree path (cubic review
+	 * ce3679b0 P2). */
 	SubproductTree empty;
 	memset(&empty, 0, sizeof(empty));
+	gf64_t vals[4] = { 0xA, 0xB, 0xC, 0xD };
 	gf64_t out[4] = { 1, 2, 3, 4 };
-	gf64_multi_point_interp_internal(&empty, NULL, out);
-	gf64_multi_point_interp_weights(&empty, NULL, NULL, out);
+	gf64_multi_point_interp_internal(&empty, vals, out);
+	gf64_multi_point_interp_weights(&empty, vals, NULL, out);
 
 	int ok = (out[0] == 1 && out[1] == 2 && out[2] == 3 && out[3] == 4);
 	if (ok) {

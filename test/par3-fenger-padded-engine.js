@@ -117,6 +117,13 @@ runCase(1, 512, 128, 0x10000, 0x1000000, 'N=1 trivial');
 runCase(1000, 512, 128, 0x10000, 66300,
 	'overlapping input/recovery ranges fall back to legacy',
 	binding.compute_recovery);
+// Same overlap with BOTH counts power-of-2 (cubic review ce3679b0 P2):
+// no padding at all, so the pre-fix guard — nested inside the
+// padding-only branch — was skipped entirely and Fenger divided by
+// V(y_r) == 0. The overlap check now runs for every workload.
+runCase(1024, 512, 128, 0x10000, 66400,
+	'pow2 N + pow2 R overlapping ranges fall back to legacy',
+	binding.compute_recovery);
 // blockSize above the 32-bit size_t range (cubic review 50f46d24 P1):
 // on 32-bit hosts the (size_t) cast truncates to 0 and the size checks
 // would divide by zero (native crash). The guard must reject cleanly

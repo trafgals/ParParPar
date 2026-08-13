@@ -182,34 +182,45 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 	const bool padInputs   = (numInputsPadded != numInputs);
 	const bool padRecovery = (numRecoveryPadded != numRecovery);
 
+	/* Any overlap of the REAL input range [firstInput, inEnd) with the
+	 * (padded) recovery range [firstRecovery, recEnd) forces the legacy
+	 * fallback: Fenger would compute V(y_r) == 0 on a colliding point
+	 * and emit a zero recovery row instead of the legacy row. Checked
+	 * for EVERY workload — including unpadded power-of-2 shapes, which
+	 * never enter the synthetic-base block below (cubic review f70a81ef
+	 * P2 / f44ead49 P1 / ce3679b0 P2). inEnd/recEnd saturate on uint64
+	 * overflow so the comparison stays sound. */
+	const uint64_t inEnd  = (firstInput > UINT64_MAX - (uint64_t)numInputs)
+	                        ? UINT64_MAX
+	                        : firstInput + (uint64_t)numInputs;
+	const uint64_t recEnd = (firstRecovery > UINT64_MAX - (uint64_t)numRecoveryPadded)
+	                        ? UINT64_MAX
+	                        : firstRecovery + (uint64_t)numRecoveryPadded;
+	if ((firstRecovery < inEnd) && (firstInput < recEnd)) {
+		GF64Controller::ComputeRecoveryBlocks(
+			inputs, numInputs,
+			recovery, numRecovery,
+			blockSize64,
+			firstInput, firstRecovery,
+			/* numThreads */ 0
+		);
+		return;
+	}
+
 	/* Synthetic input base: strictly above both the real input range
-	 * [firstInput, firstInput + numInputs) and the (padded) recovery
-	 * range [firstRecovery, firstRecovery + numRecoveryPadded), so the
-	 * synthetic points collide with nothing. On uint64 overflow (or a
-	 * padded-recovery range that would reach into the real inputs —
-	 * possible only under non-canonical input/recovery ordering), fall
-	 * back to the legacy path rather than risking a point collision
-	 * (V(y_r) == 0 would abort). */
+	 * [firstInput, inEnd) and the (padded) recovery range
+	 * [firstRecovery, recEnd), so the synthetic points collide with
+	 * nothing. On uint64 overflow (the synthetic base itself would
+	 * wrap), fall back to the legacy path rather than risking a point
+	 * collision (V(y_r) == 0 would abort). */
 	uint64_t syntheticInputBase = 0;
 	if (padInputs || padRecovery) {
-		const uint64_t inEnd  = firstInput + (uint64_t)numInputs;
-		const uint64_t recEnd = firstRecovery + (uint64_t)numRecoveryPadded;
 		const uint64_t padCount = (uint64_t)(numInputsPadded - numInputs);
 		const bool overflow =
 			firstInput > UINT64_MAX - (uint64_t)numInputs ||
 			firstRecovery > UINT64_MAX - (uint64_t)numRecoveryPadded ||
 			(inEnd > recEnd ? inEnd : recEnd) > UINT64_MAX - padCount;
-		/* Any overlap of the REAL input range [firstInput, inEnd) with
-		 * the (padded) recovery range [firstRecovery, recEnd) forces the
-		 * legacy fallback: Fenger would compute V(y_r) == 0 on a
-		 * colliding point and emit a zero recovery row instead of the
-		 * legacy row. Checked regardless of whether recovery needed
-		 * padding — a non-padded recovery range can still overlap the
-		 * inputs under non-canonical ordering (cubic review f70a81ef
-		 * P2 / f44ead49 P1). */
-		const bool recCollides =
-			(firstRecovery < inEnd) && (firstInput < recEnd);
-		if (overflow || recCollides) {
+		if (overflow) {
 			GF64Controller::ComputeRecoveryBlocks(
 				inputs, numInputs,
 				recovery, numRecovery,

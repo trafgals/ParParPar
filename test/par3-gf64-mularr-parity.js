@@ -218,16 +218,16 @@ var gCo  = Buffer.alloc(64);
 rejects(function () { addon.mul_arr(gOut, gIn, gCo, 8, 0); },
         'standalone: len>0, n_coeff=0 (div-by-zero guard)');
 rejects(function () { addon.mul_arr(gOut, gIn, gCo, Math.pow(2, 61), 1); },
-        'standalone: len=2^60 vs 64-byte buffers (overflow-safe check)');
+        'standalone: len=2^61 vs 64-byte buffers (overflow-safe check)');
 rejects(function () { addon.mul_arr(gOut, gIn, gCo, 1, Math.pow(2, 61)); },
-        'standalone: n_coeff=2^60 vs 64-byte coeff (overflow-safe check)');
+        'standalone: n_coeff=2^61 vs 64-byte coeff (overflow-safe check)');
 // Class method (encoder.mul_arr).
 rejects(function () { encoder.mul_arr(gOut, gIn, gCo, 8, 0); },
         'class: len>0, n_coeff=0 (div-by-zero guard)');
 rejects(function () { encoder.mul_arr(gOut, gIn, gCo, Math.pow(2, 61), 1); },
-        'class: len=2^60 vs 64-byte buffers (overflow-safe check)');
+        'class: len=2^61 vs 64-byte buffers (overflow-safe check)');
 rejects(function () { encoder.mul_arr(gOut, gIn, gCo, 1, Math.pow(2, 61)); },
-        'class: n_coeff=2^60 vs 64-byte coeff (overflow-safe check)');
+        'class: n_coeff=2^61 vs 64-byte coeff (overflow-safe check)');
 // Zero-length no-op preserved on both entries.
 addon.mul_arr(gOut, gIn, gCo, 0, 0);
 encoder.mul_arr(gOut, gIn, gCo, 0, 0);
