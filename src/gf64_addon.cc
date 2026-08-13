@@ -395,6 +395,24 @@ static napi_value Gf64Encoder_NAPI_mul_arr(napi_env env, napi_callback_info info
 		return NULL;
 	}
 
+	/* Same validation as the standalone mul_arr export (cubic review
+	 * f70a81ef P1 / f44ead49 P0+P1): reject negative counts, zero
+	 * n_coeff with a positive len (kernel divides by w % n_coeff), and
+	 * counts that overflow the byte-size comparison. coeffLen was
+	 * already divided by sizeof(uint64_t) above. */
+	if(len < 0 || n_coeff < 0) {
+		napi_throw_range_error(env, NULL, "len and n_coeff must be non-negative");
+		return NULL;
+	}
+	if(len > 0 && n_coeff == 0) {
+		napi_throw_range_error(env, NULL, "n_coeff must be positive when len > 0");
+		return NULL;
+	}
+	if((size_t)len > outLen / 8 || (size_t)len > inLen / 8 || (size_t)n_coeff > coeffLen) {
+		napi_throw_range_error(env, NULL, "buffer too small for len / n_coeff");
+		return NULL;
+	}
+
 	enc->MulArr((uint64_t*)aligned_out, (uint64_t*)aligned_in, (uint64_t*)aligned_coeff, (size_t)len, (size_t)n_coeff);
 
 	if (needs_out_temp) {
@@ -1365,12 +1383,12 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 		return NULL;
 	}
 
-	if(inputsLen < (size_t)(numInputs * blockSize)) {
+	if((size_t)numInputs > inputsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "inputs buffer too small for numInputs * blockSize");
 		return NULL;
 	}
 
-	if(outputsLen < (size_t)(numRecovery * blockSize)) {
+	if((size_t)numRecovery > outputsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "outputs buffer too small for numRecovery * blockSize");
 		return NULL;
 	}
@@ -1526,12 +1544,12 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 		return NULL;
 	}
 
-	if(inputsLen < (size_t)(numInputs * blockSize)) {
+	if((size_t)numInputs > inputsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "inputs buffer too small for numInputs * blockSize");
 		return NULL;
 	}
 
-	if(outputsLen < (size_t)(numRecovery * blockSize)) {
+	if((size_t)numRecovery > outputsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "outputs buffer too small for numRecovery * blockSize");
 		return NULL;
 	}
@@ -1709,12 +1727,12 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 		return NULL;
 	}
 
-	if(inputsLen < (size_t)(numInputs * blockSize)) {
+	if((size_t)numInputs > inputsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "inputs buffer too small for numInputs * blockSize");
 		return NULL;
 	}
 
-	if(outputsLen < (size_t)(numRecovery * blockSize)) {
+	if((size_t)numRecovery > outputsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "outputs buffer too small for numRecovery * blockSize");
 		return NULL;
 	}
@@ -1820,12 +1838,12 @@ static napi_value ComputeRecoveryFenger_NAPI(napi_env env, napi_callback_info in
 		return NULL;
 	}
 
-	if(inputsLen < (size_t)(numInputs * blockSize)) {
+	if((size_t)numInputs > inputsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "inputs buffer too small for numInputs * blockSize");
 		return NULL;
 	}
 
-	if(outputsLen < (size_t)(numRecovery * blockSize)) {
+	if((size_t)numRecovery > outputsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "outputs buffer too small for numRecovery * blockSize");
 		return NULL;
 	}
@@ -2837,7 +2855,20 @@ static napi_value MulArr_NAPI(napi_env env, napi_callback_info info) {
 		napi_throw_range_error(env, NULL, "len_words and n_coeff must be non-negative");
 		return NULL;
 	}
-	if((size_t)len * 8 > outLen || (size_t)len * 8 > inLen || (size_t)n_coeff * 8 > coeffLen) {
+	if(len > 0 && n_coeff == 0) {
+		/* The dispatched kernel indexes coeff by w % n_coeff — a zero
+		 * n_coeff with a positive word count divides by zero on the
+		 * scalar path (and yields an invalid zero result on SIMD).
+		 * Reject up front; the len == 0 no-op case stays legal.
+		 * (cubic review f70a81ef P1 / f44ead49 P1) */
+		napi_throw_range_error(env, NULL, "n_coeff must be positive when len_words > 0");
+		return NULL;
+	}
+	/* Overflow-safe size checks: compare word counts against
+	 * buffer_length / 8. The naive (size_t)len * 8 > outLen form can
+	 * overflow size_t for huge counts, letting a short buffer through
+	 * to a native out-of-bounds access. (cubic review f44ead49 P0) */
+	if((size_t)len > outLen / 8 || (size_t)len > inLen / 8 || (size_t)n_coeff > coeffLen / 8) {
 		napi_throw_range_error(env, NULL, "buffer too small for len_words / n_coeff");
 		return NULL;
 	}

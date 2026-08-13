@@ -1002,6 +1002,12 @@ void gf64_multi_point_interp_internal(
 	const gf64_t *values,
 	gf64_t *out
 ) {
+	if (tree == NULL || values == NULL || out == NULL) {
+		/* NULL-safe direct-call contract (cubic review f44ead49 P2):
+		 * same guarantee as gf64_multi_point_eval — return immediately
+		 * without writing. */
+		return;
+	}
 	const size_t N = tree->num_points;
 
 	if (N == 0) {
@@ -1077,6 +1083,12 @@ void gf64_multi_point_interp_weights(
 	const gf64_t *weights,
 	gf64_t *out
 ) {
+	if (tree == NULL || values == NULL || out == NULL) {
+		/* NULL-safe direct-call contract (cubic review f44ead49 P2):
+		 * same guarantee as gf64_multi_point_eval — return immediately
+		 * without writing. */
+		return;
+	}
 	const size_t N = tree->num_points;
 
 	if (N == 0) {

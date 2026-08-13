@@ -59,11 +59,19 @@ HEDLEY_BEGIN_C_DECLS
  * Dispatches on quotient length m = deg_f - deg_g + 1:
  *   - m < 96:  schoolbook O((deg_f + 1) * (deg_g + 1)) long division
  *              (delegates to gf64_poly_divmod_schoolbook)
- *   - m >= 96: Newton-reciprocal O(M(m)) division (issue #59 A1) — the
- *              quotient is recovered from rev(f) * rev(g)^{-1} mod x^m,
- *              with the modular inverse computed by Newton iteration and
- *              every multiplication routed through the HQC-FFT /
- *              Karatsuba / schoolbook mul dispatch (gf64_poly_mul_internal).
+ *   - m >= 96: Newton-reciprocal division (issue #59 A1) — the
+ *              quotient is recovered in O(M(m)) from rev(f) * rev(g)^{-1}
+ *              mod x^m, with the modular inverse computed by Newton
+ *              iteration and every multiplication routed through the
+ *              HQC-FFT / Karatsuba / schoolbook mul dispatch
+ *              (gf64_poly_mul_internal).
+ *
+ * The FULL division is O(M(m) + M(deg_f + 1)): the remainder is
+ * reconstructed as r = f - g*q — one (deg_g + 1)-by-m product whose
+ * output spans deg_f + 1 coefficients. When deg_g is large relative to
+ * the quotient (m << deg_g), the reconstruction term dominates and the
+ * "O(M(m))" quotient bound alone would overstate the guarantee
+ * (cubic review f70a81ef P2 / f44ead49 P3).
  *
  * @param f      Dividend coefficients [c_0, ..., c_deg_f].
  * @param deg_f  Degree of the dividend.
@@ -72,14 +80,16 @@ HEDLEY_BEGIN_C_DECLS
  * @param q      Output quotient buffer of size (deg_f - deg_g + 1).
  *               When deg_f < deg_g, the buffer receives a single 0 at q[0]
  *               and r receives (deg_g - 1) + 1 = deg_g coefficients.
- * @param r      Output remainder buffer of size (deg_f + 1). Used as a
- *               working buffer that initially holds a copy of f and is
- *               reduced in place; on return, the coefficients
- *               r[0..deg_g - 1] are the remainder (with the rest of the
- *               buffer being scratch / unspecified). The caller is
- *               responsible for sizing r to hold at least deg_f + 1
- *               coefficients so the working buffer can be expanded in
- *               place during the elimination.
+ * @param r      Output remainder buffer of size max(deg_f + 1, deg_g).
+ *               Used as a working buffer that initially holds a copy of f
+ *               and is reduced in place; on return, the coefficients
+ *               r[0..deg_g - 1] are the remainder. For deg_f < deg_g the
+ *               region r[deg_f + 1 .. deg_g - 1] is ZEROED (the half-EGCD
+ *               consumer memcpys the whole buffer), so callers must size r
+ *               to hold max(deg_f + 1, deg_g) coefficients — the deg_f + 1
+ *               sizing alone is an out-of-bounds write in that edge case
+ *               (cubic review f70a81ef P2; test_gf64_divmod_parity sizes r
+ *               to deg_g for deg_f < deg_g).
  *
  * Aborts on a zero divisor (g[0] == 0 when deg_g == 0). For deg_g > 0 the
  * leading coefficient g[deg_g] is required to be nonzero (the function
@@ -222,7 +232,9 @@ int gf64_poly_invmod_mod(
  * Algorithm (issue #59 A1, derivative-based Lagrange form): the tree
  * needs NO inverse cache — one MPE of the root derivative P' gives
  * P'(x_j), the values are scaled to z_j = y_j / P'(x_j), and the
- * top-down combine f_parent = f_L·P_R + f_R·P_L uses only FFT muls.
+ * top-down combine f_parent = f_L·P_R + f_R·P_L routes through the tiered
+ * mul dispatch (gf64_poly_mul_padded: schoolbook for small/asymmetric
+ * operands, Karatsuba outside the HQC range, HQC-FFT at scale).
  * O(M(N) log N) end to end.
  *
  * GATED behind the PAR3_GF64_USE_INTERP env var. The function checks
@@ -295,6 +307,12 @@ void gf64_multi_point_interp_internal(
  *                pre-scaled-z convention used by interp_internal).
  * @param out     Output buffer of N coefficients: the unique polynomial
  *                of degree < N satisfying out(x_j) = values[j].
+ *
+ * NULL-safe contract: on NULL tree / values / out (or an empty tree,
+ * num_points == 0), returns immediately without writing — the same
+ * guarantee as gf64_multi_point_interp_internal (cubic review f44ead49
+ * P2). A NULL `weights` is NOT an error: it selects the internal
+ * pre-scaled-z convention.
  */
 void gf64_multi_point_interp_weights(
 	const SubproductTree *tree,

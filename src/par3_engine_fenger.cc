@@ -148,9 +148,36 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 	 * unpadded computation (verified by test_gf64_fenger_padded and the
 	 * engine's padded routing contract). */
 	size_t numInputsPadded = 1;
-	while (numInputsPadded < numInputs) numInputsPadded <<= 1;
+	while (numInputsPadded < numInputs) {
+		/* Overflow guard: shifting a count >= 2^63 wraps to 0 and would
+		 * loop forever. Such counts cannot be padded — fall back to the
+		 * legacy path (cubic review f70a81ef P2). */
+		if (numInputsPadded > (SIZE_MAX >> 1)) {
+			GF64Controller::ComputeRecoveryBlocks(
+				inputs, numInputs,
+				recovery, numRecovery,
+				blockSize64,
+				firstInput, firstRecovery,
+				/* numThreads */ 0
+			);
+			return;
+		}
+		numInputsPadded <<= 1;
+	}
 	size_t numRecoveryPadded = 1;
-	while (numRecoveryPadded < numRecovery) numRecoveryPadded <<= 1;
+	while (numRecoveryPadded < numRecovery) {
+		if (numRecoveryPadded > (SIZE_MAX >> 1)) {
+			GF64Controller::ComputeRecoveryBlocks(
+				inputs, numInputs,
+				recovery, numRecovery,
+				blockSize64,
+				firstInput, firstRecovery,
+				/* numThreads */ 0
+			);
+			return;
+		}
+		numRecoveryPadded <<= 1;
+	}
 
 	const bool padInputs   = (numInputsPadded != numInputs);
 	const bool padRecovery = (numRecoveryPadded != numRecovery);
@@ -172,11 +199,16 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 			firstInput > UINT64_MAX - (uint64_t)numInputs ||
 			firstRecovery > UINT64_MAX - (uint64_t)numRecoveryPadded ||
 			(inEnd > recEnd ? inEnd : recEnd) > UINT64_MAX - padCount;
-		/* Padded-recovery overlap with real inputs (non-canonical
-		 * ordering: recovery ids below input ids with R_pad reaching
-		 * into the input range). */
+		/* Any overlap of the REAL input range [firstInput, inEnd) with
+		 * the (padded) recovery range [firstRecovery, recEnd) forces the
+		 * legacy fallback: Fenger would compute V(y_r) == 0 on a
+		 * colliding point and emit a zero recovery row instead of the
+		 * legacy row. Checked regardless of whether recovery needed
+		 * padding — a non-padded recovery range can still overlap the
+		 * inputs under non-canonical ordering (cubic review f70a81ef
+		 * P2 / f44ead49 P1). */
 		const bool recCollides =
-			padRecovery && (firstRecovery < inEnd) && (firstInput < recEnd);
+			(firstRecovery < inEnd) && (firstInput < recEnd);
 		if (overflow || recCollides) {
 			GF64Controller::ComputeRecoveryBlocks(
 				inputs, numInputs,

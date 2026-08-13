@@ -50,9 +50,6 @@
 
 HEDLEY_BEGIN_C_DECLS
 
-/* Public reference for field multiplication, declared in gf64_single.c. */
-extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
-
 void gf64_barycentric_weights(const SubproductTree *tree, gf64_t *weights_out) {
 	if (tree == NULL || tree->num_points == 0) {
 		return;

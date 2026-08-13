@@ -100,6 +100,55 @@ runCase(1000, 600, 128, 0x10000, 0x1000000, 'odd N and odd R (both padded)');
 runCase(1024, 600, 128, 0x10000, 0x1000000, 'pow2 N, odd R (recovery padded)');
 // Trivial edge: N=1.
 runCase(1, 512, 128, 0x10000, 0x1000000, 'N=1 trivial');
+// Collision fallback (cubic review f70a81ef P2 / f44ead49 P1): the
+// recovery range [66000, 66600) overlaps the real input range
+// [65536, 66536) — the guard must catch this even though numRecovery is
+// a power of 2 (no recovery padding) and fall back to the legacy path
+// (compute_recovery), which is bit-exact with compute_recovery_full
+// here. Without the fallback, Fenger computes V(y_r) == 0 on the
+// colliding points and emits zero rows.
+(function () {
+	var N = 1000, R = 600, blockSize = 128;
+	var fi = 0x10000, fr = 66000;
+	var B = blockSize / 8;
+	var inputs = Buffer.allocUnsafe(N * blockSize);
+	var saved = state;
+	for (var i = 0; i < N * B; i++) {
+		inputs.writeBigUInt64LE(next64(), i * 8);
+	}
+	state = saved; /* keep the deterministic stream for later cases */
+	var outFenger = Buffer.alloc(R * blockSize);
+	var outLegacy = Buffer.alloc(R * blockSize);
+	binding.compute_recovery_fenger(inputs, outFenger, N, R, blockSize, fi, fr, 0);
+	binding.compute_recovery(inputs, outLegacy, N, R, blockSize, fi, fr, 0);
+	var ok = outFenger.equals(outLegacy);
+	if (!ok) {
+		for (var w = 0; w < R * B; w++) {
+			if (outFenger.readBigUInt64LE(w * 8) !== outLegacy.readBigUInt64LE(w * 8)) {
+				console.error('    first mismatch at word ' + w + ': fenger=0x' +
+					outFenger.readBigUInt64LE(w * 8).toString(16) + ' legacy=0x' +
+					outLegacy.readBigUInt64LE(w * 8).toString(16));
+				break;
+			}
+		}
+	}
+	check(ok, 'overlapping input/recovery ranges fall back to legacy (N=' + N +
+		', R=' + R + ', fi=0x' + fi.toString(16) + ', fr=0x' + fr.toString(16) + ')');
+})();
+// Shift-overflow boundary (cubic review f70a81ef P2): a count above the
+// largest representable power of two (2^63) must be rejected cleanly by
+// the binding — never wrap the pad loop to zero and hang.
+(function () {
+	var bigIn = Buffer.alloc(8);
+	var bigOut = Buffer.alloc(8);
+	var threw = false;
+	try {
+		binding.compute_recovery_fenger(bigIn, bigOut, Math.pow(2, 63), 2, 8, 0x10000, 0x1000000, 0);
+	} catch (e) {
+		threw = (e instanceof RangeError) || (e instanceof TypeError);
+	}
+	check(threw, 'numInputs=2^63 rejected cleanly (no pad-loop wrap / hang)');
+})();
 // NOTE: the P1 gate shape (N=131072/R=4096 bit-exact vs Cauchy) is a
 // bench item (gf64/test/bench_gf64_subquadratic gate_shape), not a unit
 // test — the padded route at N=2^18+1 pads to 2^19 points and takes

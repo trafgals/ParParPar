@@ -57,6 +57,26 @@ static void put_seed(uint64_t s) {
 	g_splitmix_state = s;
 }
 
+/* Next non-zero point distinct from points[0..i-1] — the derivative-form
+ * interpolant requires P'(x_j) != 0, i.e. pairwise-distinct points
+ * (cubic review f70a81ef P3: the generator previously only rejected
+ * zero, so a 64-bit collision would abort the whole suite instead of
+ * reporting a clean failure). Linear scan is fine at these N. */
+static gf64_t next_distinct_point(const gf64_t *points, size_t i) {
+	for (;;) {
+		gf64_t v = splitmix64_next();
+		if (v == 0) continue;
+		int dup = 0;
+		for (size_t j = 0; j < i; j++) {
+			if (points[j] == v) {
+				dup = 1;
+				break;
+			}
+		}
+		if (!dup) return v;
+	}
+}
+
 /* ----------------------------------------------------------------------------
  * Test framework
  * ---------------------------------------------------------------------------- */
@@ -101,11 +121,7 @@ static void test_roundtrip(void) {
 		/* Distinct non-zero points (tree-build requirement). */
 		put_seed(0x0BADF00D00000000ULL ^ (uint64_t)N);
 		for (size_t i = 0; i < N; i++) {
-			gf64_t v;
-			do {
-				v = splitmix64_next();
-			} while (v == 0);
-			points[i] = v;
+			points[i] = next_distinct_point(points, i);
 		}
 		put_seed(0xFEEDFACE00000000ULL ^ (uint64_t)N);
 		for (size_t i = 0; i < N; i++) {
@@ -166,11 +182,7 @@ static void test_lagrange_reference(void) {
 	gf64_t points[8], values[8];
 	put_seed(0x5EEDC0DE5EEDC0DEULL);
 	for (size_t i = 0; i < N; i++) {
-		gf64_t v;
-		do {
-			v = splitmix64_next();
-		} while (v == 0);
-		points[i] = v;
+		points[i] = next_distinct_point(points, i);
 	}
 	put_seed(0xC0FFEE00C0FFEE00ULL);
 	for (size_t i = 0; i < N; i++) {
@@ -298,11 +310,7 @@ static void test_determinism(void) {
 
 	put_seed(0xD3D3D3D3D3D3D3D3ULL);
 	for (size_t i = 0; i < N; i++) {
-		gf64_t v;
-		do {
-			v = splitmix64_next();
-		} while (v == 0);
-		points[i] = v;
+		points[i] = next_distinct_point(points, i);
 	}
 	put_seed(0x0DDBA11AA1100001ULL);
 	for (size_t i = 0; i < N; i++) {
@@ -366,11 +374,7 @@ static void test_weights_parity(void) {
 
 		put_seed(0xBADBEEF000000000ULL ^ (uint64_t)N);
 		for (size_t i = 0; i < N; i++) {
-			gf64_t v;
-			do {
-				v = splitmix64_next();
-			} while (v == 0);
-			points[i] = v;
+			points[i] = next_distinct_point(points, i);
 		}
 		put_seed(0xC0FFEE0000000000ULL ^ (uint64_t)N);
 		for (size_t i = 0; i < N; i++) {
@@ -411,6 +415,37 @@ static void test_weights_parity(void) {
 }
 
 /* ----------------------------------------------------------------------------
+ * Test 6: NULL-safe direct-call contract (cubic review f44ead49 P2).
+ * Both ungated entries must return immediately — without dereferencing
+ * tree or writing out — on NULL tree / values / out and on an empty
+ * (zero-initialized) tree. Previously tree->num_points was dereferenced
+ * before any guard, crashing direct callers.
+ * ---------------------------------------------------------------------------- */
+static void test_null_safe_contract(void) {
+	printf("Test 6: NULL / empty-tree calls return safely\n");
+
+	/* NULL tree/values/out must not crash either entry. */
+	gf64_multi_point_interp_internal(NULL, NULL, NULL);
+	gf64_multi_point_interp_weights(NULL, NULL, NULL, NULL);
+
+	/* Empty (zero-initialized) tree must be a no-op that leaves out
+	 * untouched. */
+	SubproductTree empty;
+	memset(&empty, 0, sizeof(empty));
+	gf64_t out[4] = { 1, 2, 3, 4 };
+	gf64_multi_point_interp_internal(&empty, NULL, out);
+	gf64_multi_point_interp_weights(&empty, NULL, NULL, out);
+
+	int ok = (out[0] == 1 && out[1] == 2 && out[2] == 3 && out[3] == 4);
+	if (ok) {
+		pass("NULL / empty-tree interp calls return without writing");
+	} else {
+		printf("    out buffer was modified by an empty-tree call\n");
+		fail("NULL / empty-tree interp calls return without writing");
+	}
+}
+
+/* ----------------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------------- */
 int main(void) {
@@ -422,6 +457,7 @@ int main(void) {
 	test_n1();
 	test_determinism();
 	test_weights_parity();
+	test_null_safe_contract();
 
 	printf("\n=== Summary ===\n");
 	printf("Passed: %d\n", g_passed);
