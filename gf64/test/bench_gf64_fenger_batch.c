@@ -57,6 +57,7 @@ static void bench_shape(const char *name, size_t N, size_t R, size_t B,
 	for (size_t i = 0; i < N * B; i++) in[i] = next_rand();
 
 	const size_t Ks[] = {1, 4, 8};
+	double base[1] = {0.0};  /* K=1 column time (speedup denominator) */
 	double t0 = now_sec();
 	/* Warm-up at the default K (also pins the env-cache-free read). */
 	gf64_fenger_execute(ctx, in, B, out, 0, B);
@@ -68,7 +69,7 @@ static void bench_shape(const char *name, size_t N, size_t R, size_t B,
 		char env[32];
 		snprintf(env, sizeof(env), "%zu", Ks[ki]);
 		setenv("PAR3_FENGER_BATCH_WORDS", env, 1);
-		const int reps = (B <= 8) ? 3 : 1;
+		const int reps = 1;  /* 431 s/word at N=262144: no repeats there */
 		double best = 1e30;
 		for (int r = 0; r < reps; r++) {
 			double s = now_sec();
@@ -79,15 +80,10 @@ static void bench_shape(const char *name, size_t N, size_t R, size_t B,
 		double gb = (double)N * B * 8.0 / 1e9;
 		double mbps = gb / best * 1024.0;
 		printf("  K=%zu: %7.3f s  (%7.1f MB/s)", Ks[ki], best, mbps);
-		if (ki > 0) {
-			char env1[32];
-			snprintf(env1, sizeof(env1), "%zu", Ks[0]);
-			setenv("PAR3_FENGER_BATCH_WORDS", env1, 1);
-			double s = now_sec();
-			gf64_fenger_execute(ctx, in, B, out, 0, B);
-			double base = now_sec() - s;
-			printf("   speedup vs K=1: %.2fx", base / best);
+		if (ki > 0 && base[0] > 0.0) {
+			printf("   speedup vs K=1: %.2fx", base[0] / best);
 		}
+		if (ki == 0) base[0] = best;
 		printf("\n");
 	}
 	setenv("PAR3_FENGER_BATCH_WORDS", "4", 1);
@@ -119,7 +115,7 @@ int main(void) {
 	 * out: their prepares alone are impractical on WSL2, and the P2
 	 * gate ("10G/100k <= 10 min") is JS-pipeline-bound anyway (the
 	 * ~27 MB/s env ceiling measured in P1). */
-	bench_shape("1G/10K-ish", 1u << 18, 1u << 10, 8, 0, 1u << 20);
 	bench_shape("medium",     1u << 14, 1u << 9, 64, 0, 1u << 20);
+	bench_shape("1G/10K-ish", 1u << 18, 1u << 10, 8, 0, 1u << 20);
 	return 0;
 }

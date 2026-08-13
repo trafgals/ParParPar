@@ -29,19 +29,36 @@ jobs:
         shell: bash
         run: |
           set +e
-          for combo in default noavx512 forceavx512; do
+          # forceavx512 is only meaningful on a runner whose CPUID probe
+          # reports AVX-512; forcing AVX-512 on a non-AVX-512 CPU is a
+          # guaranteed SIGILL by design, so gate it on the detection.
+          DET=$(node -e "var m=require('./build/Release/parpar_gf64.node'); process.stdout.write((m.gf64_info()||{}).name||'')" 2>/dev/null)
+          echo "runner detection: $DET"
+          bad=0
+          for combo in default noavx512; do
             case $combo in
               default)      unset PAR3_GF64_USE_AVX512 PAR3_AVX512_FORCE;;
               noavx512)     export PAR3_GF64_USE_AVX512=0; unset PAR3_AVX512_FORCE;;
-              forceavx512)  export PAR3_GF64_USE_AVX512=1 PAR3_AVX512_FORCE=2;;
             esac
             node test/repro-62.js > "repro-$combo.log" 2>&1
-            echo "=== combo=$combo exit=$? ==="
+            rc=$?
+            echo "=== combo=$combo exit=$rc ==="
             cat "repro-$combo.log"
+            [ $rc -ne 0 ] && bad=1
           done
+          if [ "$DET" = "AVX512" ]; then
+            export PAR3_GF64_USE_AVX512=1 PAR3_AVX512_FORCE=2
+            node test/repro-62.js > repro-forceavx512.log 2>&1
+            echo "=== combo=forceavx512 exit=$? (runner has AVX-512: expected to pass) ==="
+            cat repro-forceavx512.log
+          else
+            echo "=== combo=forceavx512 SKIPPED (runner has no AVX-512; forcing it would SIGILL by design) ==="
+          fi
           # Faulting-module details from the Windows Application event log
           # (no admin/registry needed) — pinpoints the crashing function.
-          powershell -Command "Get-WinEvent -LogName Application -MaxEvents 12 | Where-Object { $_.ProviderName -match 'Application Error|Windows Error Reporting' } | Select-Object -First 2 | ForEach-Object { $_.Message }" 2>&1 | head -40
+          # (\$_ escapes MSYS's last-argument expansion of $_.)
+          powershell -Command "Get-WinEvent -LogName Application -MaxEvents 12 | Where-Object { \$_.ProviderName -match 'Application Error|Windows Error Reporting' } | Select-Object -First 2 | ForEach-Object { \$_.Message }" 2>&1 | head -40
+          exit $bad
 
       - name: Full create repro (original crash path)
         shell: bash
@@ -74,12 +91,21 @@ jobs:
         shell: bash
         run: |
           set +e
-          for combo in default forceavx512; do
-            case $combo in
-              default)      unset PAR3_GF64_USE_AVX512 PAR3_AVX512_FORCE;;
-              forceavx512)  export PAR3_GF64_USE_AVX512=1 PAR3_AVX512_FORCE=2;;
-            esac
-            node test/repro-62.js > "repro22-$combo.log" 2>&1
-            echo "=== node22 combo=$combo exit=$? ==="
-            cat "repro22-$combo.log"
-          done
+          DET=$(node -e "var m=require('./build/Release/parpar_gf64.node'); process.stdout.write((m.gf64_info()||{}).name||'')" 2>/dev/null)
+          echo "runner detection: $DET"
+          bad=0
+          unset PAR3_GF64_USE_AVX512 PAR3_AVX512_FORCE
+          node test/repro-62.js > repro22-default.log 2>&1
+          rc=$?
+          echo "=== node22 combo=default exit=$rc ==="
+          cat repro22-default.log
+          [ $rc -ne 0 ] && bad=1
+          if [ "$DET" = "AVX512" ]; then
+            export PAR3_GF64_USE_AVX512=1 PAR3_AVX512_FORCE=2
+            node test/repro-62.js > repro22-forceavx512.log 2>&1
+            echo "=== node22 combo=forceavx512 exit=$? (runner has AVX-512: expected to pass) ==="
+            cat repro22-forceavx512.log
+          else
+            echo "=== node22 combo=forceavx512 SKIPPED (runner has no AVX-512) ==="
+          fi
+          exit $bad
