@@ -208,12 +208,15 @@ void gf64_addfft64_poly_mul_recursive_scratch_avx512(
 /*
  * Dispatch counters (exposed for boundary regression tests).
  * Incremented once per gf64_poly_mul_internal invocation per code path
- * taken. The struct is intentionally single-threaded (uint64_t, NOT
- * stdatomic). The kernel runs multi-threaded in production; each call
- * to gf64_poly_mul_internal happens on one worker at a time, so a
- * worker-local snapshot is stable. For test/correctness use the
- * single-threaded harness. See gf64/test/test_gf64_additive_fft_hqc2026.c
- * for boundary uses.
+ * taken. Fields are plain uint64_t (NOT stdatomic) so this header stays
+ * C89/C99-clean; all increments go through GF64_DISPATCH_COUNTER_INC,
+ * which is a lock-free atomic add on both toolchains (MSVC
+ * _InterlockedIncrement64 / GCC __atomic_fetch_add). The kernel can be
+ * entered from concurrent workers (e.g. parallel creates on separate
+ * worker_threads), so a plain ++ would lose increments; the atomic add
+ * keeps the counters exact even then. Reads are relaxed — exact totals
+ * are only meaningful in the single-threaded test harness. See
+ * gf64/test/test_gf64_poly_mul_internal_dispatch.c for boundary uses.
  */
 typedef struct gf64_dispatch_counts {
 	uint64_t schoolbook;
@@ -225,6 +228,15 @@ typedef struct gf64_dispatch_counts {
 
 extern gf64_dispatch_counts_t gf64_dispatch_counts;
 void gf64_dispatch_counts_reset(void);
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define GF64_DISPATCH_COUNTER_INC(p) \
+	((void)_InterlockedIncrement64((volatile long long *)(p)))
+#else
+#define GF64_DISPATCH_COUNTER_INC(p) \
+	((void)__atomic_fetch_add((p), 1, __ATOMIC_RELAXED))
+#endif
 
 HEDLEY_END_C_DECLS
 

@@ -58,25 +58,19 @@ Three sets of micro-benchmarks establish the kernel's behaviour in isolation fro
 
 | `n` | Karatsuba | HQC scalar | HQC AVX-512 | HQC AVX-512 vs Karatsuba |
 |---:|---:|---:|---:|---:|
-| 16 | … | … | … | … |
-| 64 | … | … | … | … |
-| **96** | … | … | … | … *(crossover, scalar)* |
-| 128 | … | … | … | … |
-| 512 | … | … | … | … |
-| **1024** | … | … | … | **4.71× peak** |
-| 4096 | … | … | … | … |
+| 16 | 0.001 ms | 0.002 ms | 0.002 ms | 0.34× |
+| 64 | 0.009 ms | 0.013 ms | 0.008 ms | 1.03× |
+| **96** | 0.044 ms | 0.029 ms | 0.019 ms | 2.37× *(crossover, scalar)* |
+| 128 | 0.052 ms | 0.029 ms | 0.019 ms | 2.79× |
+| 512 | 0.474 ms | 0.163 ms | 0.104 ms | 4.58× |
+| **1024** | 1.421 ms | 0.441 ms | 0.298 ms | **4.77× peak** |
+| 4096 | 12.764 ms | 4.121 ms | 3.433 ms | 3.72× |
 
-Run with: `cd gf64/test && make bench_hqc_vs_karatsuba && ./bench_hqc_vs_karatsuba`. The HQC scalar path beats Karatsuba from `n ≥ 96`; the AVX-512 (PCLMULQDQ) path beats Karatsuba from `n ≥ 64`. The 4.71× peak at `n = 1024` is the headline; at `n = 4096` HQC AVX-512 is ~3.74× faster (the earlier "10× slower" was measured with an incorrect `vpclmulqdq ymm0, ymm0, ymm0` probe byte sequence — see `gf64/test/Makefile` and cubic review 4914681432 P2).
+Run with: `cd gf64/test && make bench_hqc_vs_karatsuba && ./bench_hqc_vs_karatsuba` (Zen4 / WSL2, `-march=native -O3`, 2026-08-13). The HQC scalar path beats Karatsuba from `n ≥ 96`; the AVX-512 (PCLMULQDQ) path beats Karatsuba from `n ≥ 64`. The 4.77× peak at `n = 1024` is the headline; at `n = 4096` HQC AVX-512 is 3.72× faster (the earlier "10× slower" was measured with an incorrect `vpclmulqdq ymm0, ymm0, ymm0` probe byte sequence — see `gf64/test/Makefile` and cubic review 4914681432 P2).
 
 **Fenger Toeplitz vs Cauchy** (`gf64/test/bench_gf64_fenger_vs_cauchy.c`):
 
-| `n` | Cauchy-matrix | Fenger Toeplitz | Speedup |
-|---:|---:|---:|---:|
-| 64 | … | … | … |
-| 1024 | … | … | … |
-| 4096 | … | … | … |
-
-Run with: `cd gf64/test && make bench_gf64_fenger_vs_cauchy && ./bench_gf64_fenger_vs_cauchy`. Fenger wins at sizes where the Cauchy-matrix approach loses to Toeplitz structure. The Fenger pipeline is wired into `compute_recovery_streaming` (`src/gf64_addon.cc:2308-2351`) when `(numInputs, numRecovery)` are both powers of two, `blockSize` is 8-byte aligned, and either `PAR3_GF64_USE_FENGER=1` is set or the host is non-Windows.
+Not yet published: at larger `n` the bench is dominated by the schoolbook `gf64_poly_divmod` / half-EGCD `gf64_poly_invmod_mod` in tree prep + MPE walker (issue #50 — the Newton-reciprocal divmod follow-up), and a single `n=4096` run takes minutes. The Fenger-vs-Cauchy numbers will be filled in once the subquadratic prep lands; the pipeline wiring is described below. The Fenger pipeline is wired into `compute_recovery_streaming` (`src/gf64_addon.cc:2308-2351`) when `(numInputs, numRecovery)` are both powers of two, `blockSize` is 8-byte aligned, and either `PAR3_GF64_USE_FENGER=1` is set or the host is non-Windows.
 
 For the full kernel + end-to-end bench numbers, see [`BENCHMARKING.md`](BENCHMARKING.md).
 
@@ -143,9 +137,9 @@ cd gf64/test && make all
 
 This builds:
 
-- 17 kernel parity tests (`test_gf64_*` — additive FFT, HQC 2026, barycentric, MPE, subproduct tree, Fenger kernel / pipeline / padded, square, mul, invert-ita, poly mul variants, ZMM probe, CPU detect)
-- 2 kernel-internal boundary tests (`test_gf64_invmod_mod_parity` for the invmod path through the HQC dispatch)
-- 4 micro-benchmarks (`bench_hqc_vs_karatsuba`, `bench_gf64_fenger_vs_cauchy`, `bench_addfft64_recursive`, `bench_basis_cvt_*`)
+- 15 kernel parity tests (`test_gf64_*` — additive FFT, HQC 2026, barycentric, MPE, subproduct tree, Fenger kernel / pipeline / padded, square, mul, invert-ita, poly mul variants, ZMM probe, CPU detect)
+- 2 kernel-internal boundary tests (`test_gf64_invmod_mod_parity` for the invmod path through the HQC dispatch, `test_gf64_poly_mul_internal_dispatch` for the HQC/Karatsuba/schoolbook tier boundaries)
+- 2 micro-benchmarks (`bench_hqc_vs_karatsuba`, `bench_gf64_fenger_vs_cauchy`)
 
 `test/par3-engine-barycentric-gate.js` is the regression gate for the cubic review 4910826158 WSL2 dispatch bug: it runs `compute_recovery_barycentric` with `PAR3_GF64_USE_AVX512=0` (forcing the fallback path) and verifies it completes without SIGILL and produces the same output as the JS reference.
 

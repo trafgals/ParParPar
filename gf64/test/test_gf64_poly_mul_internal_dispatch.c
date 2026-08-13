@@ -97,6 +97,7 @@ static int run_one(size_t len_a, size_t len_b, size_t out_len,
 	uint64_t *ref = (uint64_t *)malloc(out_len * sizeof(uint64_t));
 	if (!a || !b || !out || !ref) {
 		fprintf(stderr, "  OOM in %s\n", name);
+		free(a); free(b); free(out); free(ref);
 		return 1;
 	}
 
@@ -197,6 +198,13 @@ int main(void) {
 
 	printf("\n[6] n=4096 (well inside the HQC window): dispatch -> hqc_fft\n");
 	failures += run_one(4096, 4096, 8191, "n=4096 symmetric", "hqc_fft");
+
+	printf("\n[7] above HQC cap (len_a = 2^20+128 > GF64_HQC_MAX_LM_N, len_b = 128):\n");
+	printf("    HQC guard fails (len_a exceeds the 2^20 cap) -> Karatsuba\n");
+	printf("    (all three operands >= 128). Pins the Karatsuba tier, which\n");
+	printf("    the other six cases never exercise (cubic review 881e9e4e).\n");
+	failures += run_one(1048704, 128, 1048832, "above HQC cap 1048704x128",
+	                    "karatsuba");
 
 	printf("\n");
 	if (failures == 0) {

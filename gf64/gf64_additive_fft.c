@@ -383,7 +383,7 @@ static void gf64_poly_mul_internal(
 		size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n_pad);
 		gf64_t *scratch = (gf64_t *)malloc(sw * sizeof(gf64_t));
 		if (scratch == NULL) abort();
-		gf64_dispatch_counts.hqc_fft++;
+		GF64_DISPATCH_COUNTER_INC(&gf64_dispatch_counts.hqc_fft);
 		if (gf64_current_method == GF64_AVX512) {
 			gf64_addfft64_poly_mul_recursive_scratch_avx512(
 				out, a, len_a, b, len_b, out_len, scratch, sw);
@@ -405,12 +405,12 @@ static void gf64_poly_mul_internal(
 	if (len_a >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
 	    len_b >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN &&
 	    out_len >= GF64_POLY_MUL_INTERNAL_KARATSUBA_MIN) {
-		gf64_dispatch_counts.karatsuba++;
+		GF64_DISPATCH_COUNTER_INC(&gf64_dispatch_counts.karatsuba);
 		gf64_poly_mul_karatsuba(out, a, len_a, b, len_b, out_len);
 		return;
 	}
 
-	gf64_dispatch_counts.schoolbook++;
+	GF64_DISPATCH_COUNTER_INC(&gf64_dispatch_counts.schoolbook);
 	memset(out, 0, out_len * sizeof(*out));
 
 	/* Cap reads at the truncation point: any coefficient of index >= out_len
