@@ -10,8 +10,12 @@
  * single-threaded case.
  *
  * Asymptotic correctness: the per-word interpolation step is Bostan-Schost
- * top-down via gf64_multi_point_interp (T8b) — derivative-based Lagrange
- * form since issue #59 A1, needing no cached tree inverses. The per-word
+ * top-down via the weights-aware gf64_multi_point_interp_weights (T8b) —
+ * derivative-based Lagrange form since issue #59 A1, needing no cached
+ * tree inverses; the prepare phase's barycentric weights (ctx->V_prime_inv)
+ * skip the per-word P'-MPE + N inversions. (The gated public wrapper
+ * gf64_multi_point_interp is NOT the Fenger entry point; cubic review
+ * 50f46d24 P3.) The per-word
  * evaluation step is Bostan-Schost top-down via gf64_multi_point_eval
  * (T8a). The product gives p(y_r) in O((N + R) log² (N + R)) per word.
  *

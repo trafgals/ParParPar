@@ -101,22 +101,22 @@ runCase(1024, 600, 128, 0x10000, 0x1000000, 'pow2 N, odd R (recovery padded)');
 // Trivial edge: N=1.
 runCase(1, 512, 128, 0x10000, 0x1000000, 'N=1 trivial');
 // Collision fallback (cubic review f70a81ef P2 / f44ead49 P1): the
-// recovery range [66000, 66600) overlaps the real input range
-// [65536, 66536) — the guard must catch this even though numRecovery is
-// a power of 2 (no recovery padding) and fall back to the legacy path
-// (compute_recovery), which is bit-exact with compute_recovery_full
-// here. Without the fallback, Fenger computes V(y_r) == 0 on the
-// colliding points and emits zero rows.
+// recovery range [66300, 66812) overlaps the real input range
+// [65536, 66536) while numRecovery=512 is a POWER OF 2 — no recovery
+// padding, so the pre-fix guard (gated on padRecovery) would NOT have
+// fired and Fenger would compute V(y_r) == 0 on the colliding points,
+// emitting zero rows instead of the legacy rows. The fixed guard must
+// fall back to the legacy path (compute_recovery), which is bit-exact
+// with compute_recovery_full here. (cubic review c509dd2b P3: R=600 was
+// itself padded and did not exercise the bypass.)
 (function () {
-	var N = 1000, R = 600, blockSize = 128;
-	var fi = 0x10000, fr = 66000;
+	var N = 1000, R = 512, blockSize = 128;
+	var fi = 0x10000, fr = 66300;
 	var B = blockSize / 8;
 	var inputs = Buffer.allocUnsafe(N * blockSize);
-	var saved = state;
 	for (var i = 0; i < N * B; i++) {
 		inputs.writeBigUInt64LE(next64(), i * 8);
 	}
-	state = saved; /* keep the deterministic stream for later cases */
 	var outFenger = Buffer.alloc(R * blockSize);
 	var outLegacy = Buffer.alloc(R * blockSize);
 	binding.compute_recovery_fenger(inputs, outFenger, N, R, blockSize, fi, fr, 0);
@@ -134,6 +134,20 @@ runCase(1, 512, 128, 0x10000, 0x1000000, 'N=1 trivial');
 	}
 	check(ok, 'overlapping input/recovery ranges fall back to legacy (N=' + N +
 		', R=' + R + ', fi=0x' + fi.toString(16) + ', fr=0x' + fr.toString(16) + ')');
+})();
+// blockSize above the 32-bit size_t range (cubic review 50f46d24 P1):
+// on 32-bit hosts the (size_t) cast truncates to 0 and the size checks
+// would divide by zero (native crash). The guard must reject cleanly
+// with a RangeError on every host.
+(function () {
+	var b = Buffer.alloc(8);
+	var threw = false;
+	try {
+		binding.compute_recovery_fenger(b, b, 1, 1, Math.pow(2, 32) + 8, 0x10000, 0x1000000, 0);
+	} catch (e) {
+		threw = (e instanceof RangeError) || (e instanceof TypeError);
+	}
+	check(threw, 'blockSize=2^32+8 rejected cleanly (no div-by-zero on 32-bit)');
 })();
 // Shift-overflow boundary (cubic review f70a81ef P2): a count above the
 // largest representable power of two (2^63) must be rejected cleanly by

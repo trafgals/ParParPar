@@ -191,7 +191,12 @@ function rejects(fn, what) {
 	}
 	if (!threw) {
 		failed++;
-		failuresByCell[what] = true;
+		/* Guard failures must set the exit code directly: they are not
+		 * parity cells, so recording them in failuresByCell would
+		 * inflate the cell count in the report (cubic review 50f46d24
+		 * P3) and — worse — a guard failure with all cells passing
+		 * would otherwise exit 0. */
+		process.exitCode = 1;
 		console.error('  FAIL (RED): ' + what + ' was not rejected');
 	} else {
 		passed++;

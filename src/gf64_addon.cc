@@ -399,17 +399,16 @@ static napi_value Gf64Encoder_NAPI_mul_arr(napi_env env, napi_callback_info info
 	 * f70a81ef P1 / f44ead49 P0+P1): reject negative counts, zero
 	 * n_coeff with a positive len (kernel divides by w % n_coeff), and
 	 * counts that overflow the byte-size comparison. coeffLen was
-	 * already divided by sizeof(uint64_t) above. */
-	if(len < 0 || n_coeff < 0) {
-		napi_throw_range_error(env, NULL, "len and n_coeff must be non-negative");
-		return NULL;
-	}
-	if(len > 0 && n_coeff == 0) {
-		napi_throw_range_error(env, NULL, "n_coeff must be positive when len > 0");
-		return NULL;
-	}
-	if((size_t)len > outLen / 8 || (size_t)len > inLen / 8 || (size_t)n_coeff > coeffLen) {
-		napi_throw_range_error(env, NULL, "buffer too small for len / n_coeff");
+	 * already divided by sizeof(uint64_t) above. The alignment bounce
+	 * buffers were allocated BEFORE this point, so every reject path
+	 * must free them (cubic review 50f46d24 P2). */
+	if (len < 0 || n_coeff < 0 || (len > 0 && n_coeff == 0) ||
+	    (size_t)len > outLen / 8 || (size_t)len > inLen / 8 ||
+	    (size_t)n_coeff > coeffLen) {
+		if (needs_out_temp) ALIGN_FREE(aligned_out);
+		if (needs_in_temp) ALIGN_FREE(aligned_in);
+		if (needs_coeff_temp) ALIGN_FREE(aligned_coeff);
+		napi_throw_range_error(env, NULL, "invalid len / n_coeff (non-negative, n_coeff > 0 when len > 0, within buffer bounds)");
 		return NULL;
 	}
 
@@ -1378,7 +1377,7 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 		return NULL;
 	}
 
-	if(blockSize <= 0 || blockSize % 8 != 0) {
+	if(blockSize <= 0 || (uint64_t)blockSize > (uint64_t)(size_t)-1 || blockSize % 8 != 0) {
 		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
 		return NULL;
 	}
@@ -1539,7 +1538,7 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 		return NULL;
 	}
 
-	if(blockSize <= 0 || blockSize % 8 != 0) {
+	if(blockSize <= 0 || (uint64_t)blockSize > (uint64_t)(size_t)-1 || blockSize % 8 != 0) {
 		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
 		return NULL;
 	}
@@ -1722,7 +1721,7 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 		return NULL;
 	}
 
-	if(blockSize <= 0 || blockSize % 8 != 0) {
+	if(blockSize <= 0 || (uint64_t)blockSize > (uint64_t)(size_t)-1 || blockSize % 8 != 0) {
 		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
 		return NULL;
 	}
@@ -1833,7 +1832,7 @@ static napi_value ComputeRecoveryFenger_NAPI(napi_env env, napi_callback_info in
 		if(status != napi_ok) { napi_throw_type_error(env, NULL, "numThreads must be an integer"); return NULL; }
 	}
 
-	if(blockSize <= 0 || blockSize % 8 != 0) {
+	if(blockSize <= 0 || (uint64_t)blockSize > (uint64_t)(size_t)-1 || blockSize % 8 != 0) {
 		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
 		return NULL;
 	}
@@ -2242,7 +2241,7 @@ static napi_value ComputeRecoveryStreaming_NAPI(napi_env env, napi_callback_info
 		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
 		return NULL;
 	}
-	if(blockSize <= 0 || blockSize % 8 != 0) {
+	if(blockSize <= 0 || (uint64_t)blockSize > (uint64_t)(size_t)-1 || blockSize % 8 != 0) {
 		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
 		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
 		return NULL;
@@ -2541,7 +2540,7 @@ static napi_value ComputeRepair_NAPI(napi_env env, napi_callback_info info) {
 		return NULL;
 	}
 
-	if(blockSize <= 0 || blockSize % 8 != 0) {
+	if(blockSize <= 0 || (uint64_t)blockSize > (uint64_t)(size_t)-1 || blockSize % 8 != 0) {
 		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
 		return NULL;
 	}

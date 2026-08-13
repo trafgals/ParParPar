@@ -193,8 +193,11 @@ static void cauchy_reference(
 
 /* ----------------------------------------------------------------------------
  * P1 gate shape: bit-exact Fenger vs Cauchy at N=131072 / R=4096.
+ * Returns 1 on bit-exact match, 0 on mismatch — main() turns a MISMATCH
+ * into a nonzero exit code so the P1 acceptance gate fails the run
+ * instead of just printing (cubic review 50f46d24 P2).
  * ---------------------------------------------------------------------------- */
-static void gate_shape(size_t N, size_t R, size_t B) {
+static int gate_shape(size_t N, size_t R, size_t B) {
 	gf64_t *in         = (gf64_t *)malloc(N * B * sizeof(gf64_t));
 	gf64_t *cauchy_out = (gf64_t *)calloc(R * B, sizeof(gf64_t));
 	gf64_t *fenger_out = (gf64_t *)calloc(R * B, sizeof(gf64_t));
@@ -219,6 +222,7 @@ static void gate_shape(size_t N, size_t R, size_t B) {
 	       N, R, B, t_cauchy, t_fenger, ok ? "BIT-EXACT" : "MISMATCH");
 
 	free(in); free(cauchy_out); free(fenger_out);
+	return ok;
 }
 
 int main(void) {
@@ -248,8 +252,10 @@ int main(void) {
 	bench_tree_mpe_only(1048576);
 
 	printf("\nP1 gate shape (Fenger vs explicit Cauchy):\n");
-	gate_shape(131072, 4096, 4);
+	const int gate_ok = gate_shape(131072, 4096, 4);
 
 	printf("\nDone.\n");
-	return 0;
+	/* Exit nonzero on a Fenger-vs-Cauchy divergence: the P1 acceptance
+	 * gate must fail the run, not just print MISMATCH. */
+	return gate_ok ? 0 : 1;
 }

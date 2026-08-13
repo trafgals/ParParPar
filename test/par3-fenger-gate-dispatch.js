@@ -140,10 +140,11 @@ var cases = [
 	{ name: 'N=2^18, R=1000 (R not pow2), forced → NOT fenger → barycentric', N: 262144, R: 1000, B: 4096, env: '1', expect: 'barycentric' },
 	{ name: 'N=2^18, R=2^11, B=4100 (B%8!=0), forced → NOT fenger → full (B%8!=0 also blocks barycentric)', N: 262144, R: 2048, B: 4100, env: '1', expect: 'full' },
 	// A2: next_pow2(N) <= 2N always holds, so the N gate is fully
-	// removed. Pin the no-hang property for huge N (the helper must not
-	// 32-bit-truncate its doubling — N=2^31+1 used to hang forever).
-	{ name: 'N=3*2^29+1 (huge odd N), R=2048, forced → fenger (padded N, no hang)', N: 1610612737, R: 2048, B: 4096, env: '1', expect: 'fenger' },
-	{ name: 'N=2^31+1 (32-bit overflow boundary), R=2048, forced → fenger (no hang)', N: 2147483649, R: 2048, B: 4096, env: '1', expect: 'fenger' },
+	// removed. The huge-N no-hang pins live in Section 1b as CHILD
+	// PROCESS runs: if _fengerPaddingReasonable regressed to the
+	// 32-bit-truncating 'p <<= 1', an in-parent row here would hang
+	// this suite before the pin could report a FAIL (cubic review
+	// 50f46d24 P2).
 	{ name: 'N=2^18, R=2^11, B=8192, kill switch (env=0) → NOT fenger → barycentric', N: 262144, R: 2048, B: 8192, env: '0', expect: 'barycentric' },
 	{ name: 'N=2^18, R=2^11, B=8192, no env, non-Windows → fenger (platform gate)', N: 262144, R: 2048, B: 8192, env: undefined, expect: (process.platform === 'win32') ? 'barycentric' : 'fenger' },
 	// A4: on Windows, Fenger is size-gated AND opt-in
@@ -223,8 +224,12 @@ console.log('\n--- Section 1b: no-hang pin for huge N (child process, hard timeo
 		'  compute_recovery_full: function () { return "full-result"; },',
 		'  compute_recovery: function () { return "per-batch-result"; }',
 		'};',
-		'var result = par3gen.dispatchRecovery(binding, null, null, 2147483649, 2048, 4096, 0, 0n, 0);',
-		'if (result !== "fenger-result") { console.error("routed to: " + result); process.exit(2); }',
+		'var result = null;',
+		'var ns = [1610612737, 2147483649]; /* 3*2^29+1, 2^31+1 */',
+		'for (var i = 0; i < ns.length; i++) {',
+		'  result = par3gen.dispatchRecovery(binding, null, null, ns[i], 2048, 4096, 0, 0n, 0);',
+		'  if (result !== "fenger-result") { console.error("N=" + ns[i] + " routed to: " + result); process.exit(2); }',
+		'}',
 		'console.log("child-ok");'
 	].join('\n');
 	var child = cp.spawnSync(process.execPath, ['-e', childSrc], { timeout: 20000, encoding: 'utf8' });
