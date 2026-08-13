@@ -1,11 +1,13 @@
 name: debug-62
 
 # TEMPORARY issue #62 root-cause workflow — DELETED before the PR.
-# Manual dispatch only; never runs on push/PR. Reproduces the
-# Node-20 + windows-2025 Fenger crash (N=1/R=2 create) under a knob
-# matrix so the failing combination can be isolated.
+# Triggered by pushes to the debug branch (GitHub refuses to dispatch
+# workflows that don't exist on the default branch), never on PRs.
+# Reproduces the Node-20 + windows-2025 Fenger crash (N=1/R=2 create)
+# under a knob matrix so the failing combination can be isolated.
 on:
-  workflow_dispatch:
+  push:
+    branches: [perf/issue-59-p2-a3-word-batched]
 
 jobs:
   repro:
