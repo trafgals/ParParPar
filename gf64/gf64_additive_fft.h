@@ -238,6 +238,16 @@ void gf64_dispatch_counts_reset(void);
 	((void)__atomic_fetch_add((p), 1, __ATOMIC_RELAXED))
 #endif
 
+/*
+ * Test-only HQC cap override. 0 (default) = use GF64_HQC_MAX_LM_N.
+ * Lets boundary tests exercise the >cap fallthrough tier (Karatsuba)
+ * without a 2^20-length operand — the real cap forces a
+ * next_pow2(2^21) balanced Karatsuba recursion (~3^15 leaves, minutes
+ * of CI wall-time). Single-threaded test harness only; see
+ * gf64/test/test_gf64_poly_mul_internal_dispatch.c case [7].
+ */
+extern size_t gf64_hqc_max_lm_n_override;
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_ADDITIVE_FFT_H */

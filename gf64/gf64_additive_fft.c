@@ -334,6 +334,9 @@ static void gf64_assert_no_output_alias(
  */
 gf64_dispatch_counts_t gf64_dispatch_counts = {0, 0, 0, 0, 0};
 
+/* Test-only HQC cap override (see gf64_additive_fft.h). */
+size_t gf64_hqc_max_lm_n_override = 0;
+
 void gf64_dispatch_counts_reset(void) {
 	gf64_dispatch_counts.schoolbook = 0;
 	gf64_dispatch_counts.karatsuba = 0;
@@ -363,13 +366,16 @@ static void gf64_poly_mul_internal(
 	 * at-or-above the crossover so we don't pay HQC's setup overhead when
 	 * one operand is small (asymmetric case, schoolbook wins).
 	 *
-	 * Cap: GF64_HQC_MAX_LM_N = 131072 (defined in the HQC TU). Sizes
+	 * Cap: GF64_HQC_MAX_LM_N = 2^20 (defined in gf64_additive_fft.h;
+	 * overridable for tests via gf64_hqc_max_lm_n_override). Sizes
 	 * outside this cap fall through to Karatsuba. */
+	size_t hqc_cap = gf64_hqc_max_lm_n_override
+		? gf64_hqc_max_lm_n_override : GF64_HQC_MAX_LM_N;
 	if (len_a >= GF64_HQC_FFT_MIN &&
 	    len_b >= GF64_HQC_FFT_MIN &&
 	    out_len >= GF64_HQC_FFT_MIN &&
-	    len_a <= GF64_HQC_MAX_LM_N &&
-	    len_b <= GF64_HQC_MAX_LM_N) {
+	    len_a <= hqc_cap &&
+	    len_b <= hqc_cap) {
 		/* Compute the padded n the HQC FFT will use internally.
 		 * The function pads to next_pow2(max(2*max_len - 1, out_len))
 		 * because out_len > 2*max_len - 1 when the caller truncates

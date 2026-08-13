@@ -137,7 +137,7 @@ cd gf64/test && make all
 
 This builds:
 
-- 15 kernel parity tests (`test_gf64_*` — additive FFT, HQC 2026, barycentric, MPE, subproduct tree, Fenger kernel / pipeline / padded, square, mul, invert-ita, poly mul variants, ZMM probe, CPU detect)
+- 14 kernel parity tests (13 `test_gf64_*` binaries plus `test_cpu_detect` — additive FFT, HQC 2026, barycentric, MPE, subproduct tree, Fenger kernel / pipeline / padded, square, mul, invert-ita, poly mul variants, ZMM probe, CPU detect; see the `all` target in `gf64/test/Makefile`)
 - 2 kernel-internal boundary tests (`test_gf64_invmod_mod_parity` for the invmod path through the HQC dispatch, `test_gf64_poly_mul_internal_dispatch` for the HQC/Karatsuba/schoolbook tier boundaries)
 - 2 micro-benchmarks (`bench_hqc_vs_karatsuba`, `bench_gf64_fenger_vs_cauchy`)
 

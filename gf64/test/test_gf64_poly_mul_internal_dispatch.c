@@ -199,12 +199,15 @@ int main(void) {
 	printf("\n[6] n=4096 (well inside the HQC window): dispatch -> hqc_fft\n");
 	failures += run_one(4096, 4096, 8191, "n=4096 symmetric", "hqc_fft");
 
-	printf("\n[7] above HQC cap (len_a = 2^20+128 > GF64_HQC_MAX_LM_N, len_b = 128):\n");
-	printf("    HQC guard fails (len_a exceeds the 2^20 cap) -> Karatsuba\n");
-	printf("    (all three operands >= 128). Pins the Karatsuba tier, which\n");
-	printf("    the other six cases never exercise (cubic review 881e9e4e).\n");
-	failures += run_one(1048704, 128, 1048832, "above HQC cap 1048704x128",
+	printf("\n[7] above HQC cap (cap overridden to 256 for the test, len_a = 512):\n");
+	printf("    HQC guard fails (len_a exceeds the overridden cap) -> Karatsuba.\n");
+	printf("    The override keeps this case cheap: the real 2^20 cap would pad\n");
+	printf("    to a next_pow2(2^21) balanced Karatsuba recursion (~3^15 leaves,\n");
+	printf("    minutes of CI wall-time — cubic review fc0fd87c).\n");
+	gf64_hqc_max_lm_n_override = 256;
+	failures += run_one(512, 128, 640, "above HQC cap 512x128 (override)",
 	                    "karatsuba");
+	gf64_hqc_max_lm_n_override = 0;
 
 	printf("\n");
 	if (failures == 0) {
