@@ -17,6 +17,7 @@ GF64_SOURCES := ../gf64_single.c \
 	../gf64_region_avx512.c \
 	../gf64_region_avx512_arr.c \
 	../gf64_mul_avx512.c \
+	../gf64_square_avx512.c \
 	../gf64_square.c \
 	../gf64_additive_fft.c \
 	../gf64_additive_fft_hqc2026.c \
@@ -29,6 +30,7 @@ GF64_SOURCES := ../gf64_single.c \
 	../gf64_invert_ssse3.c \
 	../gf64_invert_avx2.c \
 	../gf64_invert_avx512.c \
+	../gf64_invert_ita_avx512.c \
 	../gf64_invert_ita.c \
 	../gf64_poly_mul_karatsuba.c
 GF64_INCLUDES := -I..
@@ -59,6 +61,7 @@ TEST_GF64_POLY_MUL_INTERNAL_DISPATCH_SOURCES := test_gf64_poly_mul_internal_disp
 BENCH_GF64_FENGER_VS_CAUCHY_SOURCES := bench_gf64_fenger_vs_cauchy.c
 BENCH_HQC_VS_KARATSUBA_SOURCES := bench_hqc_vs_karatsuba.c
 BENCH_GF64_SUBQUADRATIC_SOURCES := bench_gf64_subquadratic.c
+BENCH_GF64_FENGER_BATCH_SOURCES := bench_gf64_fenger_batch.c
 
 .PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
 
@@ -255,6 +258,11 @@ bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURC
 # PAR3_FENGER_BATCH_WORDS. Same source set as test_gf64_fenger_pipeline.
 test_gf64_fenger_batch: $(TEST_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+
+# Issue #59 A3 evidence bench: K = 1/4/8 execute wall-times at the
+# reference shapes. Same source set as test_gf64_fenger_batch.
+bench_gf64_fenger_batch: $(BENCH_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
 # HQC FFT vs Karatsuba polynomial multiplication benchmark.
 # Establishes GF64_HQC_FFT_MIN crossover — informs Step 5 dispatch wiring.

@@ -26,7 +26,6 @@
 
 #include "../gf64_fenger.h"
 #include "../gf64_global.h"
-#include "../gf64_dispatch.h"
 
 static int failures = 0, checks = 0;
 
@@ -118,6 +117,12 @@ int main(void) {
 	run_case("N=1/R=2 (crash shape)", 0, 2, 1, 2, 0, 0, 0, 16, K4, 2);
 	run_case("N=1/R=1", 0, 1, 1, 1, 0, 0, 0, 8, K4, 2);
 	run_case("N=2/R=2", 0, 4, 2, 2, 0, 0, 0, 8, K4, 2);
+	/* Walk-only shapes: R > N so deg_p < R and the tree walk runs (not
+	 * the Horner fallback). N=4/R=1024 exercises the per-word divmod
+	 * fallback; N=512/R=65536 reaches an HQC-eligible level with
+	 * deg_fs[k] >= child_deg (the shared-reciprocal branch). */
+	run_case("N=4/R=1024 (walk fallback)", 0, 4096, 4, 1024, 0, 0, 0, 8, K4, 2);
+	run_case("N=512/R=65536 (walk HQC)", 0, 1048576, 512, 65536, 0, 0, 0, 8, K4, 2);
 	run_case("N=8/R=4", 0, 16, 8, 4, 0, 0, 0, 16, K4, 2);
 	run_case("N=1024/R=32", 0, 4096, 1024, 32, 0, 0, 0, 16, K4, 2);
 	run_case("N=16384/R=512", 0, 65536, 16384, 512, 0, 0, 0, 16, K4, 2);

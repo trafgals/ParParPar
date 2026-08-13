@@ -460,11 +460,20 @@ static void fenger_interp_batch(
 
 /* ---- Batched multi-point evaluation (top-down divmod walk) ----
  *
- * f: K slabs of N_at_lev (each word's polynomial, degree deg_fs[k]);
+ * f: K slabs of N_at_lev (each word's polynomial, degree deg_fs[k]); the
+ *    per-word stride is f_stride (the ROOT caller's slab layout — e.g.
+ *    the interp output is N-strided while N_at_lev at the root is R —
+ *    deeper levels pass their r_L/r_R buffers at N_at_lev stride);
  * out: K slabs of tree->num_points (the leaf values).
- * Frame layout per node (size (3K+2)·child_deg):
- *   [r_L: K·c | r_R: K·c | revq: K·c (rev_f input, then q in place)
- *    | inv_L: c | inv_R: c]
+ *
+ * Frame layout per node (size 2K·N_at_lev + (2K+2)·child_deg):
+ *   [r_L: K·N_at_lev | r_R: K·N_at_lev
+ *    | revq: K·child_deg (rev_f input, then q_L in place)
+ *    | q2: K·child_deg (q_R for the per-word fallback)
+ *    | inv_L: child_deg | inv_R: child_deg]
+ * r_L/r_R are N_at_lev wide because gf64_poly_divmod copies f into r
+ * first (the contract requires r to hold deg_f + 1 <= N_at_lev words);
+ * the remainder itself only occupies [0, child_deg).
  * mul_scratch: one region of 4·N words reused at every depth.
  *
  * m_max = child_deg (level-uniform upper bound on the quotient length);
@@ -472,32 +481,35 @@ static void fenger_interp_batch(
  * reciprocals are computed once per node per batch via
  * gf64_poly_invmod; the per-word quotient/remainder apply the
  * precomputed reciprocal (exact by truncation, see the section comment).
+ *
+ * The walk is only valid for deg_f < N (the interpolation bound, as in
+ * gf64_multi_point_eval); the caller (gf64_fenger_execute_batched)
+ * routes deg_p >= R (and R == 1) through a per-word Horner fallback.
  */
 static void fenger_eval_recurse_batch(
 	const SubproductTree *tree,
 	size_t lev, size_t node_idx,
-	const gf64_t *f, const size_t *deg_fs,
+	const gf64_t *f, size_t f_stride, const size_t *deg_fs,
 	gf64_t *out,
 	gf64_t *scratch,
 	gf64_t *mul_scratch, size_t mul_scratch_words,
 	size_t K)
 {
 	const size_t num_levels = tree->num_levels;
-	const size_t N_at_lev = tree->num_points >> lev;
 
 	if (lev + 1 == num_levels) {
-		/* Leaf: f(x_j) = f[0] (degree < 1 after the divmod chain), or a
-		 * Horner when the tree is a single point (R == 1). */
+		/* Leaf: f(x_j) = f[0] (degree < 1 after the divmod chain). */
 		const gf64_t *leaves = tree->level_data[lev];
 		const gf64_t xj = leaves[2 * node_idx];
 		for (size_t k = 0; k < K; k++) {
-			const gf64_t *fk = f + k * N_at_lev;
+			const gf64_t *fk = f + k * f_stride;
 			out[k * tree->num_points + node_idx] =
 				(deg_fs[k] == 0) ? fk[0] : fenger_horner(fk, deg_fs[k], xj);
 		}
 		return;
 	}
 
+	const size_t N_at_lev = tree->num_points >> lev;
 	const size_t child_deg = tree->level_degs[lev + 1];
 	const size_t child_stride = child_deg + 1;
 	const gf64_t *children = tree->level_data[lev + 1];
@@ -505,11 +517,12 @@ static void fenger_eval_recurse_batch(
 	const gf64_t *P_R = children + (2 * node_idx + 1) * child_stride;
 
 	gf64_t *r_L  = scratch;
-	gf64_t *r_R  = scratch + K * child_deg;
-	gf64_t *revq = scratch + 2 * K * child_deg;
-	gf64_t *inv_L = scratch + 3 * K * child_deg;
+	gf64_t *r_R  = scratch + K * N_at_lev;
+	gf64_t *revq = scratch + 2 * K * N_at_lev;
+	gf64_t *q2   = revq + K * child_deg;
+	gf64_t *inv_L = q2 + K * child_deg;
 	gf64_t *inv_R = inv_L + child_deg;
-	gf64_t *child_scratch = scratch + (3 * K + 2) * child_deg;
+	gf64_t *child_scratch = scratch + (2 * K * N_at_lev + (2 * K + 2) * child_deg);
 
 	const size_t m_max = child_deg;
 	int any_needs = 0;
@@ -517,7 +530,8 @@ static void fenger_eval_recurse_batch(
 		if (deg_fs[k] >= child_deg) { any_needs = 1; break; }
 	}
 
-	size_t child_degs[16];
+	/* 2K entries: left children occupy [0, K), right children [K, 2K). */
+	size_t child_degs[32];
 	if (any_needs && fenger_hqc_eligible(child_deg + 1, m_max, child_deg)) {
 		/* Shared reciprocals: rev(P)^{-1} mod x^{m_max} (P monic, so
 		 * rev(P)[0] = 1 != 0). */
@@ -539,7 +553,7 @@ static void fenger_eval_recurse_batch(
 		 * safe: the batch mul reads f_k into its transform buffer before
 		 * writing outs[k]). */
 		for (size_t k = 0; k < K; k++) {
-			const gf64_t *fk = f + k * N_at_lev;
+			const gf64_t *fk = f + k * f_stride;
 			gf64_t *rk = revq + k * m_max;
 			if (deg_fs[k] >= child_deg) {
 				for (size_t i = 0; i < m_max; i++) {
@@ -549,25 +563,29 @@ static void fenger_eval_recurse_batch(
 				memset(rk, 0, m_max * sizeof(gf64_t));
 			}
 		}
-		/* q_k = rev_f_k · inv_L mod x^{m_true_k} (un-reverse in place). */
+		/* q_k = rev_f_k · inv_L mod x^{m_true_k} (un-reverse in place).
+		 * Words with deg_fs[k] < child_deg need no division: their
+		 * rev_f was zeroed, so the product is exactly 0 — skip the
+		 * un-reverse (m_true would underflow for them). */
 		for (size_t k = 0; k < K; k++) ptrs[k] = revq + k * m_max;
 		fenger_batch_shared_mul(ptrs, K, inv_L, m_max, revq, m_max,
 		                        m_max, mul_scratch, sw);
 		for (size_t k = 0; k < K; k++) {
+			if (deg_fs[k] < child_deg) continue;
 			const size_t m_true = deg_fs[k] - child_deg + 1;
 			gf64_t *rk = revq + k * m_max;
 			for (size_t i = 0; i < m_true / 2; i++) {
 				gf64_t t = rk[i]; rk[i] = rk[m_true - 1 - i]; rk[m_true - 1 - i] = t;
 			}
 			if (m_true < m_max) memset(rk + m_true, 0, (m_max - m_true) * sizeof(gf64_t));
-		}
-		/* r_L = f ^ P_L·q (batch-shared; only the low child_deg coefs). */
-		for (size_t k = 0; k < K; k++) ptrs[k] = r_L + k * child_deg;
-		fenger_batch_shared_mul(ptrs, K, P_L, child_stride, revq, m_max,
-		                        child_deg, mul_scratch, sw);
-		/* Same for the right child. */
+			}
+			/* r_L = f ^ P_L·q (batch-shared; only the low child_deg coefs). */
+			for (size_t k = 0; k < K; k++) ptrs[k] = r_L + k * N_at_lev;
+			fenger_batch_shared_mul(ptrs, K, P_L, child_stride, revq, m_max,
+			child_deg, mul_scratch, sw);
+			/* Same for the right child. */
 		for (size_t k = 0; k < K; k++) {
-			const gf64_t *fk = f + k * N_at_lev;
+			const gf64_t *fk = f + k * f_stride;
 			gf64_t *rk = revq + k * m_max;
 			if (deg_fs[k] >= child_deg) {
 				for (size_t i = 0; i < m_max; i++) {
@@ -575,9 +593,11 @@ static void fenger_eval_recurse_batch(
 				}
 			}
 		}
+		for (size_t k = 0; k < K; k++) ptrs[k] = revq + k * m_max;
 		fenger_batch_shared_mul(ptrs, K, inv_R, m_max, revq, m_max,
 		                        m_max, mul_scratch, sw);
 		for (size_t k = 0; k < K; k++) {
+			if (deg_fs[k] < child_deg) continue;
 			const size_t m_true = deg_fs[k] - child_deg + 1;
 			gf64_t *rk = revq + k * m_max;
 			for (size_t i = 0; i < m_true / 2; i++) {
@@ -585,15 +605,15 @@ static void fenger_eval_recurse_batch(
 			}
 			if (m_true < m_max) memset(rk + m_true, 0, (m_max - m_true) * sizeof(gf64_t));
 		}
-		for (size_t k = 0; k < K; k++) ptrs[k] = r_R + k * child_deg;
+		for (size_t k = 0; k < K; k++) ptrs[k] = r_R + k * N_at_lev;
 		fenger_batch_shared_mul(ptrs, K, P_R, child_stride, revq, m_max,
 		                        child_deg, mul_scratch, sw);
 
 		/* Remainders + per-word degrees. */
 		for (size_t k = 0; k < K; k++) {
-			const gf64_t *fk = f + k * N_at_lev;
-			gf64_t *rLk = r_L + k * child_deg;
-			gf64_t *rRk = r_R + k * child_deg;
+			const gf64_t *fk = f + k * f_stride;
+			gf64_t *rLk = r_L + k * N_at_lev;
+			gf64_t *rRk = r_R + k * N_at_lev;
 			if (deg_fs[k] >= child_deg) {
 				for (size_t i = 0; i < child_deg; i++) {
 					rLk[i] = fk[i] ^ rLk[i];
@@ -615,22 +635,20 @@ static void fenger_eval_recurse_batch(
 			child_degs[2 * k + 1] = dR;
 		}
 	} else {
-		/* Per-word fallback (identical to the single-word walk). */
+		/* Per-word fallback (identical to the single-word walk). q_L lives in
+		 * revq, q_R in the separate q2 slab — the divmod contract forbids q
+		 * aliasing r (it mutates r in place while writing q). */
 		for (size_t k = 0; k < K; k++) {
-			const gf64_t *fk = f + k * N_at_lev;
-			gf64_t *rLk = r_L + k * child_deg;
-			gf64_t *rRk = r_R + k * child_deg;
+			const gf64_t *fk = f + k * f_stride;
+			gf64_t *rLk = r_L + k * N_at_lev;
+			gf64_t *rRk = r_R + k * N_at_lev;
 			gf64_t *q = revq + k * m_max;
-			gf64_t *q2 = (K == 1) ? q : NULL;
-			/* q2 aliases q only for K == 1 (the single-word layout);
-			 * for K > 1 the two divmods share revq across words — need
-			 * a separate q2 region. */
 			(void)q2;
 			if (K == 1) {
 				gf64_poly_divmod(fk, deg_fs[k], P_L, child_deg, q, rLk);
 				gf64_poly_divmod(fk, deg_fs[k], P_R, child_deg, revq, rRk);
 			} else {
-				gf64_t *qR = r_R + k * child_deg; /* scratch alias: r_R not yet written */
+				gf64_t *qR = q2 + k * m_max; /* separate from rRk (no aliasing) */
 				gf64_poly_divmod(fk, deg_fs[k], P_L, child_deg, q, rLk);
 				gf64_poly_divmod(fk, deg_fs[k], P_R, child_deg, qR, rRk);
 			}
@@ -645,7 +663,7 @@ static void fenger_eval_recurse_batch(
 			child_degs[2 * k]     = dL;
 			child_degs[2 * k + 1] = dR;
 		}
-	}
+		}
 
 	/* Recurse into both children (K slabs each; the child's f degree
 	 * array is child_degs[0..K) for the left and [K..2K) for the right). */
@@ -656,10 +674,10 @@ static void fenger_eval_recurse_batch(
 			right_degs[k] = child_degs[2 * k + 1];
 		}
 		fenger_eval_recurse_batch(tree, lev + 1, 2 * node_idx,
-		                          r_L, left_degs, out, child_scratch,
+		                          r_L, N_at_lev, left_degs, out, child_scratch,
 		                          mul_scratch, mul_scratch_words, K);
 		fenger_eval_recurse_batch(tree, lev + 1, 2 * node_idx + 1,
-		                          r_R, right_degs, out, child_scratch,
+		                          r_R, N_at_lev, right_degs, out, child_scratch,
 		                          mul_scratch, mul_scratch_words, K);
 	}
 }
@@ -685,11 +703,13 @@ static void gf64_fenger_execute_batched(
 	gf64_t *p_at_y   = (gf64_t *)malloc(K * R * sizeof(gf64_t));
 	/* interp frames: 3K·N_at_lev per depth -> 6K·N total; slack 8K·N. */
 	gf64_t *interp_scratch = (gf64_t *)malloc(8 * K * N * sizeof(gf64_t));
-	/* eval frames: (3K+2)·N total. */
-	gf64_t *eval_scratch = (gf64_t *)malloc((3 * K + 2) * N * sizeof(gf64_t));
-	/* batch mul scratch: max n = N at the root -> 4N words each. */
+	/* eval frames: (3K+1)·N_at_lev per depth -> (6K+2)·R total — the
+	 * walk is over tree_y, whose root size is R (NOT N; R > N is the
+	 * walk's raison d'être). */
+	gf64_t *eval_scratch = (gf64_t *)malloc((6 * K + 4) * R * sizeof(gf64_t));
+	/* batch mul scratch: max eval n = 2·(R/2) = R at the root -> 4R words. */
 	gf64_t *interp_mul = (gf64_t *)malloc(4 * N * sizeof(gf64_t));
-	gf64_t *eval_mul   = (gf64_t *)malloc(4 * N * sizeof(gf64_t));
+	gf64_t *eval_mul   = (gf64_t *)malloc(4 * R * sizeof(gf64_t));
 	if (!weighted || !poly_p || !p_at_y ||
 	    !interp_scratch || !eval_scratch || !interp_mul || !eval_mul) {
 		abort();
@@ -721,13 +741,29 @@ static void gf64_fenger_execute_batched(
 		fenger_interp_batch(tree_x, weighted, K_eff, poly_p,
 		                    interp_scratch, interp_mul, mul_sw);
 
-		/* 4c: batched MPE over the recovery tree. */
+		/* 4c: batched MPE over the recovery tree. The tree walk is only
+		 * valid for deg_p < R (the interpolation bound); for R == 1 or
+		 * deg_p >= R, mirror gf64_multi_point_eval's Horner fallback.
+		 * The interp output (poly_p) is N-strided per word — the eval
+		 * root's f_stride. */
 		{
 			size_t degs[16];
-			for (size_t k = 0; k < K_eff; k++) degs[k] = deg_p;
-			fenger_eval_recurse_batch(tree_y, 0, 0, poly_p, degs,
-			                          p_at_y, eval_scratch, eval_mul,
-			                          mul_sw, K_eff);
+			if (R == 1 || deg_p >= R) {
+				const gf64_t *leaves =
+					tree_y->level_data[tree_y->num_levels - 1];
+				for (size_t k = 0; k < K_eff; k++) {
+					const gf64_t *fk = poly_p + k * N;
+					gf64_t *pk = p_at_y + k * R;
+					for (size_t j = 0; j < R; j++) {
+						pk[j] = fenger_horner(fk, deg_p, leaves[2 * j]);
+					}
+				}
+			} else {
+				for (size_t k = 0; k < K_eff; k++) degs[k] = deg_p;
+				fenger_eval_recurse_batch(tree_y, 0, 0, poly_p, N, degs,
+				                          p_at_y, eval_scratch, eval_mul,
+				                          mul_sw, K_eff);
+			}
 		}
 		/* 4d: divide by V(y_r) — only real recovery rows are written. */
 		for (size_t k = 0; k < K_eff; k++) {
