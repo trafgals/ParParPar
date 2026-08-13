@@ -56,3 +56,8 @@ node_modules/
 
 # V8 profiler output (from node --prof runs, e.g. kernel parity test)
 /isolate-*.v8.log
+
+# Built gf64 test/bench binaries (make output)
+gf64/test/test_*
+gf64/test/bench_*
+!gf64/test/*.c
