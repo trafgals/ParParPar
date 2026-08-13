@@ -83,7 +83,11 @@ function bufToBigIntArray(buf) {
 // ============================================================================
 // JS reference for the _arr operation
 // ----------------------------------------------------------------------------
-// out[i] = XOR_c( gf64_mul(in[i], coeff[c]) )   for c = 0 .. n_coeff-1
+// out[w] = gf64_mul(in[w], coeff[w % n_coeff])   — the PER-WORD CYCLING
+// contract (matches the NAPI export docs and lib/gf64_js.js). The SIMD
+// region kernels previously implemented XOR_c in[i]*coeff[c] (the
+// MULADD dot-product semantics) here; that was the silent wrong-result
+// bug fixed by the per-lane coefficient gather (gf64_region_*_arr.c).
 // ============================================================================
 
 function jsMulArrRef(inBuf, coeffBuf, nCoeff, numWords) {
@@ -91,11 +95,7 @@ function jsMulArrRef(inBuf, coeffBuf, nCoeff, numWords) {
 	var coeffWords = bufToBigIntArray(coeffBuf);
 	var out = [];
 	for (var w = 0; w < numWords; w++) {
-		var sum = 0n;
-		for (var c = 0; c < nCoeff; c++) {
-			sum ^= gf64_mul(inpWords[w], coeffWords[c]);
-		}
-		out[w] = sum;
+		out[w] = gf64_mul(inpWords[w], coeffWords[w % nCoeff]);
 	}
 	return out;
 }
@@ -125,7 +125,7 @@ var LENS     = [8, 64, 256, 1024];
 
 var rng = mulberry32(SEED);
 
-console.log('PAR3 GF64 Region MulArr Parity Test (TDD Red)');
+console.log('PAR3 GF64 Region MulArr Parity Test (cycling contract)');
 console.log('================================================\n');
 
 for (var ci = 0; ci < N_COEFFS.length; ci++) {
