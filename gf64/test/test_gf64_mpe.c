@@ -430,7 +430,13 @@ case_c: {
 static void test_invmod(void) {
 	printf("Test 4: gf64_poly_invmod — g * (1/g) ≡ 1 mod x^n (multiple n)\n");
 
-	const size_t n_cases[] = { 1, 2, 3, 4, 7, 8, 16, 32, 64, 128 };
+	/* n_cases includes NON-power-of-2 sizes (96, 192, 255): the final
+	 * Newton step then has m_new = n with m = 2^floor(log2(n-1)) > n/2,
+	 * so the full product g * r^2 is up to 3n - 2 coefficients long —
+	 * regression pin for the issue #59 A1 prod-buffer sizing fix (the
+	 * old 2n sizing overflowed the heap, e.g. n = 96 writes 222
+	 * coefficients into a 192-slot buffer). */
+	const size_t n_cases[] = { 1, 2, 3, 4, 7, 8, 16, 32, 64, 96, 128, 192, 255 };
 	const size_t num_n = sizeof(n_cases) / sizeof(n_cases[0]);
 	int all_ok = 1;
 

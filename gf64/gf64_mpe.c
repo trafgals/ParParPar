@@ -6,30 +6,40 @@
  *
  * Public functions:
  *
- *   1. gf64_poly_divmod      -- schoolbook O((deg_f + 1) * (deg_g + 1)) long
- *                               division. Exact, fast enough for the test
- *                               suite sizes (deg_f <= 200).
+ *   1. gf64_poly_divmod      -- fast polynomial division via the
+ *                               Newton-reciprocal trick (issue #59 A1),
+ *                               O(M(m)) for quotient length m; small
+ *                               quotients delegate to the schoolbook
+ *                               reference gf64_poly_divmod_schoolbook.
  *
  *   2. gf64_poly_invmod      -- Newton-iteration modular inverse 1/g(x) mod
- *                               x^n. Cubic-time schoolbook today; future
- *                               FFT follow-up at the marked TODO.
+ *                               x^n. Every multiplication routes through
+ *                               gf64_poly_mul's FFT dispatch.
  *
- *   3. gf64_multi_point_eval -- naive Horner fallback. O(N * deg_f).
+ *   3. gf64_multi_point_eval -- Bostan-Schost top-down multi-point
+ *                               evaluation. Each node does two fast
+ *                               divmods; total O(M(N) log N).
  *
  *   4. gf64_poly_invmod_mod  -- polynomial modular inverse 1/g(x) mod f(x)
- *                               via iterative half-extended GCD. Used at
- *                               subproduct tree-build time to cache
- *                               P_left^(-1) mod P_right (needed by the
- *                               Bostan-Schost interpolation below).
+ *                               via iterative half-extended GCD. Kept as a
+ *                               standalone library primitive (pinned by
+ *                               test_gf64_invmod_mod_parity.c); the
+ *                               subproduct-tree inverse cache that used it
+ *                               was removed in A1.
  *
  *   5. gf64_multi_point_interp -- Bostan-Schost top-down multi-point
  *                               INTERPOLATION. Given N subproduct-tree
  *                               points and N values, returns the unique
  *                               polynomial of degree < N that matches.
- *                               GATED behind the PAR3_GF64_USE_INTERP env
- *                               var (default OFF): the function only
- *                               enters the Bostan-Schost body when the
- *                               env var is "1"/"true"/"yes"/"on".
+ *                               Derivative-based Lagrange form (issue #59
+ *                               A1): P'(x_j) via one MPE of the root
+ *                               derivative, z_j = y_j/P'(x_j), top-down
+ *                               f_L·P_R + f_R·P_L combine — no tree-level
+ *                               inverse cache needed. GATED behind the
+ *                               PAR3_GF64_USE_INTERP env var (default
+ *                               OFF): the function only enters the
+ *                               Bostan-Schost body when the env var is
+ *                               "1"/"true"/"yes"/"on".
  *
  * The two interpolation helpers co-located here for now:
  *
@@ -77,7 +87,12 @@ HEDLEY_BEGIN_C_DECLS
 extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
 
 /* ----------------------------------------------------------------------------
- * 1. gf64_poly_divmod: schoolbook long division in GF(2^64)[x]
+ * 1. gf64_poly_divmod_schoolbook: schoolbook long division in GF(2^64)[x]
+ *
+ * REFERENCE implementation. Kept public so the fast Newton-reciprocal
+ * dispatcher below (and the parity test test_gf64_divmod_parity.c) can
+ * cross-check bit-exactness. Also used directly for small quotients where
+ * the Newton setup would dominate.
  *
  * Long-division algorithm (descending-coefficient order):
  *
@@ -96,7 +111,7 @@ extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
  *   - deg_g == 0 and g[0] == 0: undefined -> abort()
  *   - deg_f <  deg_g:           r = f, q = 0
  * ---------------------------------------------------------------------------- */
-void gf64_poly_divmod(
+void gf64_poly_divmod_schoolbook(
 	const gf64_t *f, size_t deg_f,
 	const gf64_t *g, size_t deg_g,
 	gf64_t *q,    gf64_t *r
@@ -168,6 +183,129 @@ void gf64_poly_divmod(
 }
 
 /* ----------------------------------------------------------------------------
+ * 2. gf64_poly_divmod: Newton-reciprocal fast division in GF(2^64)[x]
+ *
+ * Issue #59 A1: replaces the schoolbook inner loop of the multi-point
+ * evaluation / interpolation tree walks. For quotients of length
+ * m = deg_f - deg_g + 1 >= GF64_DIVMOD_NEWTON_MIN the quotient is computed
+ * via the reverse-polynomial Newton trick (von zur Gathen & Gerhard §9.1):
+ *
+ *   k   = deg_f - deg_g;   m = k + 1
+ *   rev_f[i] = f[deg_f - i]       (i in [0, k])     -- top k+1 coeffs, reversed
+ *   rev_g[i] = g[deg_g - i]       (i in [0, deg_g]) -- all of g, reversed
+ *   inv      = rev_g^{-1} mod x^m                     (Newton, gf64_poly_invmod)
+ *   rev_q    = rev_f * inv mod x^m                    (gf64_poly_mul_padded)
+ *   q[i]     = rev_q[k - i]
+ *   r        = f ^ (g * q)   (low deg_g coefficients)
+ *
+ * Identity: f = g*q + r with deg r < deg g  <=>  rev_f ≡ rev_g * rev_q
+ * (mod x^m), where rev_q = x^k * q(1/x). Proof sketch: reverse f = g*q + r
+ * with respect to x^{deg_f}: rev_f = rev_g * rev_q + x^{deg_f - deg_g + 1} * ...
+ * (the reversed remainder is divisible by x^{k+1} because deg r < deg g).
+ *
+ * Cost: O(M(m)) field ops (one modular inverse via log m FFT muls plus one
+ * product), vs O((deg_f+1)(deg_g+1)) schoolbook. The muls route through
+ * gf64_poly_mul_internal, which dispatches HQC FFT (n >= 96), Karatsuba
+ * (n >= 128) or schoolbook.
+ *
+ * The r buffer contract is unchanged: r is a working buffer holding a copy
+ * of f (deg_f + 1 slots); on return r[0..deg_g-1] is the remainder and the
+ * rest is unspecified.
+ * ---------------------------------------------------------------------------- */
+
+/* Quotients shorter than this delegate to the schoolbook reference: the
+ * Newton setup (three allocations + ~log m FFT muls) would dominate. 96
+ * matches GF64_HQC_FFT_MIN so every mul inside the Newton path is an FFT
+ * mul, never a quadratic fallback. */
+#define GF64_DIVMOD_NEWTON_MIN ((size_t)96)
+
+void gf64_poly_divmod(
+	const gf64_t *f, size_t deg_f,
+	const gf64_t *g, size_t deg_g,
+	gf64_t *q,    gf64_t *r
+) {
+	assert(f != NULL);
+	assert(g != NULL);
+	assert(q != NULL);
+	assert(r != NULL);
+
+	if (deg_g == 0 && g[0] == 0) {
+		abort();
+	}
+
+	if (deg_f < deg_g) {
+		/* r = f, q = 0 — same contract as the schoolbook reference. */
+		for (size_t i = 0; i <= deg_f; i++) {
+			r[i] = f[i];
+		}
+		for (size_t i = deg_f + 1; i <= deg_g - 1; i++) {
+			r[i] = 0;
+		}
+		q[0] = 0;
+		return;
+	}
+
+	const size_t k = deg_f - deg_g;
+	const size_t m = k + 1;
+
+	if (m < GF64_DIVMOD_NEWTON_MIN) {
+		gf64_poly_divmod_schoolbook(f, deg_f, g, deg_g, q, r);
+		return;
+	}
+
+	gf64_t *rev_f = (gf64_t *)malloc(m * sizeof(gf64_t));
+	gf64_t *rev_g = (gf64_t *)malloc((deg_g + 1) * sizeof(gf64_t));
+	gf64_t *inv   = (gf64_t *)malloc(m * sizeof(gf64_t));
+	gf64_t *rev_q = (gf64_t *)malloc(m * sizeof(gf64_t));
+	gf64_t *gq    = (gf64_t *)malloc((deg_f + 1) * sizeof(gf64_t));
+	if (rev_f == NULL || rev_g == NULL || inv == NULL ||
+	    rev_q == NULL || gq == NULL) {
+		free(rev_f); free(rev_g); free(inv); free(rev_q); free(gq);
+		abort();
+	}
+
+	/* Reverse the top k+1 coefficients of f and all of g. */
+	for (size_t i = 0; i < m; i++) {
+		rev_f[i] = f[deg_f - i];
+	}
+	for (size_t i = 0; i <= deg_g; i++) {
+		rev_g[i] = g[deg_g - i];
+	}
+
+	/* inv = rev_g^{-1} mod x^m. rev_g[0] = g[deg_g] != 0 by the divisor
+	 * contract, so the inverse exists. */
+	gf64_poly_invmod(rev_g, deg_g, m, inv);
+
+	/* rev_q = rev_f * inv mod x^m (low m coefficients). */
+	gf64_poly_mul_padded(rev_q, rev_f, m, inv, m, m);
+
+	/* Un-reverse the quotient. */
+	for (size_t i = 0; i < m; i++) {
+		q[i] = rev_q[k - i];
+	}
+
+	/* r = f ^ (g * q), keeping only the deg_g low coefficients. The
+	 * region r[deg_g..deg_f] is zeroed to match the schoolbook path's
+	 * end state: the half-EGCD (gf64_poly_invmod_mod) memcpys the whole
+	 * r buffer as the next remainder and scans it for the true degree,
+	 * so a nonzero high region would corrupt the EGCD. (The divmod
+	 * contract calls this region "unspecified"; both implementations
+	 * leave it zero.) */
+	memcpy(r, f, (deg_f + 1) * sizeof(gf64_t));
+	gf64_poly_mul(gq, g, deg_g, q, k);
+	for (size_t i = 0; i < deg_g; i++) {
+		r[i] ^= gq[i];
+	}
+	memset(r + deg_g, 0, (deg_f - deg_g + 1) * sizeof(gf64_t));
+
+	free(rev_f);
+	free(rev_g);
+	free(inv);
+	free(rev_q);
+	free(gq);
+}
+
+/* ----------------------------------------------------------------------------
  * 2. gf64_poly_invmod: 1/g(x) mod x^n via Newton iteration (STUB)
  *
  * The Newton iteration for modular polynomial inverse in characteristic 2:
@@ -199,7 +337,17 @@ void gf64_poly_invmod(
 	 * Allocation strategy:
 	 *   g_buf  -- truncated copy of g (n entries)
 	 *   r_sq   -- scratch for r^2 (up to 2n - 2 coefficients)
-	 *   prod   -- scratch for g * r^2 (up to 2n - 2 coefficients)
+	 *   prod   -- scratch for g * r^2
+	 *
+	 * prod sizing (issue #59 A1 fix): the product written is the FULL
+	 * product of (deg m_new - 1) by (deg 2m - 2), i.e. m_new + 2m - 2
+	 * coefficients. When n is NOT a power of 2, the final Newton step has
+	 * m_new = n and m = 2^floor(log2(n-1)) >= n/2, so the worst case is
+	 * n + 2n - 2 = 3n - 2 coefficients (e.g. n = 96: m = 64, m_new = 96,
+	 * product length 222 > 2n = 192 — the old 2n sizing overflowed the
+	 * heap, caught by ASan via the Newton-reciprocal divmod path). Only
+	 * the first m_new coefficients are read back, but the full product is
+	 * materialized.
 	 *
 	 * TODO(replace-with-fft): an FFT-based Newton iteration would reuse a
 	 * single scratch area of size O(n) and avoid the 2n-sized buffers
@@ -207,7 +355,7 @@ void gf64_poly_invmod(
 	 */
 	gf64_t *g_buf = (gf64_t *)calloc(n, sizeof(gf64_t));
 	gf64_t *r_sq  = (gf64_t *)calloc(2 * n, sizeof(gf64_t));
-	gf64_t *prod  = (gf64_t *)calloc(2 * n, sizeof(gf64_t));
+	gf64_t *prod  = (gf64_t *)calloc(3 * n, sizeof(gf64_t));
 	if (g_buf == NULL || r_sq == NULL || prod == NULL) {
 		free(g_buf); free(r_sq); free(prod);
 		abort();
@@ -731,9 +879,37 @@ void gf64_interp_dispatch_reset_probe(void) {
 	gf64_interp_probe_count = 0;
 }
 
-/* ---- top-down recursive Bostan-Schost interpolation helper ---- */
-static void gf64_mpi_recurse(
-	const gf64_t *values,
+/* ---- top-down recursive interpolation helper (derivative form) ----
+ *
+ * Issue #59 A1: the previous Bostan-Schost CRT combine required the
+ * per-pair modular inverses P_left^{-1} mod P_right cached at tree-build
+ * time (schoolbook half-EGCD — O(N²) total). That cache is gone; the
+ * combine below uses the derivative-based Lagrange form instead:
+ *
+ *   f(x) = Σ_j z_j · P(x)/(x - x_j),   z_j = y_j / P'(x_j)
+ *
+ * where P = ∏(x - x_k) is the root subproduct and P' its formal
+ * derivative. In characteristic 2 the derivative of c_i·x^i is c_i·x^{i-1}
+ * when i is odd and 0 when i is even, so P' is computed in O(N) XORs.
+ * The z_j are computed with ONE multi-point evaluation of P' (the fast
+ * divmod walk) plus N scalar field inversions. The top-down combine then
+ * only needs polynomial multiplications:
+ *
+ *   f_parent = f_L · P_R + f_R · P_L,   deg < N_at_lev
+ *
+ * Correctness: by induction f_L = Σ_{j∈L} z_j·P_L/(x−x_j) on the left leaf
+ * set; multiplying by P_R telescopes to Σ_{j∈L} z_j·P_parent/(x−x_j), and
+ * the right child contributes the L↔R-symmetric half. P'(x_j) =
+ * ∏_{k≠j}(x_j + x_k) ≠ 0 for distinct points (guaranteed by the Cauchy
+ * point-placement contract; the code aborts on 0 defensively).
+ *
+ * Cost: O(N) derivative + O(M(N) log N) MPE + N scalar inversions +
+ * O(M(N) log N) combine muls — subquadratic end to end, matching the
+ * tree build. The interpolation output polynomial of degree < N is
+ * UNIQUE, so the result is bit-identical to the removed CRT form.
+ */
+static void gf64_mpi_recurse_deriv(
+	const gf64_t *z,
 	const SubproductTree *tree,
 	size_t lev, size_t node_idx, size_t out_offset,
 	gf64_t *out_poly,
@@ -744,16 +920,16 @@ static void gf64_mpi_recurse(
 	const size_t f_size     = N_at_lev >> 1;            /* child poly size    */
 
 	if (lev + 1 == num_levels) {
-		/* Leaf: f is the constant values[out_offset]. */
-		out_poly[0] = values[out_offset];
+		/* Leaf: f is the constant z[out_offset]. */
+		out_poly[0] = z[out_offset];
 		return;
 	}
 
 	/*
-	 * Four slots of size N_at_lev. The fourth (slot3) is needed because
-	 * the leaf recursion writes fL into out_poly (== slot0 at this frame's
-	 * address), and the combine step's divmod later overwrites slot0
-	 * with k; we need a stable place to keep the saved fL until step F.
+	 * Four slots of size N_at_lev. slot0/slot1 hold the children's
+	 * results fL/fR (written by the recursion); slot2/slot3 hold the
+	 * two products P_R·fL and P_L·fR. The products must not alias their
+	 * inputs, so they live in their own slots.
 	 */
 	gf64_t *slot0         = scratch;
 	gf64_t *slot1         = scratch + N_at_lev;
@@ -761,93 +937,65 @@ static void gf64_mpi_recurse(
 	gf64_t *slot3         = scratch + 3 * N_at_lev;
 	gf64_t *child_scratch = scratch + 4 * N_at_lev;
 
-	/* Recurse on children. fL is written to slot0, fR to slot1.
-	 *
-	 * Note that at the leaves, slot0 == out_poly at that recursion depth,
-	 * so the leaf writes its constant into both addresses — but that's
-	 * fine since the combine steps treat slot0 as fL. */
-	gf64_mpi_recurse(values, tree, lev + 1,
-	                 /* node_idx */ 2 * node_idx,
-	                 out_offset,
-	                 slot0, child_scratch);
-	gf64_mpi_recurse(values, tree, lev + 1,
-	                 /* node_idx */ 2 * node_idx + 1,
-	                 out_offset + f_size,
-	                 slot1, child_scratch);
+	gf64_mpi_recurse_deriv(z, tree, lev + 1,
+	                       /* node_idx */ 2 * node_idx,
+	                       out_offset,
+	                       slot0, child_scratch);
+	gf64_mpi_recurse_deriv(z, tree, lev + 1,
+	                       /* node_idx */ 2 * node_idx + 1,
+	                       out_offset + f_size,
+	                       slot1, child_scratch);
 
 	/*
-	 * Step A: save fL (slot0) into slot3 so step D's divmod can safely
-	 *         overwrite slot0 with k. Slot0 is fL's canonical home for
-	 *         the parent's contract; we cannot store fL elsewhere within
-	 *         this frame's four slots because slot1 holds fR (still
-	 *         needed for d) and slot2 is the d/prod scratch.
+	 * Sibling polynomials. P_left/P_right each have degree f_size
+	 * (f_size + 1 stored coefficients).
 	 */
-	memcpy(slot3, slot0, f_size * sizeof(gf64_t));
+	const gf64_t *P_left  = tree->level_data[lev + 1]
+	                        + (2 * node_idx)     * (f_size + 1);
+	const gf64_t *P_right = tree->level_data[lev + 1]
+	                        + (2 * node_idx + 1) * (f_size + 1);
 
 	/*
-	 * Step B: d = fR + fL (XOR over char 2) into slot2; pad to N_at_lev.
+	 * f_parent = fL·P_R + fR·P_L, truncated to N_at_lev coefficients.
+	 * deg(fL) < f_size and deg(P_R) = f_size, so deg(fL·P_R) <=
+	 * 2·f_size - 1 = N_at_lev - 1 — the truncation is exact, no
+	 * information is lost. P_left is passed with length f_size + 1
+	 * (its x^f_size term is real).
 	 */
-	for (size_t i = 0; i < f_size; i++) {
-		slot2[i] = slot1[i] ^ slot0[i];
-	}
-	memset(slot2 + f_size, 0, (N_at_lev - f_size) * sizeof(gf64_t));
+	gf64_poly_mul_padded(slot2, P_right, f_size + 1, slot0, f_size, N_at_lev);
+	gf64_poly_mul_padded(slot3, P_left,  f_size + 1, slot1, f_size, N_at_lev);
 
-	/*
-	 * Sibling polynomials and cached inverse. The tree builder must
-	 * have populated inv_mod_data[lev] for this (lev, node_idx) pair.
-	 */
-	const gf64_t *P_left     = tree->level_data[lev + 1]
-	                           + (2 * node_idx)     * (f_size + 1);
-	const gf64_t *P_right    = tree->level_data[lev + 1]
-	                           + (2 * node_idx + 1) * (f_size + 1);
-	const gf64_t *inv_LmodR  = tree->inv_mod_data[lev]
-	                           + node_idx * (f_size + 1);
-
-	/*
-	 * Step C: tmp = d · inv_LmodR truncated to 2·f_size coefficients.
-	 *         slot1 (fR region, no longer needed) becomes tmp.
-	 */
-	gf64_poly_mul_padded(slot1, slot2, f_size, inv_LmodR, f_size,
-	                     2 * f_size);
-
-	/*
-	 * Step D: k = tmp mod P_right (degree < f_size).
-	 *         q_buf lives in slot2 (overwriting d, no longer needed); r
-	 *         in slot0. The divmod is OK with q_buf aliasing tmp or fL
-	 *         because it does not read those positions after f is copied
-	 *         into r.
-	 */
-	(void)gf64_poly_divmod(slot1, 2 * f_size - 1, P_right, f_size,
-	                       slot2 /* q_buf */, slot0 /* r -> k */);
-
-	/*
-	 * Step E: prod = P_left · k, truncated to N_at_lev coefficients.
-	 *         slot2 (last free region) becomes prod.
-	 *
-	 * P_left has degree f_size (== num_points / 2^(lev+1)), so it occupies
-	 * f_size + 1 storage coefficients; passing the length as f_size would
-	 * drop the x^(f_size) term and collapse the polynomial.
-	 */
-	gf64_poly_mul_padded(slot2, P_left, f_size + 1, slot0, f_size, N_at_lev);
-
-	/*
-	 * Step F: f_parent = saved_fL + prod, with high-order coefficients
-	 *         beyond f_size coming from prod alone. Write into out_poly.
-	 */
-	for (size_t i = 0; i < f_size; i++) {
-		out_poly[i] = slot3[i] ^ slot2[i];
-	}
-	for (size_t i = f_size; i < N_at_lev; i++) {
-		out_poly[i] = slot2[i];
+	for (size_t i = 0; i < N_at_lev; i++) {
+		out_poly[i] = slot2[i] ^ slot3[i];
 	}
 }
 
 /*
- * Ungated Bostan-Schost body. Exposed (non-static) so pipeline consumers
- * with a hard dependency on interpolation — currently the Fenger Toeplitz
- * path (gf64_fenger.c) — can call it directly without tripping the
- * PAR3_GF64_USE_INTERP opt-in gate. The public gf64_multi_point_interp
- * wrapper still enforces the gate for everyone else.
+ * Ungated Bostan-Schost body (derivative form). Exposed (non-static) so
+ * pipeline consumers with a hard dependency on interpolation — currently
+ * the Fenger Toeplitz path (gf64_fenger.c) — can call it directly without
+ * tripping the PAR3_GF64_USE_INTERP opt-in gate. The public
+ * gf64_multi_point_interp wrapper still enforces the gate for everyone
+ * else.
+ *
+ * Algorithm (issue #59 A1):
+ *   1. P' = derivative of the root subproduct (O(N) XORs; char-2 rule:
+ *      keep coefficient i+1 of P only when i+1 is odd).
+ *   2. d_j = P'(x_j) for all j via gf64_multi_point_eval (fast divmod
+ *      walk, O(M(N) log N)).
+ *   3. z_j = values[j] / d_j (N scalar field inversions).
+ *   4. Top-down combine f_parent = f_L·P_R + f_R·P_L (2 FFT muls per
+ *      node, O(M(N) log N) total).
+ *
+ * Steps 1-3 are TREE-ONLY (independent of `values`): their result is
+ * exactly the barycentric weights 1/P'(x_j). Callers that already hold
+ * those weights (the Fenger prepare phase computes them via
+ * gf64_barycentric_weights) should use gf64_multi_point_interp_weights
+ * instead — it skips the MPE + N inversions entirely and is the
+ * per-word hot path of the Fenger pipeline.
+ *
+ * Scratch: P' (N), d (N), z (N, reuses P''s buffer), recursion scratch
+ * (<= 8N) => <= 11N gf64_t words transiently.
  */
 void gf64_multi_point_interp_internal(
 	const SubproductTree *tree,
@@ -856,20 +1004,121 @@ void gf64_multi_point_interp_internal(
 ) {
 	const size_t N = tree->num_points;
 
-	/*
-	 * Worst-case scratch at the root: 4 slots of N, plus the children's
-	 * scratch (4·N/2 + 4·N/4 + … = 4·N), giving ≤ 8·N total.
-	 */
+	if (N == 0) {
+		return;
+	}
+	if (N == 1) {
+		/* P = x + x_0, P' = 1: the unique interpolant of one point is
+		 * the constant values[0]. */
+		out[0] = values[0];
+		return;
+	}
+
+	/* 1. Derivative of the root (degree N, so N coefficients). */
+	const gf64_t *P = tree->level_data[0];
+	gf64_t *z = (gf64_t *)malloc(N * sizeof(gf64_t));
+	gf64_t *d = (gf64_t *)malloc(N * sizeof(gf64_t));
+	if (z == NULL || d == NULL) {
+		free(z); free(d);
+		abort();
+	}
+	for (size_t k = 0; k < N; k++) {
+		const size_t i = k + 1;          /* P coefficient index */
+		z[k] = (i & 1) ? P[i] : 0;       /* char-2 derivative */
+	}
+
+	/* 2. d_j = P'(x_j). deg(P') <= N - 1 < N, so the Bostan-Schost walk
+	 * (not the Horner fallback) is taken. */
+	gf64_multi_point_eval(z, N - 1, tree, d);
+
+	/* 3. weights_j = 1 / d_j, then z_j = values[j] * weights_j. Distinct
+	 * points => P'(x_j) != 0; abort loudly on violation (duplicate point
+	 * in the tree's point set). */
+	for (size_t j = 0; j < N; j++) {
+		if (d[j] == 0) {
+			abort();
+		}
+		z[j] = gf64_mul_reference(values[j], gf64_invert_ita_one(d[j]));
+	}
+
+	gf64_multi_point_interp_weights(tree, z, NULL, out);
+
+	free(z);
+	free(d);
+}
+
+/*
+ * Weights-aware Bostan-Schost interpolation body (issue #59 A1).
+ *
+ * Same derivative-form combine as gf64_multi_point_interp_internal, but
+ * takes the barycentric weights w_j = 1/P'(x_j) as an explicit input
+ * instead of computing them (steps 1-3 above): z_j = values[j] * w_j is
+ * a single mul per point, so the per-call cost is just the top-down
+ * combine — O(M(N) log N) with NO MPE walk and NO scalar inversions.
+ *
+ * This is the per-word hot path of the Fenger pipeline: the prepare
+ * phase computes the weights once per tree (amortized across all B
+ * words) and each word's interpolation reuses them.
+ *
+ * @param weights  N precomputed barycentric weights w_j = 1/P'(x_j), or
+ *                 NULL to fall back to computing them internally (the
+ *                 interp_internal entry passes its already-computed
+ *                 z-array and NULL here — see below).
+ *
+ * NOTE ON THE NULL CONVENTION: when `weights` is NULL, `values` is
+ * interpreted as the PRE-SCALED z-array (z_j = values[j]/P'(x_j)) and
+ * the combine runs directly. gf64_multi_point_interp_internal uses this
+ * to avoid a second allocation; external callers always pass real
+ * weights.
+ */
+void gf64_multi_point_interp_weights(
+	const SubproductTree *tree,
+	const gf64_t *values,
+	const gf64_t *weights,
+	gf64_t *out
+) {
+	const size_t N = tree->num_points;
+
+	if (N == 0) {
+		return;
+	}
+	if (N == 1) {
+		/* P = x + x_0, P' = 1: the unique interpolant of one point is
+		 * the constant values[0] (times the weight, which is always 1
+		 * here — kept explicit for the weights entry). */
+		out[0] = (weights != NULL)
+		         ? gf64_mul_reference(values[0], weights[0])
+		         : values[0];
+		return;
+	}
+
+	gf64_t *z;
+	if (weights != NULL) {
+		z = (gf64_t *)malloc(N * sizeof(gf64_t));
+		if (z == NULL) abort();
+		for (size_t j = 0; j < N; j++) {
+			z[j] = gf64_mul_reference(values[j], weights[j]);
+		}
+	} else {
+		/* Pre-scaled z-array (internal convention). */
+		z = (gf64_t *)values;
+	}
+
+	/* Top-down combine. Worst-case scratch at the root: 4 slots of N,
+	 * plus the children's scratch (4·N/2 + 4·N/4 + … = 4·N), giving
+	 * <= 8·N total. */
 	const size_t scratch_words = 8 * N;
 	gf64_t *scratch = (gf64_t *)malloc(scratch_words * sizeof(gf64_t));
 	if (scratch == NULL) {
+		if (weights != NULL) free(z);
 		abort();
 	}
 
-	gf64_mpi_recurse(values, tree,
-	                 /* lev */ 0, /* node_idx */ 0, /* out_offset */ 0,
-	                 out, scratch);
+	gf64_mpi_recurse_deriv(z, tree,
+	                       /* lev */ 0, /* node_idx */ 0, /* out_offset */ 0,
+	                       out, scratch);
 
+	if (weights != NULL) free(z);
 	free(scratch);
 }
 
