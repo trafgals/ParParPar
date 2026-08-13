@@ -18,15 +18,16 @@
  * numerator-sum / denominator-sum formulation. PAR3 does not need
  * polynomial interpolation; it needs the raw Cauchy matrix product. An
  * earlier version of this file implemented the Lagrange form by mistake;
- * that was wrong and has been replaced by this direct formula.
+ * see the commit history (and test/par3-barycentric-parity.js) for the
+ * correction.
  *
- * WHY THE SUBPRODUCT TREE / BARYCENTRIC WEIGHTS / MPE ARE NOT USED HERE
- * --------------------------------------------------------------------
- * The Barycentric kernel name is preserved for compatibility with the
- * existing NAPI binding (`compute_recovery_barycentric`) and its dispatch
- * chain in the engine header. The library primitives built in earlier
- * plan tasks remain available for future "Bostan-Schost fast-path"
- * optimizations (subproduct tree → multi-point evaluation → near-linear
+ * DESIGN NOTE — why the tree-based primitives are NOT used here (issue #46
+ * root-cause context):
+ *
+ * The Cauchy matrix-vector product is a *linear operator* over the input
+ * blocks. The subproduct-tree / MPE / Fenger primitives shipped in
+ * gf64_subproduct.c / gf64_mpe.c / gf64_fenger.c all target *polynomial*
+ * evaluation (Lagrange form, e.g. computing f_w(y_r) / V(y_r) for
  * Cauchy recovery). They are deliberately *not* invoked here because:
  *
  *   - gf64_subproduct_tree_build (T6) requires N to be a power of two,
@@ -55,8 +56,8 @@
  *      with VPCLMULQDQ; otherwise dispatch through gf64_inverse_batch
  *      (scalar/SSSE3/AVX-2 specialised batch inverters bound at
  *      gf64_init_dispatch time). Input and output buffers are kept
- *      distinct to satisfy HEDLEY_RESTRICT — see the coeffs_tls/denoms_tls
- *      pair declared below.
+ *      distinct to satisfy HEDLEY_RESTRICT — see the coeffs/denoms
+ *      scratch pair in processRow below.
  *   3. For each input column c, accumulate in[c][w] * coeff into
  *      out[r][w] via gf64_region_muladd_arr, where coeff is the inverted
  *      Cauchy coefficient. n_coeff = 1: each call multiplies a single
@@ -67,6 +68,20 @@
  * rows. Same asymptotic cost as the legacy 2D-muladd path
  * (O(N*R*B)); the algorithmic speedup from subproduct-tree MPE is a
  * future TODO.
+ *
+ * PARALLELIZATION (issue #46 Phase A — 2026-08-13 native-Windows session)
+ * ------------------------------------------------------------------------
+ * The v1 implementation ran the row loop single-threaded regardless of
+ * numThreads, which regressed create throughput ~6x vs the legacy
+ * 8-thread L3-aware Cauchy path (1 GiB / 10K slices: 28.3 -> 4.78 MB/s
+ * on native Windows). The row loop is embarrassingly parallel: each
+ * row r writes a distinct out_row and reads only the shared inputs, and
+ * gf64_invert_ita_batch / gf64_inverse_batch / gf64_region_muladd_arr
+ * are pure (no shared mutable state — verified by inspection), so rows
+ * can be distributed across workers with per-worker scratch. The
+ * parallel path mirrors BuildCauchyMatrix's row-stealing std::async
+ * pattern (proven load-balanced in this engine); the serial path keeps
+ * the original thread_local scratch for the single-worker case.
  *
  * TODO(bostan-schost-fast-path): see the file header doc. The future
  * fast-path replaces step 3 above with a single polynomial evaluation
@@ -81,7 +96,9 @@ extern "C" {
 #include "../gf64/gf64_invert_ita.h"
 }
 
+#include <atomic>
 #include <cstring>
+#include <future>
 #include <vector>
 
 void GF64Controller::ComputeRecoveryBlocksBarycentric(
@@ -89,7 +106,7 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 	gf64_t* recovery, size_t numRecovery,
 	size_t blockSize64,
 	uint64_t firstInput, uint64_t firstRecovery,
-	int /*numThreads — unused in T9 first version, see TODO above*/
+	int numThreads
 ) {
 	/*
 	 * Trivial-input short-circuit. Matches the engine convention (see
@@ -113,17 +130,33 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 	 * Ensure the global GF(2^64) dispatch is bound (mirrors the legacy
 	 * ComputeRecoveryBlocks entry — the dispatch pointers may be unbound
 	 * if the very first kernel call comes through this path rather than
-	 * the 2D-muladd path).
+	 * the 2D-muladd path). Must complete BEFORE the parallel workers
+	 * spawn: the workers only read the bound function pointers
+	 * (gf64_inverse_batch / gf64_region_muladd_arr), and the one-shot
+	 * init guard is not thread-safe against concurrent first calls.
 	 */
 	gf64_init_dispatch();
 
 	/*
-	 * Thread-local scratch for the per-row denominator buffer. Reused
-	 * across rows; resized on the fly if numInputs grows between calls.
+	 * Worker count: honour the caller's numThreads (<= 0 = auto), fall
+	 * back to the effective CPU count (affinity-aware), and cap at the
+	 * row count — mirroring ComputeRepairBlocks / BuildCauchyMatrix.
+	 */
+	size_t n_workers = (numThreads <= 0)
+		? GetEffectiveCpuCount()
+		: (size_t)numThreads;
+	if (n_workers == 0) n_workers = 1;
+	if (n_workers > numRecovery) n_workers = numRecovery;
+
+	/*
+	 * Per-row kernel, factored so the serial and parallel paths share one
+	 * implementation. `denoms` / `coeffs` are caller-owned scratch:
+	 * thread_local vectors in the serial path (reused across rows, no
+	 * reallocation), per-worker vectors in the parallel path.
 	 *
 	 * Per-row memory: numInputs * sizeof(gf64_t) for the raw denominators
-	 * (`denoms_tls`) PLUS numInputs * sizeof(gf64_t) for the inverted
-	 * coefficients (`coeffs_tls`). The two buffers are deliberately
+	 * (`denoms`) PLUS numInputs * sizeof(gf64_t) for the inverted
+	 * coefficients (`coeffs`). The two buffers are deliberately
 	 * distinct: gf64_inverse_batch's non-aliasing HEDLEY_RESTRICT contract
 	 * forbids passing the same array as both input and output. Cubic
 	 * review 4891289950 (item 3) flagged the prior in-place scalar
@@ -132,29 +165,7 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 	 * separate output buffer and dispatch through gf64_inverse_batch in
 	 * the fallback branch.
 	 */
-	static thread_local std::vector<gf64_t> denoms_tls;
-	if (denoms_tls.size() < numInputs) denoms_tls.resize(numInputs);
-	gf64_t* denoms = denoms_tls.data();
-
-	static thread_local std::vector<gf64_t> coeffs_tls;
-	if (coeffs_tls.size() < numInputs) coeffs_tls.resize(numInputs);
-	gf64_t* coeffs = coeffs_tls.data();
-
-	/*
-	 * For each recovery row r:
-	 *   1. Compute raw denominators x_c ^ y_r, mapping 0 -> 1 to keep the
-	 *      batched inversion safe (ita_batch returns 0 for input 0).
-	 *   2. Batch-invert the row of denominators into a separate output
-	 *      buffer (denoms[] -> coeffs[]) — see gf64_inverse_batch's
-	 *      HEDLEY_RESTRICT non-aliasing contract.
-	 *   3. Build out[r] = XOR_c in[c] * coeffs[c] via numInputs region-
-	 *      muladd calls (n_coeff = 1 each).
-	 *
-	 * The output row is zeroed before the accumulators run so the
-	 * muladd XOR-sums from zero to the Cauchy row (no accumulation
-	 * across the recv buffer — each r is independent).
-	 */
-	for (size_t r = 0; r < numRecovery; r++) {
+	auto processRow = [&](size_t r, gf64_t* denoms, gf64_t* coeffs) {
 		const uint64_t y = firstRecovery + (uint64_t)r;
 
 		/* Step 1: raw denominators. */
@@ -217,5 +228,49 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 				/*n_coeff=*/1
 			);
 		}
+	};
+
+	if (n_workers <= 1) {
+		/* Serial path: thread_local scratch, reused across rows (no
+		 * per-row heap traffic). */
+		static thread_local std::vector<gf64_t> denoms_tls;
+		if (denoms_tls.size() < numInputs) denoms_tls.resize(numInputs);
+		static thread_local std::vector<gf64_t> coeffs_tls;
+		if (coeffs_tls.size() < numInputs) coeffs_tls.resize(numInputs);
+
+		for (size_t r = 0; r < numRecovery; r++) {
+			processRow(r, denoms_tls.data(), coeffs_tls.data());
+		}
+		return;
+	}
+
+	/* Parallel path: row-stealing std::async workers (mirrors
+	 * BuildCauchyMatrix). `nextRow` is destroyed only after all futures
+	 * complete (we block below), so workers can safely reference it by
+	 * reference. Each worker owns its denoms/coeffs scratch, reused per
+	 * row. Rows are independent: distinct out_row, read-only inputs,
+	 * pure kernels. */
+	std::atomic<size_t> nextRow{0};
+	std::vector<std::future<void>> futures;
+	futures.reserve(n_workers);
+
+	for (size_t w = 0; w < n_workers; w++) {
+		futures.push_back(std::async(std::launch::async, [&, w]() {
+			std::vector<gf64_t> denoms(numInputs);
+			std::vector<gf64_t> coeffs(numInputs);
+			for (size_t r = nextRow.fetch_add(1, std::memory_order_relaxed);
+			     r < numRecovery;
+			     r = nextRow.fetch_add(1, std::memory_order_relaxed)) {
+				processRow(r, denoms.data(), coeffs.data());
+			}
+		}));
+	}
+
+	/* f.get() (not wait()) so a worker exception (e.g. std::bad_alloc
+	 * from the per-worker scratch vectors) propagates to the caller
+	 * instead of silently returning with `recovery` partially written
+	 * (cubic review f96ee17b P2). */
+	for (auto& f : futures) {
+		f.get();
 	}
 }
