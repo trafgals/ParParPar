@@ -1,0 +1,57 @@
+name: debug-62
+
+# TEMPORARY issue #62 root-cause workflow — DELETED before the PR.
+# Manual dispatch only; never runs on push/PR. Reproduces the
+# Node-20 + windows-2025 Fenger crash (N=1/R=2 create) under a knob
+# matrix so the failing combination can be isolated.
+on:
+  workflow_dispatch:
+
+jobs:
+  repro:
+    name: '#62 repro (windows-2025, node 20)'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Native addon load gate
+        shell: bash
+        run: node -e "var m=require('./build/Release/parpar_gf64.node'); console.log('OK exports:', Object.keys(m).length);"
+
+      - name: Engine repro — knob matrix
+        shell: bash
+        run: |
+          set +e
+          for combo in default noavx512 forceavx512; do
+            case $combo in
+              default)      unset PAR3_GF64_USE_AVX512 PAR3_AVX512_FORCE;;
+              noavx512)     export PAR3_GF64_USE_AVX512=0; unset PAR3_AVX512_FORCE;;
+              forceavx512)  export PAR3_GF64_USE_AVX512=1 PAR3_AVX512_FORCE=2;;
+            esac
+            node test/repro-62.js > "repro-$combo.log" 2>&1
+            echo "=== combo=$combo exit=$? ==="
+            cat "repro-$combo.log"
+          done
+          ls -la "$LOCALAPPDATA/CrashDumps" 2>/dev/null || echo "no crash dumps"
+
+      - name: Full create repro (original crash path)
+        shell: bash
+        run: |
+          set +e
+          mkdir -p par3-test-input par3-test-output
+          echo "one" > par3-test-input/file1.txt
+          export PAR3_FENGER_WINDOWS_ENABLE=1
+          node bin/par3.js create --output par3-test-output/data --recovery-slices 2 par3-test-input/file1.txt > create-enable.log 2>&1
+          echo "=== create (A4 enable only) exit=$? ==="
+          cat create-enable.log
+          export PAR3_GF64_USE_FENGER=1
+          node bin/par3.js create --output par3-test-output/data2 --recovery-slices 2 par3-test-input/file1.txt > create-force.log 2>&1
+          echo "=== create (enable + force) exit=$? ==="
+          cat create-force.log
+          ls -la par3-test-output 2>/dev/null
+          ls -la "$LOCALAPPDATA/CrashDumps" 2>/dev/null || echo "no crash dumps"
