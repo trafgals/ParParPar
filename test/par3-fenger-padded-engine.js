@@ -62,10 +62,14 @@ function next64() {
 	return z ^ (z >> 31n);
 }
 
-// One parity case: fenger (padded route where needed) vs legacy Cauchy.
-// blockSize must be a multiple of 8 (the binding enforces it); B is the
-// word count per block (blockSize/8).
-function runCase(N, R, blockSize, firstInput, firstRecovery, label) {
+// One parity case: fenger (padded route where needed) vs a legacy
+// Cauchy reference. blockSize must be a multiple of 8 (the binding
+// enforces it); B is the word count per block (blockSize/8). refFn
+// selects the reference binding — default compute_recovery_full, or
+// compute_recovery when the engine's fallback target is the one under
+// test (cubic review 5a3b44c9 P3: dedupes the fill/compare/report
+// blocks the collision case used to duplicate).
+function runCase(N, R, blockSize, firstInput, firstRecovery, label, refFn) {
 	var B = blockSize / 8;
 	var inputs = Buffer.allocUnsafe(N * blockSize);
 	for (var i = 0; i < N * B; i++) {
@@ -75,7 +79,7 @@ function runCase(N, R, blockSize, firstInput, firstRecovery, label) {
 	var outFull = Buffer.alloc(R * blockSize);
 
 	binding.compute_recovery_fenger(inputs, outFenger, N, R, blockSize, firstInput, firstRecovery, 0);
-	binding.compute_recovery_full(inputs, outFull, N, R, blockSize, firstInput, firstRecovery, 0);
+	(refFn || binding.compute_recovery_full)(inputs, outFull, N, R, blockSize, firstInput, firstRecovery, 0);
 
 	var ok = outFenger.equals(outFull);
 	if (!ok) {
@@ -83,7 +87,7 @@ function runCase(N, R, blockSize, firstInput, firstRecovery, label) {
 		for (var w = 0; w < R * B; w++) {
 			if (outFenger.readBigUInt64LE(w * 8) !== outFull.readBigUInt64LE(w * 8)) {
 				console.error('    first mismatch at word ' + w + ': fenger=0x' +
-					outFenger.readBigUInt64LE(w * 8).toString(16) + ' full=0x' +
+					outFenger.readBigUInt64LE(w * 8).toString(16) + ' ref=0x' +
 					outFull.readBigUInt64LE(w * 8).toString(16));
 				break;
 			}
@@ -108,33 +112,11 @@ runCase(1, 512, 128, 0x10000, 0x1000000, 'N=1 trivial');
 // emitting zero rows instead of the legacy rows. The fixed guard must
 // fall back to the legacy path (compute_recovery), which is bit-exact
 // with compute_recovery_full here. (cubic review c509dd2b P3: R=600 was
-// itself padded and did not exercise the bypass.)
-(function () {
-	var N = 1000, R = 512, blockSize = 128;
-	var fi = 0x10000, fr = 66300;
-	var B = blockSize / 8;
-	var inputs = Buffer.allocUnsafe(N * blockSize);
-	for (var i = 0; i < N * B; i++) {
-		inputs.writeBigUInt64LE(next64(), i * 8);
-	}
-	var outFenger = Buffer.alloc(R * blockSize);
-	var outLegacy = Buffer.alloc(R * blockSize);
-	binding.compute_recovery_fenger(inputs, outFenger, N, R, blockSize, fi, fr, 0);
-	binding.compute_recovery(inputs, outLegacy, N, R, blockSize, fi, fr, 0);
-	var ok = outFenger.equals(outLegacy);
-	if (!ok) {
-		for (var w = 0; w < R * B; w++) {
-			if (outFenger.readBigUInt64LE(w * 8) !== outLegacy.readBigUInt64LE(w * 8)) {
-				console.error('    first mismatch at word ' + w + ': fenger=0x' +
-					outFenger.readBigUInt64LE(w * 8).toString(16) + ' legacy=0x' +
-					outLegacy.readBigUInt64LE(w * 8).toString(16));
-				break;
-			}
-		}
-	}
-	check(ok, 'overlapping input/recovery ranges fall back to legacy (N=' + N +
-		', R=' + R + ', fi=0x' + fi.toString(16) + ', fr=0x' + fr.toString(16) + ')');
-})();
+// itself padded and did not exercise the bypass; 5a3b44c9 P3: routed
+// through runCase with the reference-binding parameter.)
+runCase(1000, 512, 128, 0x10000, 66300,
+	'overlapping input/recovery ranges fall back to legacy',
+	binding.compute_recovery);
 // blockSize above the 32-bit size_t range (cubic review 50f46d24 P1):
 // on 32-bit hosts the (size_t) cast truncates to 0 and the size checks
 // would divide by zero (native crash). The guard must reject cleanly

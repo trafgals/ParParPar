@@ -2537,28 +2537,37 @@ static napi_value ComputeRepair_NAPI(napi_env env, napi_callback_info info) {
 
 	if(numAvail <= 0 || numMissing <= 0) {
 		napi_throw_range_error(env, NULL, "numAvail and numMissing must be positive");
+		if (needs_solveMatrix_temp) ALIGN_FREE(aligned_solveMatrix);
 		return NULL;
 	}
 
 	if(blockSize <= 0 || (uint64_t)blockSize > (uint64_t)(size_t)-1 || blockSize % 8 != 0) {
 		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
+		if (needs_solveMatrix_temp) ALIGN_FREE(aligned_solveMatrix);
 		return NULL;
 	}
 
 	size_t blockSize64 = (size_t)(blockSize / 8);
 
-	if(availLen < (size_t)(numAvail * blockSize)) {
+	if((size_t)numAvail > availLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "availBlocks buffer too small");
+		if (needs_solveMatrix_temp) ALIGN_FREE(aligned_solveMatrix);
 		return NULL;
 	}
 
-	if(repairedLen < (size_t)(numMissing * blockSize)) {
+	if((size_t)numMissing > repairedLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "repairedBlocks buffer too small");
+		if (needs_solveMatrix_temp) ALIGN_FREE(aligned_solveMatrix);
 		return NULL;
 	}
 
-	if(solveLen < (size_t)(numMissing * numAvail * sizeof(gf64_t))) {
+	/* Overflow-safe form (same class as cubic review f44ead49 P0):
+	 * numMissing * numAvail * 8 can wrap int64; numAvail >= 1 and
+	 * numMissing >= 1 are guaranteed by the check above, so the
+	 * division is safe. */
+	if((size_t)numMissing > solveLen / ((size_t)numAvail * sizeof(gf64_t))) {
 		napi_throw_range_error(env, NULL, "solveMatrix buffer too small");
+		if (needs_solveMatrix_temp) ALIGN_FREE(aligned_solveMatrix);
 		return NULL;
 	}
 
@@ -2648,26 +2657,37 @@ static napi_value SolveAndReconstruct_NAPI(napi_env env, napi_callback_info info
 	status = napi_get_value_int32(env, args[2], &n);
 	if(status != napi_ok || n <= 0) {
 		napi_throw_type_error(env, NULL, "n must be a positive integer");
+		if (needs_A_temp) ALIGN_FREE(aligned_A);
+		if (needs_rhsBlocks_temp) ALIGN_FREE(aligned_rhsBlocks);
 		return NULL;
 	}
 
 	int64_t blockSize = 0;
 	status = napi_get_value_int64(env, args[3], &blockSize);
-	if(status != napi_ok || blockSize <= 0 || blockSize % 8 != 0) {
+	if(status != napi_ok || blockSize <= 0 || (uint64_t)blockSize > (uint64_t)(size_t)-1 || blockSize % 8 != 0) {
 		napi_throw_type_error(env, NULL, "blockSize must be positive and a multiple of 8");
+		if (needs_A_temp) ALIGN_FREE(aligned_A);
+		if (needs_rhsBlocks_temp) ALIGN_FREE(aligned_rhsBlocks);
 		return NULL;
 	}
 
 	size_t nSize = (size_t)n;
 	size_t blockSize64 = (size_t)(blockSize / 8);
 
-	if(ALen < nSize * nSize * sizeof(gf64_t)) {
+	/* Overflow-safe size checks + bounce-buffer release on every reject
+	 * (cubic review 50f46d24 P2 / 5a3b44c9 P2): n*n*8 and n*blockSize
+	 * can wrap size_t; n >= 1 is guaranteed by the check above. */
+	if(nSize > (ALen / sizeof(gf64_t)) / nSize) {
 		napi_throw_range_error(env, NULL, "A buffer too small for n×n matrix");
+		if (needs_A_temp) ALIGN_FREE(aligned_A);
+		if (needs_rhsBlocks_temp) ALIGN_FREE(aligned_rhsBlocks);
 		return NULL;
 	}
 
-	if(rhsLen < nSize * (size_t)blockSize) {
+	if(nSize > rhsLen / (size_t)blockSize) {
 		napi_throw_range_error(env, NULL, "rhsBlocks buffer too small for n blocks");
+		if (needs_A_temp) ALIGN_FREE(aligned_A);
+		if (needs_rhsBlocks_temp) ALIGN_FREE(aligned_rhsBlocks);
 		return NULL;
 	}
 

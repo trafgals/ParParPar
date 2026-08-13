@@ -212,10 +212,14 @@ void gf64_multi_point_eval(
  *
  * Inputs `g` (deg_g) and `f` (deg_f) must be coprime; `f`'s leading
  * coefficient must be non-zero (required by gf64_poly_divmod). Caller
- * is responsible for sizing `inv_out` to hold at least `deg_f` slots.
+ * is responsible for sizing `inv_out` to hold at least `max(1, deg_f)`
+ * slots — the deg_f == 0 case (constant modulus) writes the scalar
+ * inverse inv_out[0] = 1/g[0] (cubic review 5a3b44c9 P1).
  *
- * Cost: O(deg_f · M(deg_f)) field ops per inverse with the fast divmod
- * (the EGCD runs O(deg_f) steps).
+ * Cost: O(deg_f · M(max(deg_f, deg_g))) field ops per inverse with the
+ * fast divmod — the EGCD runs O(deg_f) steps but carries degree-deg_g
+ * state (r_0 = g), so the O(deg_f · M(deg_f)) bound holds as stated
+ * only when deg_g = O(deg_f) (cubic review 5a3b44c9 P2).
  */
 int gf64_poly_invmod_mod(
 	const gf64_t *g, size_t deg_g,

@@ -52,8 +52,11 @@
  * Bostan-Schost top-down tree walk (gf64_multi_point_eval, T8) with the
  * Newton-reciprocal divmod from issue #59 A1 — O(M(N) log N) instead of
  * the old O(N^2) Horner stop-gap. The derivative array is built in O(N)
- * XORs (char-2 rule above) and the N values are inverted in one shot via
- * T5's Itoh-Tsujii batch inverter (gf64_invert_ita_batch).
+ * XORs (char-2 rule above) and the N values are inverted in one shot
+ * via T5's batch inverter: gf64_invert_ita_batch when the host has
+ * working VPCLMULQDQ (CPUID + XCR0 + ZMM-probe gated), otherwise the
+ * dispatch-table gf64_inverse_batch path (scalar/SSSE3/AVX-2
+ * specialisations — cubic review 5a3b44c9 P3).
  * ============================================================================
  */
 
