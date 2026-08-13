@@ -222,61 +222,42 @@ void gf64_region_mul_avx2_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLEY_
 			i++;
 		}
 	} else {
-		/* General case: each input element is multiplied by ALL coefficients
-		 * and the products are XORed together (dot product per element).
-		 * Process 2 elements per VPCLMULQDQ call (one per 128-bit lane).
-		 * Accumulate lo and hi halves in YMM registers across the inner
-		 * loop, then apply the vectorized reduction once at the end.
-		 * Two VPCLMULQDQ calls per 4-element block.
+		/* General case (n_coeff > 1): PER-WORD coefficient cycling —
+		 * out[i] = in[i] * coeff[i % n_coeff] (NOT a dot product; the
+		 * SUM semantics belong to gf64_region_muladd_*). The per-lane
+		 * coefficients are gathered so ONE VPCLMULQDQ per pair suffices
+		 * (the 0x00 imm multiplies each 128-bit lane's low 64 bits by
+		 * its own coefficient) — bit-exact to the n_coeff=1 fast path
+		 * with per-lane coefficient values.
 		 */
 		size_t blocks = len / 4;
 		for (size_t b = 0; b < blocks; b++) {
 			/* Pair 1: out[i+0], out[i+1] */
 			__m256i in01 = _mm256_setr_epi64x((int64_t)in[i + 0], 0, (int64_t)in[i + 1], 0);
-			__m256i acc_lo_01 = _mm256_setzero_si256();
-			__m256i acc_hi_01 = _mm256_setzero_si256();
-
-			for (size_t c = 0; c < n_coeff; c++) {
-				__m256i coeff_bc = _mm256_set1_epi64x((int64_t)coeff[c]);
-				__m256i prod = _mm256_clmulepi64_epi128(in01, coeff_bc, 0x00);
-				__m256i lo_vec;
-				__m256i hi_vec;
-				gf64_split_prod_ymm(prod, &lo_vec, &hi_vec);
-				acc_lo_01 = _mm256_xor_si256(acc_lo_01, lo_vec);
-				acc_hi_01 = _mm256_xor_si256(acc_hi_01, hi_vec);
-			}
-
-			__m256i result01 = gf64_reduce_ymm(acc_lo_01, acc_hi_01);
+			__m256i coeff01 = _mm256_setr_epi64x((int64_t)coeff[(i + 0) % n_coeff], 0,
+			                                     (int64_t)coeff[(i + 1) % n_coeff], 0);
+			__m256i prod01 = _mm256_clmulepi64_epi128(in01, coeff01, 0x00);
+			__m256i lo01, hi01;
+			gf64_split_prod_ymm(prod01, &lo01, &hi01);
+			__m256i result01 = gf64_reduce_ymm(lo01, hi01);
 			_mm_storeu_si128((__m128i *)(out + i + 0), _mm256_castsi256_si128(result01));
 
 			/* Pair 2: out[i+2], out[i+3] */
 			__m256i in23 = _mm256_setr_epi64x((int64_t)in[i + 2], 0, (int64_t)in[i + 3], 0);
-			__m256i acc_lo_23 = _mm256_setzero_si256();
-			__m256i acc_hi_23 = _mm256_setzero_si256();
-
-			for (size_t c = 0; c < n_coeff; c++) {
-				__m256i coeff_bc = _mm256_set1_epi64x((int64_t)coeff[c]);
-				__m256i prod = _mm256_clmulepi64_epi128(in23, coeff_bc, 0x00);
-				__m256i lo_vec;
-				__m256i hi_vec;
-				gf64_split_prod_ymm(prod, &lo_vec, &hi_vec);
-				acc_lo_23 = _mm256_xor_si256(acc_lo_23, lo_vec);
-				acc_hi_23 = _mm256_xor_si256(acc_hi_23, hi_vec);
-			}
-
-			__m256i result23 = gf64_reduce_ymm(acc_lo_23, acc_hi_23);
+			__m256i coeff23 = _mm256_setr_epi64x((int64_t)coeff[(i + 2) % n_coeff], 0,
+			                                     (int64_t)coeff[(i + 3) % n_coeff], 0);
+			__m256i prod23 = _mm256_clmulepi64_epi128(in23, coeff23, 0x00);
+			__m256i lo23, hi23;
+			gf64_split_prod_ymm(prod23, &lo23, &hi23);
+			__m256i result23 = gf64_reduce_ymm(lo23, hi23);
 			_mm_storeu_si128((__m128i *)(out + i + 2), _mm256_castsi256_si128(result23));
 
 			i += 4;
 		}
 
-		/* Tail (0..3 elements) — scalar epilog with SUM semantics. */
+		/* Tail (0..3 elements) — scalar epilog with CYCLING semantics. */
 		while (i < len) {
-			uint64_t sum = 0;
-			for (size_t c = 0; c < n_coeff; c++) {
-				sum ^= gf64_mul_reference(in[i], coeff[c]);
-			}
-			out[i] = sum;
+			out[i] = gf64_mul_reference(in[i], coeff[i % n_coeff]);
 			i++;
 		}
 	}
