@@ -24,6 +24,25 @@ function parseSize(s) {
   return Math.floor(n * mult[unit]);
 }
 
+// Create-shape math shared by the create bench (par3-create-bench.js) and its
+// contract tests (test/par3-fenger-gate-dispatch.js). The bench pads the
+// source up to a whole number of slices (actualSize = sliceSize * slices),
+// which is why totalBlocks is almost never a power of two on bench shapes:
+// the Fenger dispatch gate in lib/par3gen.js requires BOTH numInputs and
+// numRecovery to be powers of two (plus blockSize % 8 == 0), and the slice
+// padding makes that combination unreachable for the standard 10%-recovery
+// bench shapes (issue #46 K3 / the "N always odd" root cause).
+var RECOVERY_PERCENT = 10;
+var MIN_RECOVERY_SLICES = 10;
+
+function computeCreateShape(size, slices, blockSize) {
+  var sliceSize = Math.ceil(size / slices);
+  var actualSize = sliceSize * slices;
+  var recoverySlices = Math.max(MIN_RECOVERY_SLICES, Math.floor(slices * RECOVERY_PERCENT / 100));
+  var totalBlocks = Math.ceil(actualSize / blockSize);
+  return { sliceSize: sliceSize, actualSize: actualSize, recoverySlices: recoverySlices, totalBlocks: totalBlocks };
+}
+
 var SOURCE_KEY = crypto.createHash('sha256').update('parpar-bench-source-v1').digest();
 var SOURCE_IV = Buffer.alloc(16, 0);
 
@@ -94,6 +113,7 @@ function ensureGfMethod() {
 
 module.exports = {
   parseSize: parseSize,
+  computeCreateShape: computeCreateShape,
   createBenchSource: createBenchSource,
   formatBytes: formatBytes,
   formatDuration: formatDuration,
