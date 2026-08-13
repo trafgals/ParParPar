@@ -44,7 +44,14 @@ var coeffVal = (BigInt(coeffHi) << 32n) | BigInt(coeffLo);
 
 var outBuf = Buffer.alloc(blockSize);
 outBuf.fill(0);
-addon.mul_arr(outBuf, inBuf, coeff, numWords, 1);
+// mul_arr lives on the Gf64Encoder instance, not as a top-level addon
+// export — the top-level `mul_arr` was removed when the kernel moved
+// behind the GF64Controller dispatch table (PR #53). The constructor arg
+// is the GF64Method enum (0 = GF64_AVX512); mul_arr itself dispatches via
+// the globally auto-detected gf64_region_mul_arr, so the value here does
+// not change which kernel runs.
+var encoder = new addon.Gf64Encoder(0);
+encoder.mul_arr(outBuf, inBuf, coeff, numWords, 1);
 
 var expBuf = Buffer.alloc(blockSize);
 for (var w = 0; w < numWords; w++) {

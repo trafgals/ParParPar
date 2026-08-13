@@ -28,6 +28,118 @@ PAR3 GF(2^64) trades a larger Galois field for a higher recovery-block cap and u
 
 [^1]: On WSL2 / Hyper-V, `-march=native` binaries trigger hypervisor AVX-512 masking. The fix is three-layer: an isolated detection TU built with `-mno-avx512f` (in `gf64/cpu_detect.c`), a one-shot ZMM SIGILL probe (cached, release/acquire publish — see `gf64/test/test_gf64_zmm_probe.c`), and the `PAR3_GF64_USE_AVX512` env override. The operator escape hatch co-exists with `PAR3_AVX512_FORCE`. See `BENCHMARKING.md` for the full state and `test/par3-cpu-detect.js` for the regression test.
 
+## Kernel benchmarks
+
+The end-to-end throughput above is host-pipeline-bound (the JS layer's
+NAPI + worker_threads overhead, not the C++ kernel). This section
+reports the **kernel-level** benchmarks that isolate the kernel itself
+from the pipeline. These are the numbers that matter for the next
+research step (closing the kernel-to-pipeline gap).
+
+### HQC FFT vs Karatsuba polynomial multiplication
+
+The project ships an HQC 2026 TCHES §2.3 Algorithm 2 (LCH14 addFFT)
+implementation as an alternative to Karatsuba for `gf64_poly_mul_*`.
+The matrix-free recursive path is bit-exact against schoolbook at all
+tested sizes (see `gf64/test/test_gf64_additive_fft_hqc2026.c`).
+
+Benchmark: `gf64/test/bench_hqc_vs_karatsuba.c`. Measures
+`gf64_poly_mul_*` only (no NAPI / JS overhead). Reported times are
+averages over 10000 iterations (small n) / 5000 (n ≤ 512) / 500 (n ≤
+4096) / 100 (n > 4096). Host: Zen4 / Linux / GCC `-O2 -march=native`.
+
+| n | Karatsuba (ms) | HQC scalar (ms) | HQC AVX-512 (ms) | vs Karatsuba | AVX-512 gain |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 0.001 | 0.002 | 0.002 | 0.32× | 1.28× |
+| 32 | 0.002 | 0.006 | 0.004 | 0.58× | 1.43× |
+| 48 | 0.005 | 0.012 | 0.008 | 0.62× | 1.51× |
+| 64 | 0.009 | 0.012 | 0.008 | 1.03× | 1.46× |
+| 96 | 0.043 | 0.029 | 0.018 | 2.35× | 1.55× |
+| 128 | 0.051 | 0.028 | 0.019 | 2.74× | 1.52× |
+| 192 | 0.137 | 0.067 | 0.042 | 3.26× | 1.59× |
+| 256 | 0.154 | 0.066 | 0.042 | 3.64× | 1.57× |
+| 512 | 0.462 | 0.162 | 0.102 | 4.53× | 1.59× |
+| 1024 | 1.392 | 0.442 | 0.303 | 4.60× | 1.46× |
+| 2048 | 4.229 | 1.229 | 0.917 | **4.61×** | 1.34× |
+| 4096 | 12.480 | 4.065 | 3.382 | 3.69× | 1.20× |
+| 8192 | 37.349 | 13.890 | 12.338 | 3.03× | 1.13× |
+| 16384 | 111.883 | 49.865 | 46.494 | 2.41× | 1.07× |
+
+HQC FFT beats Karatsuba at **n ≥ 96** (scalar) and **n ≥ 64**
+(AVX-512). The scalar path loses narrowly at n = 64 (0.012 vs 0.009 ms);
+the AVX-512 path is 11 % faster there (0.008 vs 0.009 ms). The peak
+advantage is **4.61×** at n = 2048. Above n = 8192 the AVX-512 gain
+shrinks to 1.07× (the FFT's O(n log n) asymptotic still wins, but the
+scalar field multiply cost bottoms out the AVX-512 advantage). The
+FFT cap is `GF64_HQC_MAX_LM_N = 131072`; sizes above 16384 (not
+tabulated here for wall-clock budget) follow the same asymptotic
+profile.
+
+The HQC FFT path is wired into `gf64_poly_mul_internal`'s dispatch
+at `gf64/gf64_additive_fft.c:369-413`. The tier selects HQC FFT
+when all of `(len_a, len_b, out_len)` are in `[GF64_HQC_FFT_MIN,
+GF64_HQC_MAX_LM_N]`, falls through to Karatsuba when only one operand
+is small or n exceeds the cap, and falls back to schoolbook below
+the Karatsuba threshold. The current `GF64_HQC_FFT_MIN = 96` is
+chosen to be safe for the scalar path (matches the scalar crossover
+above). Sizes above 131072 (the matrix-free cap) currently route
+through Karatsuba; lifting that further requires the General
+Algorithm 1 follow-up tracked in
+[issue #51](https://github.com/trafgals/ParParPar/issues/51).
+
+### Fenger Toeplitz pipeline vs explicit Cauchy matrix-vector product
+
+The project ships a Fenger Toeplitz pipeline (`gf64_fenger_matvec`,
+issue #28) as an alternative to the explicit O(N·R·B) Cauchy
+matrix-vector product. The pipeline uses subproduct-tree-based
+multi-point evaluation to drive the per-word interpolation and
+evaluation, with a multi-threaded OpenMP-parallel execute path.
+
+Benchmark: `gf64/test/bench_gf64_fenger_vs_cauchy.c`. Wall-clock
+throughput (MB/s) of `gf64_fenger_matvec` against the explicit Cauchy
+reference. CPU count = 8 (8 logical cores via OpenMP). Iters vary per
+case (2–20) to stay within the 60 s wall-clock budget. The 8t column
+shows the parallel multi-thread result via the OpenMP-parallel execute
+path.
+
+| N | R | B (bytes) | cauchy (MB/s) | fenger 1t (MB/s) | fenger 8t (MB/s) | 8t vs cauchy |
+|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 8 | 4096 | 22.7 | 0.4 | 2.9 | 0.13× |
+| 16 | 16 | 4096 | 12.1 | 0.4 | 2.5 | 0.21× |
+| 32 | 32 | 4096 | 6.0 | 0.3 | 2.4 | 0.40× |
+| 64 | 64 | 4096 | 6.0 | 0.6 | 4.3 | 0.72× |
+| 128 | 128 | 4096 | 6.0 | 1.0 | 7.5 | 1.25× |
+| 256 | 64 | 4096 | 7.5 | 1.1 | 7.8 | 1.04× |
+| 512 | 256 | 2048 | 3.7 | 1.2 | 9.2 | 2.49× |
+| 1024 | 256 | 1024 | 3.1 | 0.8 | 6.3 | 2.03× |
+| 256 | 128 | 256 | 2.2 | 0.6 | 4.2 | 1.91× |
+| 512 | 128 | 256 | 1.8 | 0.4 | 2.3 | 1.28× |
+| 1024 | 256 | 512 | 1.7 | 0.5 | 2.3 | 1.35× |
+| 2048 | 256 | 256 | 2.5 | 0.6 | 3.4 | 1.36× |
+| 2048 | 512 | 256 | 1.4 | 0.5 | 3.7 | 2.64× |
+| 2048 | 1024 | 64 | 0.7 | 0.4 | 2.9 | 4.14× |
+| 2048 | 2048 | 32 | 0.6 | 0.5 | 3.7 | 6.17× |
+| 8192 | 1024 | 32 | 0.7 | 0.2 | 1.6 | 2.29× |
+| 16384 | 1024 | 16 | 0.9 | 0.2 | 2.5 | 2.78× |
+| 16384 | 4096 | 16 | 0.3 | 0.2 | 1.7 | 5.67× |
+
+The Fenger pipeline's single-thread throughput is below the
+explicit Cauchy reference at small/medium sizes — the per-word
+interpolation / evaluation cost is the bottleneck. Multi-threaded
+(8t) throughput approaches or exceeds the single-thread Cauchy at
+N ≥ 128 with R ≥ 128, with the fenger-8t / cauchy-1t ratio reaching
+**6.17×** at N = 2048, R = 2048 (the high-R narrow-B case). At small
+N (8 / 16) the parallel pipeline is dominated by the per-row
+scheduling overhead and is below the explicit Cauchy. At N = 256+,
+R = 256+ the Fenger 8t path is competitive or better than the
+explicit Cauchy reference at the same wall-clock.
+
+The Fenger pipeline is currently **not** wired into the engine's
+dispatch (the parallel Cauchy path in `src/par3_engine.cc` does not
+route through `gf64_fenger_matvec`). Routing it through Fenger at the
+appropriate sizes is the next research step, tracked in
+[issue #51](https://github.com/trafgals/ParParPar/issues/51).
+
 ## What this fork adds
 
 Upstream [ParPar](https://github.com/animetosho/ParPar) only creates PAR2 archives. This fork extends it with PAR3 end-to-end:
