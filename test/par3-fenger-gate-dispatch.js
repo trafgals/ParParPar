@@ -143,17 +143,25 @@ var cases = [
 	{ name: 'N=2^31+1 (32-bit overflow boundary), R=2048, forced → fenger (no hang)', N: 2147483649, R: 2048, B: 4096, env: '1', expect: 'fenger' },
 	{ name: 'N=2^18, R=2^11, B=8192, kill switch (env=0) → NOT fenger → barycentric', N: 262144, R: 2048, B: 8192, env: '0', expect: 'barycentric' },
 	{ name: 'N=2^18, R=2^11, B=8192, no env, non-Windows → fenger (platform gate)', N: 262144, R: 2048, B: 8192, env: undefined, expect: (process.platform === 'win32') ? 'barycentric' : 'fenger' },
-	// A4: on Windows, Fenger is size-gated (default max N = 65536).
-	{ name: 'N=1000, R=512, no env, Windows → fenger (below A4 size gate)', N: 1000, R: 512, B: 4096, env: undefined, expect: 'fenger' },
+	// A4: on Windows, Fenger is size-gated AND opt-in
+	// (PAR3_FENGER_WINDOWS_ENABLE=1; default off pending the Node-20
+	// windows-2025 crash follow-up). On non-Windows the env is inert.
+	{ name: 'N=1000, R=512, no env, Windows → NOT fenger (A4 opt-in default off) → full', N: 1000, R: 512, B: 4096, env: undefined, expect: (process.platform === 'win32') ? 'full' : 'fenger' },
+	{ name: 'N=1000, R=512, no env, PAR3_FENGER_WINDOWS_ENABLE=1, Windows → fenger (opt-in + below size gate)', N: 1000, R: 512, B: 4096, env: undefined, winEnable: '1', expect: 'fenger' },
 	{ name: 'N=2^18, R=512, no env → platform gate + A4 size gate', N: 262144, R: 512, B: 4096, env: undefined, expect: (process.platform === 'win32') ? 'barycentric' : 'fenger' },
-	{ name: 'N=2000, R=512, no env, PAR3_FENGER_WINDOWS_MAX_INPUTS=100 → NOT fenger on Windows (falls past barycentric threshold to full)', N: 2000, R: 512, B: 4096, env: undefined, winMax: '100', expect: (process.platform === 'win32') ? 'full' : 'fenger' }
+	{ name: 'N=2^18, R=512, PAR3_FENGER_WINDOWS_ENABLE=1, Windows → NOT fenger (above size gate) → barycentric', N: 262144, R: 512, B: 4096, env: undefined, winEnable: '1', expect: (process.platform === 'win32') ? 'barycentric' : 'fenger' },
+	{ name: 'N=2000, R=512, no env, PAR3_FENGER_WINDOWS_MAX_INPUTS=100 → NOT fenger on Windows (falls past barycentric threshold to full)', N: 2000, R: 512, B: 4096, env: undefined, winMax: '100', expect: (process.platform === 'win32') ? 'full' : 'fenger' },
+	{ name: 'N=2000, R=512, PAR3_FENGER_WINDOWS_ENABLE=1 + MAX_INPUTS=100 → NOT fenger on Windows (above cap) → full', N: 2000, R: 512, B: 4096, env: undefined, winEnable: '1', winMax: '100', expect: (process.platform === 'win32') ? 'full' : 'fenger' }
 ];
 
 cases.forEach(function (c) {
 	withFengerEnv(c.env, function () {
 		var prevMax = process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS;
+		var prevEnable = process.env.PAR3_FENGER_WINDOWS_ENABLE;
 		if (c.winMax === undefined) delete process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS;
 		else process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS = c.winMax;
+		if (c.winEnable === undefined) delete process.env.PAR3_FENGER_WINDOWS_ENABLE;
+		else process.env.PAR3_FENGER_WINDOWS_ENABLE = c.winEnable;
 		try {
 			var b = makeBinding();
 			var result = dispatchRecovery(b, null, null, c.N, c.R, c.B, 0, 0n, 0);
@@ -162,6 +170,8 @@ cases.forEach(function (c) {
 		} finally {
 			if (prevMax === undefined) delete process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS;
 			else process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS = prevMax;
+			if (prevEnable === undefined) delete process.env.PAR3_FENGER_WINDOWS_ENABLE;
+			else process.env.PAR3_FENGER_WINDOWS_ENABLE = prevEnable;
 		}
 	});
 });
