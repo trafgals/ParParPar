@@ -2107,10 +2107,13 @@ static napi_value ComputeRecoveryWithCoeff_NAPI(napi_env env, napi_callback_info
 // Dispatch mirrors lib/par3gen.js's dispatchRecovery so the streaming entry
 // produces the same bytes as the per-batch loop on the same workload:
 //   1. Fenger  — padding-reasonable N (next_pow2(N) <= 2N), power-of-2 R,
-//                blockSize%8==0, non-Windows (default) or size-gated AND
-//                opt-in on Windows (PAR3_FENGER_WINDOWS_ENABLE=1, N <=
-//                PAR3_FENGER_WINDOWS_MAX_INPUTS, default 65536; issue #59
-//                A4) or env-forced (PAR3_GF64_USE_FENGER=1). Non-power-of-2
+//                blockSize%8==0, every host (the Windows opt-in gate was
+//                removed with the #62 fix — the SIGILL came from
+//                whole-TU /arch:AVX512 EVEX in the scalar pipeline, now
+//                confined to the intrinsic TUs). An optional defensive
+//                cap remains: N <= PAR3_FENGER_WINDOWS_MAX_INPUTS
+//                (Windows only, default: no cap) or env-forced
+//                (PAR3_GF64_USE_FENGER=1). Non-power-of-2
 //                counts are padded internally by the engine (issue #59 A2;
 //                falls back to the legacy Cauchy path only on
 //                synthetic-base overflow / recovery collision).
