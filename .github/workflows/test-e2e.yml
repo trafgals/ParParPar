@@ -33,5 +33,12 @@ jobs:
       - name: Build native binding
         run: npx node-gyp rebuild
 
+      - name: Build par3cmdline (PAR3 cross-compat reference)
+        # e2e-par3-cross-compat.js SKIPs Tests A/B/F without the reference
+        # binary at test/fixtures/par3cmdline-bin/par3. Build it from source
+        # (Parchive/par3cmdline) so the cross-compat matrix runs for real.
+        # Requires cmake + C/C++ toolchain (preinstalled on ubuntu runners).
+        run: bash test/fixtures/par3cmdline-bin/build.sh
+
       - name: Run E2E tests
         run: npm run test:e2e
