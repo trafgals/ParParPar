@@ -205,6 +205,27 @@ void gf64_addfft64_poly_mul_recursive_scratch_avx512(
 	gf64_t *scratch, size_t scratch_words
 );
 
+/*
+ * Dispatch counters (exposed for boundary regression tests).
+ * Incremented once per gf64_poly_mul_internal invocation per code path
+ * taken. The struct is intentionally single-threaded (uint64_t, NOT
+ * stdatomic). The kernel runs multi-threaded in production; each call
+ * to gf64_poly_mul_internal happens on one worker at a time, so a
+ * worker-local snapshot is stable. For test/correctness use the
+ * single-threaded harness. See gf64/test/test_gf64_additive_fft_hqc2026.c
+ * for boundary uses.
+ */
+typedef struct gf64_dispatch_counts {
+	uint64_t schoolbook;
+	uint64_t karatsuba;
+	uint64_t toom3;
+	uint64_t fft;
+	uint64_t hqc_fft;  /* Phase 2 — HQC 2026 TCHES §2.3 additive FFT */
+} gf64_dispatch_counts_t;
+
+extern gf64_dispatch_counts_t gf64_dispatch_counts;
+void gf64_dispatch_counts_reset(void);
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_ADDITIVE_FFT_H */

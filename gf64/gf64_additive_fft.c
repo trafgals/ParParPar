@@ -111,16 +111,12 @@ extern void gf64_poly_mul_karatsuba(
  * Reset to 0 via gf64_dispatch_counts_reset(); read into the struct via
  * gf64_dispatch_counts_get().
  */
-typedef struct gf64_dispatch_counts {
-	uint64_t schoolbook;
-	uint64_t karatsuba;
-	uint64_t toom3;
-	uint64_t fft;
-	uint64_t hqc_fft;  /* Phase 2 — HQC 2026 TCHES §2.3 additive FFT */
-} gf64_dispatch_counts_t;
-
-extern gf64_dispatch_counts_t gf64_dispatch_counts;
-void gf64_dispatch_counts_reset(void);
+/*
+ * Dispatch counters are exported via gf64_additive_fft.h (issue #51
+ * Step 7(b) test surface). The struct typedef + extern declarations
+ * live in the header so test files can include it without needing to
+ * forward-declare. The reset function below is the implementation.
+ */
 
 static int gf64_is_power_of_two(size_t n) {
 	return n != 0 && (n & (n - 1)) == 0;
