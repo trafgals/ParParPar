@@ -205,6 +205,49 @@ void gf64_addfft64_poly_mul_recursive_scratch_avx512(
 	gf64_t *scratch, size_t scratch_words
 );
 
+/*
+ * Dispatch counters (exposed for boundary regression tests).
+ * Incremented once per gf64_poly_mul_internal invocation per code path
+ * taken. Fields are plain uint64_t (NOT stdatomic) so this header stays
+ * C89/C99-clean; all increments go through GF64_DISPATCH_COUNTER_INC,
+ * which is a lock-free atomic add on both toolchains (MSVC
+ * _InterlockedIncrement64 / GCC __atomic_fetch_add). The kernel can be
+ * entered from concurrent workers (e.g. parallel creates on separate
+ * worker_threads), so a plain ++ would lose increments; the atomic add
+ * keeps the counters exact even then. Reads are relaxed — exact totals
+ * are only meaningful in the single-threaded test harness. See
+ * gf64/test/test_gf64_poly_mul_internal_dispatch.c for boundary uses.
+ */
+typedef struct gf64_dispatch_counts {
+	uint64_t schoolbook;
+	uint64_t karatsuba;
+	uint64_t toom3;
+	uint64_t fft;
+	uint64_t hqc_fft;  /* Phase 2 — HQC 2026 TCHES §2.3 additive FFT */
+} gf64_dispatch_counts_t;
+
+extern gf64_dispatch_counts_t gf64_dispatch_counts;
+void gf64_dispatch_counts_reset(void);
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define GF64_DISPATCH_COUNTER_INC(p) \
+	((void)_InterlockedIncrement64((volatile long long *)(p)))
+#else
+#define GF64_DISPATCH_COUNTER_INC(p) \
+	((void)__atomic_fetch_add((p), 1, __ATOMIC_RELAXED))
+#endif
+
+/*
+ * Test-only HQC cap override. 0 (default) = use GF64_HQC_MAX_LM_N.
+ * Lets boundary tests exercise the >cap fallthrough tier (Karatsuba)
+ * without a 2^20-length operand — the real cap forces a
+ * next_pow2(2^21) balanced Karatsuba recursion (~3^15 leaves, minutes
+ * of CI wall-time). Single-threaded test harness only; see
+ * gf64/test/test_gf64_poly_mul_internal_dispatch.c case [7].
+ */
+extern size_t gf64_hqc_max_lm_n_override;
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_ADDITIVE_FFT_H */
