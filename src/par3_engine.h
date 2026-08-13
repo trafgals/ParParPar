@@ -206,21 +206,24 @@ public:
 	);
 
 	/// Compute recovery blocks via the Fenger Toeplitz pipeline (issue #28).
-	/// Bit-exact equivalent of ComputeRecoveryBlocks on power-of-2 inputs/
-	/// recovery counts; uses gf64_fenger_matvec from gf64/gf64_fenger.c
-	/// (Bostan-Schost top-down MPE on T_R). Currently single-threaded.
+	/// Bit-exact equivalent of ComputeRecoveryBlocks for ANY workload;
+	/// uses gf64_fenger_matvec from gf64/gf64_fenger.c (Bostan-Schost
+	/// top-down MPE on T_R).
 	///
-	/// Constraints: numInputs and numRecovery must be 0, 1, or a power of
-	/// 2 (subproduct-tree constraint). The disjointness condition on
-	/// firstInput / firstRecovery (no input index coincides with a recovery
-	/// index) is enforced inside gf64_fenger_matvec. Falls back to
-	/// ComputeRecoveryBlocks for non-power-of-2 workloads.
+	/// Constraints (issue #59 A2 always-pad routing): any numInputs /
+	/// numRecovery. Non-power-of-2 counts are padded with synthetic
+	/// zero-data inputs at a base above both the real input range and
+	/// the (padded) recovery range; synthetic data is never read, so the
+	/// real recovery rows are bit-identical to the unpadded computation.
+	/// Falls back to ComputeRecoveryBlocks only on synthetic-base uint64
+	/// overflow or padded-recovery collision with the real inputs
+	/// (non-canonical id ordering).
 	///
 	/// @param numRecovery   Number of recovery blocks to compute
 	/// @param blockSize64   Block size in 64-bit words
 	/// @param firstInput    First input exponent for the interpolation grid
 	/// @param firstRecovery First recovery exponent for the evaluation grid
-	/// @param numThreads    Reserved for future per-thread sharding; ignored.
+	/// @param numThreads    Per-thread sharding across the B-axis (0 = auto).
 	static void ComputeRecoveryBlocksFenger(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,

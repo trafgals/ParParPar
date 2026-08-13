@@ -1749,12 +1749,11 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 // the Bostan-Schost top-down Fenger pipeline from gf64/gf64_fenger.c.
 //
 // Constraints (forwarded from the engine entry):
-//   - numInputs and numRecovery must each be 0, 1, or a power of 2 (the
-//     subproduct-tree builder in gf64_subproduct.c requires it).
-//   - The engine entry falls back to the legacy 2D-muladd path when the
-//     constraint is not met, so the NAPI binding is safe to call from any
-//     JS-side caller — but for the canonical PAR3 workload (powers of 2
-//     slice counts) it routes through the Fenger pipeline.
+//   - Any numInputs / numRecovery (issue #59 A2): non-power-of-2 counts
+//     are padded internally with synthetic zero-data inputs (bit-exact).
+//   - The engine entry falls back to the legacy 2D-muladd path only on
+//     synthetic-base overflow / recovery collision, so the NAPI binding
+//     is safe to call from any JS-side caller.
 static napi_value ComputeRecoveryFenger_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
 	size_t argc = 8;
@@ -2090,10 +2089,14 @@ static napi_value ComputeRecoveryWithCoeff_NAPI(napi_env env, napi_callback_info
 //
 // Dispatch mirrors lib/par3gen.js's dispatchRecovery so the streaming entry
 // produces the same bytes as the per-batch loop on the same workload:
-//   1. Fenger  — power-of-2 N, power-of-2 R, blockSize%8==0, non-Windows
-//                (default) or env-forced (PAR3_GF64_USE_FENGER=1). Falls
-//                back internally to the legacy Cauchy path when constraints
-//                aren't met (subproduct-tree requirement).
+//   1. Fenger  — padding-reasonable N (next_pow2(N) <= 2N), power-of-2 R,
+//                blockSize%8==0, non-Windows (default) or size-gated on
+//                Windows (N <= PAR3_FENGER_WINDOWS_MAX_INPUTS, default
+//                65536; issue #59 A4) or env-forced
+//                (PAR3_GF64_USE_FENGER=1). Non-power-of-2 counts are
+//                padded internally by the engine (issue #59 A2; falls
+//                back to the legacy Cauchy path only on synthetic-base
+//                overflow / recovery collision).
 //   2. Barycentric — N > PAR3_BF64_MIN_INPUTS (default 10000) AND
 //                blockSize%8==0.
 //   3. Legacy Cauchy — the same engine that compute_recovery (per-batch
@@ -2316,15 +2319,32 @@ static napi_value ComputeRecoveryStreaming_NAPI(napi_env env, napi_callback_info
 		strcasecmp(fengerEnv, "false") == 0 ||
 		strcasecmp(fengerEnv, "no") == 0 ||
 		strcasecmp(fengerEnv, "off") == 0);
-	const bool isPowerOfTwoOrTrivial_N =
-		(numInputs == 0) || (numInputs == 1) || ((numInputs > 1) && ((numInputs & (numInputs - 1)) == 0));
+	// Issue #59 A2: N no longer needs to be power-of-2 — the engine pads
+	// non-power-of-2 counts internally with synthetic zero-data inputs
+	// (bit-exact). Keep the padding-cost bound: eligibility is limited to
+	// shapes where next_pow2(N) <= 2N.
+	size_t n_pad = 1;
+	while (n_pad < (size_t)numInputs) n_pad <<= 1;
+	const bool paddingReasonable_N =
+		(numInputs <= 1) || (n_pad <= (size_t)numInputs * 2);
 	const bool isPowerOfTwoOrTrivial_R =
 		(numRecovery == 0) || (numRecovery == 1) || ((numRecovery > 1) && ((numRecovery & (numRecovery - 1)) == 0));
+	// Issue #59 A4: Windows Fenger enablement is size-gated (small-N
+	// verified crash-free; the old access violation was the large-N
+	// schoolbook divmod/EGCD cliff, fixed by A1). Override with
+	// PAR3_FENGER_WINDOWS_MAX_INPUTS.
+	long fengerWinMax = 65536;
+	const char* fengerWinMaxEnv = getenv("PAR3_FENGER_WINDOWS_MAX_INPUTS");
+	if (fengerWinMaxEnv) {
+		char* endp = nullptr;
+		long v = strtol(fengerWinMaxEnv, &endp, 10);
+		if (endp != fengerWinMaxEnv && v > 0) fengerWinMax = v;
+	}
 	const bool fengerEligible =
-		isPowerOfTwoOrTrivial_N &&
+		paddingReasonable_N &&
 		isPowerOfTwoOrTrivial_R &&
 		(blockSize % 8 == 0) &&
-		(fengerForced || !defined_win32());
+		(fengerForced || !defined_win32() || numInputs <= fengerWinMax);
 
 	long baryMin = 10000;
 	const char* baryEnv = getenv("PAR3_BF64_MIN_INPUTS");
@@ -2740,6 +2760,127 @@ static napi_value IsAlignedBuffer(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/* Standalone mul_arr export (issue #59 drive-by): out[w] = in[w] * coeff[w % n_coeff]
+ * for w in [0, len_words), via the dispatched gf64_region_mul_arr kernel.
+ *
+ * The repair path in lib/par3gen.js (par3_repair RHS construction, ~line 3085)
+ * calls binding.mul_arr; the export was missing, silently dropping the repair
+ * to the JS BigInt bit-loop fallback (gf64_mul in lib/gf64_js.js — up to 64
+ * BigInt iterations per word). At 1 MiB blocks (e2e-par3-repair CI mode:
+ * 90 known × 10 eq × 131072 words) that is ~7.5e9 BigInt loop iterations ≈
+ * 15-30 min per repair; the native kernel does the same in seconds.
+ *
+ * Arguments:
+ *   args[0] (Buffer) — out destination, len_words * 8 bytes
+ *   args[1] (Buffer) — in source, len_words * 8 bytes
+ *   args[2] (Buffer) — coeff: n_coeff scalars, n_coeff * 8 bytes
+ *   args[3] (Number) — len_words
+ *   args[4] (Number) — n_coeff
+ */
+static napi_value MulArr_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 5;
+	napi_value args[5];
+
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get callback info");
+		return NULL;
+	}
+	if(argc < 5) {
+		napi_throw_type_error(env, NULL, "Requires out, in, coeff, len_words, n_coeff");
+		return NULL;
+	}
+
+	uint8_t* out = NULL;
+	size_t outLen = 0;
+	status = napi_get_buffer_info(env, args[0], (void**)&out, &outLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "out must be a Buffer");
+		return NULL;
+	}
+	uint8_t* in = NULL;
+	size_t inLen = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&in, &inLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "in must be a Buffer");
+		return NULL;
+	}
+	uint8_t* coeff = NULL;
+	size_t coeffLen = 0;
+	status = napi_get_buffer_info(env, args[2], (void**)&coeff, &coeffLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "coeff must be a Buffer");
+		return NULL;
+	}
+
+	int64_t len = 0;
+	status = napi_get_value_int64(env, args[3], &len);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "len_words must be an integer");
+		return NULL;
+	}
+	int64_t n_coeff = 0;
+	status = napi_get_value_int64(env, args[4], &n_coeff);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "n_coeff must be an integer");
+		return NULL;
+	}
+	if(len < 0 || n_coeff < 0) {
+		napi_throw_range_error(env, NULL, "len_words and n_coeff must be non-negative");
+		return NULL;
+	}
+	if((size_t)len * 8 > outLen || (size_t)len * 8 > inLen || (size_t)n_coeff * 8 > coeffLen) {
+		napi_throw_range_error(env, NULL, "buffer too small for len_words / n_coeff");
+		return NULL;
+	}
+
+	gf64_init_dispatch();
+
+	/* 64-byte alignment bounce for the AVX-512 dispatch table entry
+	 * (same pattern as the Gf64Encoder MulArr wrapper and the recovery
+	 * NAPI entries). */
+	const size_t outBytes = (size_t)len * 8;
+	const size_t inBytes = (size_t)len * 8;
+	const size_t coeffBytes = (size_t)n_coeff * 8;
+	uint8_t* aligned_out = out;
+	uint8_t* aligned_in = in;
+	uint8_t* aligned_coeff = coeff;
+	bool out_bounced = false, in_bounced = false, coeff_bounced = false;
+	if (gf64_current_method == GF64_AVX512) {
+		if (((uintptr_t)out & 63) != 0) {
+			if (ALIGN_ALLOC(aligned_out, outBytes, 64)) { out_bounced = true; }
+			else { napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr out)"); return NULL; }
+		}
+		if (((uintptr_t)in & 63) != 0) {
+			if (ALIGN_ALLOC(aligned_in, inBytes, 64)) { in_bounced = true; memcpy(aligned_in, in, inBytes); }
+			else { if (out_bounced) ALIGN_FREE(aligned_out); napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr in)"); return NULL; }
+		}
+		if (((uintptr_t)coeff & 63) != 0) {
+			if (ALIGN_ALLOC(aligned_coeff, coeffBytes, 64)) { coeff_bounced = true; memcpy(aligned_coeff, coeff, coeffBytes); }
+			else { if (out_bounced) ALIGN_FREE(aligned_out); if (in_bounced) ALIGN_FREE(aligned_in); napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr coeff)"); return NULL; }
+		}
+	}
+
+	gf64_region_mul_arr(
+		(uint64_t*)aligned_out, (uint64_t*)aligned_in, (uint64_t*)aligned_coeff,
+		(size_t)len, (size_t)n_coeff
+	);
+
+	if (out_bounced) {
+		memcpy(out, aligned_out, outBytes);
+		ALIGN_FREE(aligned_out);
+	}
+	if (in_bounced) {
+		ALIGN_FREE(aligned_in);
+	}
+	if (coeff_bounced) {
+		ALIGN_FREE(aligned_coeff);
+	}
+
+	return NULL;
+}
+
 napi_value parpar_gf64_init_NAPI(napi_env env, napi_value exports) {
 	napi_status status;
 
@@ -2894,6 +3035,22 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "compute_recovery_with_coeff", compute_with_coeff_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set compute_recovery_with_coeff property");
+		return NULL;
+	}
+
+	// Drive-by (issue #59): standalone mul_arr export — the repair RHS
+	// path (lib/par3gen.js par3_repair) dispatches through
+	// binding.mul_arr; without it the repair falls back to the JS BigInt
+	// bit-loop (15-30 min at 1 MiB blocks).
+	napi_value mul_arr_fn;
+	status = napi_create_function(env, NULL, 0, MulArr_NAPI, NULL, &mul_arr_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create mul_arr function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "mul_arr", mul_arr_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set mul_arr property");
 		return NULL;
 	}
 
