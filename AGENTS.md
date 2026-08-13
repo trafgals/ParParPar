@@ -56,6 +56,25 @@ git remote -v
 
 If the PR target looks like `animetosho/ParPar`, STOP and switch to `trafgals/parparpar`.
 
+## CI Watching Rules
+
+**Always watch CI with an exit-status flag so a failing run fails the command — never fire-and-forget a PR push or sleep-poll.**
+
+```bash
+# CORRECT — watch a PR's CI checks, exit watch mode (non-zero) on the first failure
+gh pr checks <number> --watch --fail-fast --interval 10
+
+# CORRECT — watch a specific workflow run; exit non-zero if it fails
+gh run watch <run-id> --exit-status
+```
+
+Verified against gh 2.85.0 (2026-01-14): there is **no** `gh watch` command and **no** `--exit-code` flag. The exit-status flags are `--fail-fast` (on `gh pr checks --watch`) and `--exit-status` (on `gh run watch`) — do not write `gh watch ... --exit-code` in scripts, docs, or PR instructions.
+
+- `gh pr checks --watch` polls until all checks finish; `--fail-fast` aborts the watch the moment a check fails (the command then exits non-zero) instead of waiting for every check to complete.
+- `gh run watch <run-id>` streams a run to completion; `--exit-status` makes the exit code reflect the run's success/failure, so it can gate `&&`/`||` chains and CI steps.
+- Interval flag on both commands: `-i/--interval` (`gh pr checks` default 10 s, `gh run watch` default 3 s).
+- Before merging a PR: `gh pr checks <number> --watch --fail-fast` must exit 0 AND the review threads must be resolved — threads anchor to commit SHAs and can stay open after the code is fixed.
+
 ## Test Discipline for PR Comments
 
 **Whenever a comment is raised in a PR (review bot, human reviewer, follow-up note, or self-spotted during the fix), write a test for it as part of the fix.**
