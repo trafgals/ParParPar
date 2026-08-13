@@ -371,19 +371,25 @@ static void gf64_poly_mul_internal(
 	 * outside this cap fall through to Karatsuba. */
 	size_t hqc_cap = gf64_hqc_max_lm_n_override
 		? gf64_hqc_max_lm_n_override : GF64_HQC_MAX_LM_N;
+	/* The HQC FFT pads internally to next_pow2(max(2*max_len - 1, out_len)).
+	 * Compute that BEFORE the gate: n_pad can exceed hqc_cap even when both
+	 * operands are within it (len_a = len_b = cap -> full_len = 2*cap - 1),
+	 * and the HQC TU only supports n_pad <= GF64_HQC_MAX_LM_N. The cap must
+	 * bound the PADDED size, not just the operands (cubic review
+	 * 5ec90e2f P1). */
+	size_t max_len = (len_a > len_b) ? len_a : len_b;
+	size_t full_len = 2 * max_len - 1;
+	if (out_len > full_len) full_len = out_len;
+
 	if (len_a >= GF64_HQC_FFT_MIN &&
 	    len_b >= GF64_HQC_FFT_MIN &&
 	    out_len >= GF64_HQC_FFT_MIN &&
 	    len_a <= hqc_cap &&
-	    len_b <= hqc_cap) {
-		/* Compute the padded n the HQC FFT will use internally.
-		 * The function pads to next_pow2(max(2*max_len - 1, out_len))
-		 * because out_len > 2*max_len - 1 when the caller truncates
-		 * the output (e.g., Newton-iteration invmod calls with out_len
-		 * = final_n and len_a = m < final_n). Mirror that here. */
-		size_t max_len = (len_a > len_b) ? len_a : len_b;
-		size_t full_len = 2 * max_len - 1;
-		if (out_len > full_len) full_len = out_len;
+	    len_b <= hqc_cap &&
+	    full_len <= hqc_cap) {
+		/* Compute the padded n the HQC FFT will use internally
+		 * (full_len <= hqc_cap is guaranteed by the gate above, so
+		 * n_pad = next_pow2(full_len) <= hqc_cap as well). */
 		size_t n_pad = 1;
 		while (n_pad < full_len) n_pad <<= 1;
 		size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n_pad);

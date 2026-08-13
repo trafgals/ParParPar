@@ -209,6 +209,16 @@ int main(void) {
 	                    "karatsuba");
 	gf64_hqc_max_lm_n_override = 0;
 
+	printf("\n[8] out_len above HQC cap (override=256, len_a=len_b=128, out_len=512):\n");
+	printf("    HQC guard fails on the PADDED size (full_len = 512 > cap) even\n");
+	printf("    though both operands are within it -> Karatsuba. Pins the n_pad\n");
+	printf("    bound: the cap must cover next_pow2(max(2*max_len-1, out_len)),\n");
+	printf("    not just the operands (cubic review 5ec90e2f P1).\n");
+	gf64_hqc_max_lm_n_override = 256;
+	failures += run_one(128, 128, 512, "out_len above HQC cap 128x128",
+	                    "karatsuba");
+	gf64_hqc_max_lm_n_override = 0;
+
 	printf("\n");
 	if (failures == 0) {
 		printf("ALL PASS\n");
