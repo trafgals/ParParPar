@@ -510,6 +510,25 @@ static void test_invmod_zero_n(void) {
 		       (unsigned long long)dst);
 		fail("invmod(n=0) no-op contract");
 	}
+
+	/* Buffer-arithmetic overflow guard (cubic review c509dd2b P1): n
+	 * beyond SIZE_MAX/3 must be refused without writing — the Newton
+	 * buffers are sized 2n/3n and 3n - 2 coefficients are written, so
+	 * a wrapped calloc would under-allocate and the loop would write
+	 * out of bounds. On unfixed code this call aborts (calloc fails). */
+	{
+		gf64_t huge_dst[2] = { 0x1111111111111111ULL, 0x2222222222222222ULL };
+		gf64_t huge_g = 1ULL;
+		const size_t huge_n = SIZE_MAX / 3 + 1;
+		gf64_poly_invmod(&huge_g, 0, huge_n, huge_dst);
+		if (huge_dst[0] == 0x1111111111111111ULL &&
+		    huge_dst[1] == 0x2222222222222222ULL) {
+			pass("invmod(n > SIZE_MAX/3) refused without writing (overflow guard)");
+		} else {
+			printf("    dst modified by refused invmod call\n");
+			fail("invmod overflow guard");
+		}
+	}
 }
 
 /* ----------------------------------------------------------------------------

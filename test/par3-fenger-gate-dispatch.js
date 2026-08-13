@@ -11,8 +11,11 @@
 //      padding-reasonable (next_pow2(N) <= 2N — the engine pads
 //      non-power-of-2 N internally with synthetic zero-data inputs),
 //      R is 0/1/power-of-2, blockSize % 8 == 0, and
-//      (PAR3_GF64_USE_FENGER forces, or the host is non-Windows, or on
-//      Windows N <= PAR3_FENGER_WINDOWS_MAX_INPUTS — default 65536, A4).
+//      (PAR3_GF64_USE_FENGER forces, or the host is non-Windows, or —
+//      A4 — on Windows ONLY when PAR3_FENGER_WINDOWS_ENABLE is truthy
+//      (1/true/yes/on) AND N <= PAR3_FENGER_WINDOWS_MAX_INPUTS, default
+//      65536). The size bound alone is NOT sufficient on Windows; the
+//      enable flag gates it (cubic review c509dd2b P3).
 //   2. The create bench pads the source up to a whole number of slices
 //      (actualSize = ceil(size/slices) * slices). With the N gate removed
 //      (A2), every canonical bench shape is Fenger-ELIGIBLE on N but still
@@ -195,6 +198,50 @@ withFengerEnv(undefined, function () {
 	var called = b.calls.length ? b.calls[b.calls.length - 1].kernel : '(none)';
 	check(result === 'barycentric-result' && called === 'barycentric', 'no fenger on binding, no env → silent barycentric fallback (called: ' + called + ')');
 });
+
+// ============================================================================
+// Section 1b — no-hang pin for huge N (cubic review c509dd2b P3)
+// ----------------------------------------------------------------------------
+// The two huge-N rows above verify routing, but if _fengerPaddingReasonable
+// regressed to the 32-bit-truncating `p <<= 1` (wraps to 0 for N >= 2^30+1
+// and loops forever) they would HANG the whole suite and only surface as a
+// CI timeout. Run the same dispatch in a child process with a hard timeout
+// so the regression produces a FAIL instead of an infinite loop.
+// ============================================================================
+
+console.log('\n--- Section 1b: no-hang pin for huge N (child process, hard timeout) ---');
+
+(function () {
+	var cp = require('node:child_process');
+	var childSrc = [
+		'"use strict";',
+		'var par3gen = require(' + JSON.stringify(par3genPath) + ');',
+		'process.env.PAR3_GF64_USE_FENGER = "1";',
+		'var binding = {',
+		'  compute_recovery_fenger: function () { return "fenger-result"; },',
+		'  compute_recovery_barycentric: function () { return "barycentric-result"; },',
+		'  compute_recovery_full: function () { return "full-result"; },',
+		'  compute_recovery: function () { return "per-batch-result"; }',
+		'};',
+		'var result = par3gen.dispatchRecovery(binding, null, null, 2147483649, 2048, 4096, 0, 0n, 0);',
+		'if (result !== "fenger-result") { console.error("routed to: " + result); process.exit(2); }',
+		'console.log("child-ok");'
+	].join('\n');
+	var child = cp.spawnSync(process.execPath, ['-e', childSrc], { timeout: 20000, encoding: 'utf8' });
+	var ok;
+	var why;
+	if (child.error && child.error.code === 'ETIMEDOUT') {
+		ok = false;
+		why = 'child timed out (would hang the suite on regression)';
+	} else if (child.status !== 0) {
+		ok = false;
+		why = 'child exited ' + child.status + ': ' + ((child.stdout || '') + (child.stderr || '')).trim();
+	} else {
+		ok = /child-ok/.test(child.stdout || '');
+		why = ok ? 'terminates and routes to fenger' : 'child did not report ok: ' + child.stdout;
+	}
+	check(ok, 'N=2^31+1 eligibility terminates and routes to fenger (child, 20s cap): ' + why);
+})();
 
 // ============================================================================
 // Section 2 — bench shape math (computeCreateShape)

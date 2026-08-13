@@ -36,8 +36,6 @@
 #include "../gf64_additive_fft.h"
 #include "../gf64_global.h"
 
-extern gf64_t gf64_mul_reference(gf64_t a, gf64_t b);
-
 /* ----------------------------------------------------------------------------
  * splitmix64 PRNG (same family as the other gf64 tests).
  * ---------------------------------------------------------------------------- */
@@ -180,6 +178,74 @@ static void run_case(size_t deg_f, size_t deg_g, uint64_t seed) {
 	free(f); free(g); free(q_fast); free(r_fast); free(q_ref); free(r_ref);
 }
 
+/* ----------------------------------------------------------------------------
+ * Test 5: dividend-buffer alias — callers may legally reuse the dividend
+ * buffer as r (r == f). The Newton path copies f into r with memmove; a
+ * memcpy here would be undefined behavior on overlapping objects (cubic
+ * review c509dd2b P2). Reference runs first on the pristine f, then the
+ * fast path runs with f doubling as the r working buffer.
+ * ---------------------------------------------------------------------------- */
+static void run_alias_case(size_t deg_f, size_t deg_g, uint64_t seed) {
+	const size_t q_size = (deg_f >= deg_g) ? (deg_f - deg_g + 1) : 1;
+	const size_t r_size = (deg_f >= deg_g) ? (deg_f + 1) : deg_g;
+
+	gf64_t *f       = (gf64_t *)malloc((deg_f + 1) * sizeof(gf64_t));
+	gf64_t *g       = (gf64_t *)malloc((deg_g + 1) * sizeof(gf64_t));
+	gf64_t *q_alias = (gf64_t *)calloc(q_size, sizeof(gf64_t));
+	gf64_t *q_ref   = (gf64_t *)calloc(q_size, sizeof(gf64_t));
+	gf64_t *r_ref   = (gf64_t *)calloc(r_size, sizeof(gf64_t));
+	if (!f || !g || !q_alias || !q_ref || !r_ref) {
+		printf("    (deg_f=%zu, deg_g=%zu) alias alloc failed\n", deg_f, deg_g);
+		fail("alias alloc");
+		free(f); free(g); free(q_alias); free(q_ref); free(r_ref);
+		return;
+	}
+
+	put_seed(seed);
+	for (size_t i = 0; i <= deg_f; i++) f[i] = splitmix64_next();
+	for (size_t i = 0; i <= deg_g; i++) g[i] = splitmix64_next();
+	if (deg_g == 0) {
+		if (g[0] == 0) g[0] = 1ULL;
+	} else if (g[deg_g] == 0) {
+		g[deg_g] = 1ULL; /* required nonzero leading coefficient */
+	}
+
+	/* Reference first (f must still be pristine when the fast path runs). */
+	gf64_poly_divmod_schoolbook(f, deg_f, g, deg_g, q_ref, r_ref);
+	/* Fast path with r aliasing f: f doubles as the r working buffer. */
+	gf64_poly_divmod(f, deg_f, g, deg_g, q_alias, f);
+
+	int ok = 1;
+	for (size_t i = 0; i < q_size; i++) {
+		if (q_alias[i] != q_ref[i]) {
+			printf("    (alias deg_f=%zu, deg_g=%zu) q[%zu] alias=0x%016llx ref=0x%016llx\n",
+			       deg_f, deg_g, i,
+			       (unsigned long long)q_alias[i], (unsigned long long)q_ref[i]);
+			ok = 0;
+			break;
+		}
+	}
+	if (ok) {
+		for (size_t i = 0; i < r_size; i++) {
+			if (f[i] != r_ref[i]) {
+				printf("    (alias deg_f=%zu, deg_g=%zu) r[%zu] alias=0x%016llx ref=0x%016llx\n",
+				       deg_f, deg_g, i,
+				       (unsigned long long)f[i], (unsigned long long)r_ref[i]);
+				ok = 0;
+				break;
+			}
+		}
+	}
+
+	if (ok) {
+		pass("divmod with r aliasing f (r == f) matches schoolbook (Newton path)");
+	} else {
+		fail("divmod r-aliases-f parity");
+	}
+
+	free(f); free(g); free(q_alias); free(q_ref); free(r_ref);
+}
+
 int main(void) {
 	printf("GF64 Newton-reciprocal divmod parity tests (issue #59 A1)\n");
 	printf("=========================================================\n\n");
@@ -211,6 +277,10 @@ int main(void) {
 	run_case(5,  10, 0x6789ABCDEF012345ULL); /* deg_f <  deg_g: r = f, q = 0 */
 	run_case(0,  0,  0x789ABCDEF0123456ULL); /* constants */
 	run_case(1,  0,  0x89ABCDEF01234567ULL); /* deg_g == 0 constant divisor */
+
+	printf("\nTest 5: dividend-buffer alias (r == f)\n");
+	run_alias_case(300, 100, 0xAAAA000011110000ULL); /* Newton path, m = 201 */
+	run_alias_case(1024, 512, 0xBBBB000022220000ULL);
 
 	printf("\n=== Summary ===\n");
 	printf("Passed: %d\n", g_passed);

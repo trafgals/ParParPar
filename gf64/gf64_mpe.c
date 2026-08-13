@@ -290,8 +290,10 @@ void gf64_poly_divmod(
 	 * r buffer as the next remainder and scans it for the true degree,
 	 * so a nonzero high region would corrupt the EGCD. (The divmod
 	 * contract calls this region "unspecified"; both implementations
-	 * leave it zero.) */
-	memcpy(r, f, (deg_f + 1) * sizeof(gf64_t));
+	 * leave it zero.) memmove, not memcpy: callers may legally reuse
+	 * the dividend buffer as r (r == f), and memcpy on overlapping
+	 * objects is undefined behavior (cubic review c509dd2b P2). */
+	memmove(r, f, (deg_f + 1) * sizeof(gf64_t));
 	gf64_poly_mul(gq, g, deg_g, q, k);
 	for (size_t i = 0; i < deg_g; i++) {
 		r[i] ^= gq[i];
@@ -327,6 +329,16 @@ void gf64_poly_invmod(
 	gf64_t *result
 ) {
 	if (n == 0) {
+		return;
+	}
+	/* Buffer-arithmetic overflow guard (cubic review c509dd2b P1): the
+	 * Newton loop materializes a full product of up to 3n - 2
+	 * coefficients in `prod`, so n must satisfy 3n <= SIZE_MAX or the
+	 * calloc sizes wrap and the loop writes out of bounds. Refuse (like
+	 * the n == 0 no-op above) rather than wrap; no realistic caller is
+	 * within an order of magnitude of this bound. This also covers the
+	 * 2n-sized r_sq scratch (SIZE_MAX/3 < SIZE_MAX/2). */
+	if (n > SIZE_MAX / 3) {
 		return;
 	}
 
