@@ -52,10 +52,26 @@
 HEDLEY_BEGIN_C_DECLS
 
 /*
- * Schoolbook O((deg_f + 1) * (deg_g + 1)) polynomial long division in
- * GF(2^64)[x]:
+ * Fast polynomial long division in GF(2^64)[x]:
  *
  *   f(x) = g(x) * q(x) + r(x),  deg(r) < deg(g)
+ *
+ * Dispatches on quotient length m = deg_f - deg_g + 1:
+ *   - m < 96:  schoolbook O((deg_f + 1) * (deg_g + 1)) long division
+ *              (delegates to gf64_poly_divmod_schoolbook)
+ *   - m >= 96: Newton-reciprocal division (issue #59 A1) — the
+ *              quotient is recovered in O(M(m)) from rev(f) * rev(g)^{-1}
+ *              mod x^m, with the modular inverse computed by Newton
+ *              iteration and every multiplication routed through the
+ *              HQC-FFT / Karatsuba / schoolbook mul dispatch
+ *              (gf64_poly_mul_internal).
+ *
+ * The FULL division is O(M(m) + M(deg_f + 1)): the remainder is
+ * reconstructed as r = f - g*q — one (deg_g + 1)-by-m product whose
+ * output spans deg_f + 1 coefficients. When deg_g is large relative to
+ * the quotient (m << deg_g), the reconstruction term dominates and the
+ * "O(M(m))" quotient bound alone would overstate the guarantee
+ * (cubic review f70a81ef P2 / f44ead49 P3).
  *
  * @param f      Dividend coefficients [c_0, ..., c_deg_f].
  * @param deg_f  Degree of the dividend.
@@ -64,14 +80,16 @@ HEDLEY_BEGIN_C_DECLS
  * @param q      Output quotient buffer of size (deg_f - deg_g + 1).
  *               When deg_f < deg_g, the buffer receives a single 0 at q[0]
  *               and r receives (deg_g - 1) + 1 = deg_g coefficients.
- * @param r      Output remainder buffer of size (deg_f + 1). Used as a
- *               working buffer that initially holds a copy of f and is
- *               reduced in place; on return, the coefficients
- *               r[0..deg_g - 1] are the remainder (with the rest of the
- *               buffer being scratch / unspecified). The caller is
- *               responsible for sizing r to hold at least deg_f + 1
- *               coefficients so the working buffer can be expanded in
- *               place during the long-division elimination loop.
+ * @param r      Output remainder buffer of size max(deg_f + 1, deg_g).
+ *               Used as a working buffer that initially holds a copy of f
+ *               and is reduced in place; on return, the coefficients
+ *               r[0..deg_g - 1] are the remainder. For deg_f < deg_g the
+ *               region r[deg_f + 1 .. deg_g - 1] is ZEROED (the half-EGCD
+ *               consumer memcpys the whole buffer), so callers must size r
+ *               to hold max(deg_f + 1, deg_g) coefficients — the deg_f + 1
+ *               sizing alone is an out-of-bounds write in that edge case
+ *               (cubic review f70a81ef P2; test_gf64_divmod_parity sizes r
+ *               to deg_g for deg_f < deg_g).
  *
  * Aborts on a zero divisor (g[0] == 0 when deg_g == 0). For deg_g > 0 the
  * leading coefficient g[deg_g] is required to be nonzero (the function
@@ -79,9 +97,26 @@ HEDLEY_BEGIN_C_DECLS
  *
  * Correct for any GF(2^64) coefficients in {0, ..., 2^64 - 1}. Addition
  * in the inner loop is XOR, matching the field's characteristic-2
- * addition. Uses gf64_mul_reference as the field multiplication primitive.
+ * addition. Both paths are bit-exact to the schoolbook reference
+ * (gf64_poly_divmod_schoolbook); test_gf64_divmod_parity.c pins this
+ * across the dispatch boundary.
  */
 void gf64_poly_divmod(
+	const gf64_t *f, size_t deg_f,
+	const gf64_t *g, size_t deg_g,
+	gf64_t *q,    gf64_t *r
+);
+
+/*
+ * Schoolbook O((deg_f + 1) * (deg_g + 1)) polynomial long division in
+ * GF(2^64)[x]. REFERENCE implementation — kept public so the fast
+ * Newton-reciprocal gf64_poly_divmod and its parity test can cross-check
+ * bit-exactness, and used directly by the dispatcher for short quotients.
+ *
+ * Same contract as gf64_poly_divmod (identical buffer sizing, same
+ * zero-divisor abort, same deg_f < deg_g edge case).
+ */
+void gf64_poly_divmod_schoolbook(
 	const gf64_t *f, size_t deg_f,
 	const gf64_t *g, size_t deg_g,
 	gf64_t *q,    gf64_t *r
@@ -164,20 +199,27 @@ void gf64_multi_point_eval(
 
 /*
  * Polynomial modular inverse (1/g mod f via half-extended GCD). T8b
- * building block: used at subproduct tree-build time to populate
- * `inv_mod_data` (P_left^{-1} mod P_right per sibling pair). Returns
- * 0 on success and writes `deg_f` coefficients to `inv_out`; -1 if
- * g and f share a non-trivial GCD (modular inverse does not exist).
+ * building block. Returns 0 on success and writes `deg_f` coefficients
+ * to `inv_out`; -1 if g and f share a non-trivial GCD (modular inverse
+ * does not exist).
+ *
+ * NOTE (issue #59 A1): no longer called from gf64_subproduct_tree_build —
+ * the per-pair inverse cache was removed and the interpolation switched
+ * to the derivative-based Lagrange form (see gf64_multi_point_interp_internal).
+ * This function is kept as a standalone library primitive, pinned by
+ * test_gf64_invmod_mod_parity.c. Its internal EGCD steps now benefit from
+ * the fast Newton-reciprocal gf64_poly_divmod.
  *
  * Inputs `g` (deg_g) and `f` (deg_f) must be coprime; `f`'s leading
  * coefficient must be non-zero (required by gf64_poly_divmod). Caller
- * is responsible for sizing `inv_out` to hold at least `deg_f` slots.
+ * is responsible for sizing `inv_out` to hold at least `max(1, deg_f)`
+ * slots — the deg_f == 0 case (constant modulus) writes the scalar
+ * inverse inv_out[0] = 1/g[0] (cubic review 5a3b44c9 P1).
  *
- * Cost: schoolbook O((deg_g+1) * (deg_f+1)) per EGCD step; total
- * O((deg_g)² + (deg_f)²). At tree-build time deg_g == deg_f ==
- * deg_child, so each inverse is O(deg_child²); tree-build amortizes
- * to O(N²). The Newton / reverse-polynomial O(N log² N) variant is
- * deferred to a Phase A follow-up.
+ * Cost: O(deg_f · M(max(deg_f, deg_g))) field ops per inverse with the
+ * fast divmod — the EGCD runs O(deg_f) steps but carries degree-deg_g
+ * state (r_0 = g), so the O(deg_f · M(deg_f)) bound holds as stated
+ * only when deg_g = O(deg_f) (cubic review 5a3b44c9 P2).
  */
 int gf64_poly_invmod_mod(
 	const gf64_t *g, size_t deg_g,
@@ -191,6 +233,14 @@ int gf64_poly_invmod_mod(
  * unique polynomial of degree < N satisfying out(x_j) = values[j]
  * for every j in [0..N).
  *
+ * Algorithm (issue #59 A1, derivative-based Lagrange form): the tree
+ * needs NO inverse cache — one MPE of the root derivative P' gives
+ * P'(x_j), the values are scaled to z_j = y_j / P'(x_j), and the
+ * top-down combine f_parent = f_L·P_R + f_R·P_L routes through the tiered
+ * mul dispatch (gf64_poly_mul_padded: schoolbook for small/asymmetric
+ * operands, Karatsuba outside the HQC range, HQC-FFT at scale).
+ * O(M(N) log N) end to end.
+ *
  * GATED behind the PAR3_GF64_USE_INTERP env var. The function checks
  * the env var at runtime; if unset/0/false/no/off, it returns
  * immediately without modifying `out`. Set
@@ -199,9 +249,8 @@ int gf64_poly_invmod_mod(
  * opt-in only via the env var.
  *
  * @param tree    Subproduct tree built by gf64_subproduct_tree_build
- *                (T6). Must have its per-pair polynomial-modular-
- *                inverse cache (inv_mod_data) populated, which the
- *                standard build function does via gf64_poly_invmod_mod.
+ *                (T6). Points must be distinct (P'(x_j) != 0 is
+ *                required by the derivative form; duplicates abort).
  * @param values  N evaluation results at the subproduct-tree leaves
  *                [values[0], ..., values[N-1]] = [f(x_0), ..., f(x_{N-1})].
  * @param out     Output buffer of N coefficients. On success,
@@ -239,6 +288,40 @@ void gf64_multi_point_interp(
 void gf64_multi_point_interp_internal(
 	const SubproductTree *tree,
 	const gf64_t *values,
+	gf64_t *out
+);
+
+/*
+ * Weights-aware Bostan-Schost interpolation body (issue #59 A1) — the
+ * per-word hot path of the Fenger pipeline.
+ *
+ * Same unique-polynomial contract as gf64_multi_point_interp_internal,
+ * but takes the barycentric weights w_j = 1/P'(x_j) (as produced by
+ * gf64_barycentric_weights) as an explicit input, so the per-call cost
+ * drops to the top-down combine only: z_j = values[j] * w_j is one mul
+ * per point — NO MPE walk, NO scalar inversions. The Fenger prepare
+ * phase computes the weights once per tree and amortizes them across
+ * all B words.
+ *
+ * @param tree    Subproduct tree built by gf64_subproduct_tree_build
+ *                (T6). Points must be distinct.
+ * @param values  N evaluation results at the subproduct-tree leaves.
+ * @param weights N barycentric weights w_j = 1/P'(x_j); MUST NOT be
+ *                NULL for external callers (NULL is the internal
+ *                pre-scaled-z convention used by interp_internal).
+ * @param out     Output buffer of N coefficients: the unique polynomial
+ *                of degree < N satisfying out(x_j) = values[j].
+ *
+ * NULL-safe contract: on NULL tree / values / out (or an empty tree,
+ * num_points == 0), returns immediately without writing — the same
+ * guarantee as gf64_multi_point_interp_internal (cubic review f44ead49
+ * P2). A NULL `weights` is NOT an error: it selects the internal
+ * pre-scaled-z convention.
+ */
+void gf64_multi_point_interp_weights(
+	const SubproductTree *tree,
+	const gf64_t *values,
+	const gf64_t *weights,
 	gf64_t *out
 );
 

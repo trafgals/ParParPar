@@ -2,24 +2,28 @@
 "use strict";
 
 // ============================================================================
-// PAR3 Fenger Gate Dispatch Test (issue #46 K3 root cause)
+// PAR3 Fenger Gate Dispatch Test (issue #46 K3 root cause + issue #59 A2)
 //
-// Pins two contracts discovered while chasing "N is always odd" on the
-// create bench (native-Windows 2026-08-13 session):
+// Pins the dispatch contract for dispatchRecovery (issue #59 §3 always-pad
+// policy, A2 + A4):
 //
-//   1. dispatchRecovery routes to compute_recovery_fenger ONLY when
-//      numInputs AND numRecovery are 0/1/power-of-2, blockSize % 8 == 0,
-//      and (PAR3_GF64_USE_FENGER forces, or the host is non-Windows).
+//   1. Fenger routes when: the binding has compute_recovery_fenger, N is
+//      padding-reasonable (next_pow2(N) <= 2N — the engine pads
+//      non-power-of-2 N internally with synthetic zero-data inputs),
+//      R is 0/1/power-of-2, blockSize % 8 == 0, and
+//      (PAR3_GF64_USE_FENGER forces, or the host is non-Windows, or —
+//      A4 — on Windows ONLY when PAR3_FENGER_WINDOWS_ENABLE is truthy
+//      (1/true/yes/on) AND N <= PAR3_FENGER_WINDOWS_MAX_INPUTS, default
+//      65536). The size bound alone is NOT sufficient on Windows; the
+//      enable flag gates it (cubic review c509dd2b P3).
 //   2. The create bench pads the source up to a whole number of slices
-//      (actualSize = ceil(size/slices) * slices), which makes totalBlocks
-//      odd for every canonical bench shape — so the Fenger power-of-2
-//      gate can never fire on those shapes. Verified end-to-end through
-//      bench-helpers.computeCreateShape + PAR3Gen.totalBlocks +
-//      dispatchRecovery with a mock binding.
+//      (actualSize = ceil(size/slices) * slices). With the N gate removed
+//      (A2), every canonical bench shape is Fenger-ELIGIBLE on N but still
+//      blocked by R: 10% recovery slices are never power-of-2. Verified
+//      end-to-end through bench-helpers.computeCreateShape +
+//      PAR3Gen.totalBlocks + dispatchRecovery with a mock binding.
 //
-// This is a contract-pinning suite: it documents current master behaviour
-// so a future K5 padding / dispatch change cannot silently regress the
-// gate semantics (AGENTS.md test discipline — issue #46 follow-up).
+// This is a contract-pinning suite (AGENTS.md test discipline).
 // ============================================================================
 
 var path = require('path');
@@ -122,27 +126,57 @@ function withFengerEnv(value, fn) {
 console.log('--- Section 1: Fenger dispatch gate (mock binding) ---');
 
 // Case table. expected is the kernel dispatchRecovery must call.
-// For the platform row the expectation depends on the host (win32 vs not).
+// For the platform rows the expectation depends on the host (win32 vs not).
 var cases = [
 	{ name: 'N=2^18, R=2^11, B=8192, forced → fenger', N: 262144, R: 2048, B: 8192, env: '1', expect: 'fenger' },
 	{ name: 'N=2^18, R=2^11, B=4096, forced → fenger', N: 262144, R: 2048, B: 4096, env: '1', expect: 'fenger' },
 	{ name: 'N=1, R=1, forced → fenger (trivial)', N: 1, R: 1, B: 4096, env: '1', expect: 'fenger' },
 	{ name: 'N=0, R=1, forced → fenger (trivial zero)', N: 0, R: 1, B: 4096, env: '1', expect: 'fenger' },
-	{ name: 'N=262145 (1G/1000 bench shape), R=100, forced → NOT fenger (N odd) → barycentric', N: 262145, R: 100, B: 4096, env: '1', expect: 'barycentric' },
-	{ name: 'N=262146 (1G/10K bench shape), R=1000, forced → NOT fenger (N odd) → barycentric', N: 262146, R: 1000, B: 4096, env: '1', expect: 'barycentric' },
+	// A2: N no longer needs to be power-of-2 (engine pads internally).
+	{ name: 'N=262145 (1G/1000 bench shape), R=2048, forced → fenger (padded N, pow2 R)', N: 262145, R: 2048, B: 4096, env: '1', expect: 'fenger' },
+	{ name: 'N=1000 (odd, small), R=512, forced → fenger (padded N, pow2 R)', N: 1000, R: 512, B: 4096, env: '1', expect: 'fenger' },
+	{ name: 'N=262145 (1G/1000 bench shape), R=100, forced → NOT fenger (R not pow2) → barycentric', N: 262145, R: 100, B: 4096, env: '1', expect: 'barycentric' },
+	{ name: 'N=262146 (1G/10K bench shape), R=1000, forced → NOT fenger (R not pow2) → barycentric', N: 262146, R: 1000, B: 4096, env: '1', expect: 'barycentric' },
 	{ name: 'N=2^18, R=1000 (R not pow2), forced → NOT fenger → barycentric', N: 262144, R: 1000, B: 4096, env: '1', expect: 'barycentric' },
 	{ name: 'N=2^18, R=2^11, B=4100 (B%8!=0), forced → NOT fenger → full (B%8!=0 also blocks barycentric)', N: 262144, R: 2048, B: 4100, env: '1', expect: 'full' },
-	{ name: 'N=1000, R=512 (N small + odd), forced → NOT fenger → full fallback', N: 1000, R: 512, B: 4096, env: '1', expect: 'full' },
+	// A2: next_pow2(N) <= 2N always holds, so the N gate is fully
+	// removed. The huge-N no-hang pins live in Section 1b as CHILD
+	// PROCESS runs: if _fengerPaddingReasonable regressed to the
+	// 32-bit-truncating 'p <<= 1', an in-parent row here would hang
+	// this suite before the pin could report a FAIL (cubic review
+	// 50f46d24 P2).
 	{ name: 'N=2^18, R=2^11, B=8192, kill switch (env=0) → NOT fenger → barycentric', N: 262144, R: 2048, B: 8192, env: '0', expect: 'barycentric' },
-	{ name: 'N=2^18, R=2^11, B=8192, no env, non-Windows → fenger (platform gate)', N: 262144, R: 2048, B: 8192, env: undefined, expect: (process.platform === 'win32') ? 'barycentric' : 'fenger' }
+	{ name: 'N=2^18, R=2^11, B=8192, no env, non-Windows → fenger (platform gate)', N: 262144, R: 2048, B: 8192, env: undefined, expect: (process.platform === 'win32') ? 'barycentric' : 'fenger' },
+	// A4: on Windows, Fenger is size-gated AND opt-in
+	// (PAR3_FENGER_WINDOWS_ENABLE=1; default off pending the Node-20
+	// windows-2025 crash follow-up). On non-Windows the env is inert.
+	{ name: 'N=1000, R=512, no env, Windows → NOT fenger (A4 opt-in default off) → full', N: 1000, R: 512, B: 4096, env: undefined, expect: (process.platform === 'win32') ? 'full' : 'fenger' },
+	{ name: 'N=1000, R=512, no env, PAR3_FENGER_WINDOWS_ENABLE=1, Windows → fenger (opt-in + below size gate)', N: 1000, R: 512, B: 4096, env: undefined, winEnable: '1', expect: 'fenger' },
+	{ name: 'N=2^18, R=512, no env → platform gate + A4 size gate', N: 262144, R: 512, B: 4096, env: undefined, expect: (process.platform === 'win32') ? 'barycentric' : 'fenger' },
+	{ name: 'N=2^18, R=512, PAR3_FENGER_WINDOWS_ENABLE=1, Windows → NOT fenger (above size gate) → barycentric', N: 262144, R: 512, B: 4096, env: undefined, winEnable: '1', expect: (process.platform === 'win32') ? 'barycentric' : 'fenger' },
+	{ name: 'N=2000, R=512, no env, PAR3_FENGER_WINDOWS_MAX_INPUTS=100 → NOT fenger on Windows (falls past barycentric threshold to full)', N: 2000, R: 512, B: 4096, env: undefined, winMax: '100', expect: (process.platform === 'win32') ? 'full' : 'fenger' },
+	{ name: 'N=2000, R=512, PAR3_FENGER_WINDOWS_ENABLE=1 + MAX_INPUTS=100 → NOT fenger on Windows (above cap) → full', N: 2000, R: 512, B: 4096, env: undefined, winEnable: '1', winMax: '100', expect: (process.platform === 'win32') ? 'full' : 'fenger' }
 ];
 
 cases.forEach(function (c) {
 	withFengerEnv(c.env, function () {
-		var b = makeBinding();
-		var result = dispatchRecovery(b, null, null, c.N, c.R, c.B, 0, 0n, 0);
-		var called = b.calls.length ? b.calls[b.calls.length - 1].kernel : '(none)';
-		check(result === c.expect + '-result' && called === c.expect, c.name + ' (called: ' + called + ')');
+		var prevMax = process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS;
+		var prevEnable = process.env.PAR3_FENGER_WINDOWS_ENABLE;
+		if (c.winMax === undefined) delete process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS;
+		else process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS = c.winMax;
+		if (c.winEnable === undefined) delete process.env.PAR3_FENGER_WINDOWS_ENABLE;
+		else process.env.PAR3_FENGER_WINDOWS_ENABLE = c.winEnable;
+		try {
+			var b = makeBinding();
+			var result = dispatchRecovery(b, null, null, c.N, c.R, c.B, 0, 0n, 0);
+			var called = b.calls.length ? b.calls[b.calls.length - 1].kernel : '(none)';
+			check(result === c.expect + '-result' && called === c.expect, c.name + ' (called: ' + called + ')');
+		} finally {
+			if (prevMax === undefined) delete process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS;
+			else process.env.PAR3_FENGER_WINDOWS_MAX_INPUTS = prevMax;
+			if (prevEnable === undefined) delete process.env.PAR3_FENGER_WINDOWS_ENABLE;
+			else process.env.PAR3_FENGER_WINDOWS_ENABLE = prevEnable;
+		}
 	});
 });
 
@@ -165,6 +199,54 @@ withFengerEnv(undefined, function () {
 	var called = b.calls.length ? b.calls[b.calls.length - 1].kernel : '(none)';
 	check(result === 'barycentric-result' && called === 'barycentric', 'no fenger on binding, no env → silent barycentric fallback (called: ' + called + ')');
 });
+
+// ============================================================================
+// Section 1b — no-hang pin for huge N (cubic review c509dd2b P3)
+// ----------------------------------------------------------------------------
+// The two huge-N rows above verify routing, but if _fengerPaddingReasonable
+// regressed to the 32-bit-truncating `p <<= 1` (wraps to 0 for N >= 2^30+1
+// and loops forever) they would HANG the whole suite and only surface as a
+// CI timeout. Run the same dispatch in a child process with a hard timeout
+// so the regression produces a FAIL instead of an infinite loop.
+// ============================================================================
+
+console.log('\n--- Section 1b: no-hang pin for huge N (child process, hard timeout) ---');
+
+(function () {
+	var cp = require('node:child_process');
+	var childSrc = [
+		'"use strict";',
+		'var par3gen = require(' + JSON.stringify(par3genPath) + ');',
+		'process.env.PAR3_GF64_USE_FENGER = "1";',
+		'var binding = {',
+		'  compute_recovery_fenger: function () { return "fenger-result"; },',
+		'  compute_recovery_barycentric: function () { return "barycentric-result"; },',
+		'  compute_recovery_full: function () { return "full-result"; },',
+		'  compute_recovery: function () { return "per-batch-result"; }',
+		'};',
+		'var result = null;',
+		'var ns = [1610612737, 2147483649]; /* 3*2^29+1, 2^31+1 */',
+		'for (var i = 0; i < ns.length; i++) {',
+		'  result = par3gen.dispatchRecovery(binding, null, null, ns[i], 2048, 4096, 0, 0n, 0);',
+		'  if (result !== "fenger-result") { console.error("N=" + ns[i] + " routed to: " + result); process.exit(2); }',
+		'}',
+		'console.log("child-ok");'
+	].join('\n');
+	var child = cp.spawnSync(process.execPath, ['-e', childSrc], { timeout: 20000, encoding: 'utf8' });
+	var ok;
+	var why;
+	if (child.error && child.error.code === 'ETIMEDOUT') {
+		ok = false;
+		why = 'child timed out (would hang the suite on regression)';
+	} else if (child.status !== 0) {
+		ok = false;
+		why = 'child exited ' + child.status + ': ' + ((child.stdout || '') + (child.stderr || '')).trim();
+	} else {
+		ok = /child-ok/.test(child.stdout || '');
+		why = ok ? 'terminates and routes to fenger' : 'child did not report ok: ' + child.stdout;
+	}
+	check(ok, 'N=2^31+1 eligibility terminates and routes to fenger (child, 20s cap): ' + why);
+})();
 
 // ============================================================================
 // Section 2 — bench shape math (computeCreateShape)
@@ -190,10 +272,10 @@ shapeCheck(10 * G, 100000, 4096, 107375, 10737500000, 10000, 2621460, '10G/100k 
 shapeCheck(1 * G, 65536, 4096, 16384, 1 * G, 6553, 262144, '1G/65536 exact division → N IS power-of-2 (but R=6553 is not)');
 shapeCheck(1 * G, 20480, 8192, 52429, 1073745920, 2048, 131073, '1G/20480 → R IS power-of-2 (2048) but N=131073 is not');
 
-// The "N always odd" property for every canonical bench scenario: no
-// canonical 10%-recovery shape has BOTH totalBlocks and recoverySlices
-// power-of-2 — that is why the Fenger gate never fires on create benches.
-console.log('\n--- Section 2b: canonical bench scenarios never satisfy the Fenger gate ---');
+// With the N gate removed (issue #59 A2), the blocker for every canonical
+// 10%-recovery bench shape is R: recoverySlices is never power-of-2 —
+// that is why the Fenger gate still does not fire on create benches.
+console.log('\n--- Section 2b: canonical bench scenarios blocked by R (N gate removed by A2) ---');
 var scenarios = [
 	{ size: 1 * G, slices: 1000, blockSize: 4096, label: '1G/1K' },
 	{ size: 1 * G, slices: 10000, blockSize: 4096, label: '1G/10K' },
@@ -204,9 +286,8 @@ var scenarios = [
 ];
 scenarios.forEach(function (sc) {
 	var s = helpers.computeCreateShape(sc.size, sc.slices, sc.blockSize);
-	var nPow2 = isPow2OrTrivial(s.totalBlocks);
 	var rPow2 = isPow2OrTrivial(s.recoverySlices);
-	check(!(nPow2 && rPow2), sc.label + ': N=' + s.totalBlocks + ' pow2=' + nPow2 + ', R=' + s.recoverySlices + ' pow2=' + rPow2 + ' → gate blocked (never both)');
+	check(!rPow2, sc.label + ': N=' + s.totalBlocks + ' (A2: N-gate removed), R=' + s.recoverySlices + ' pow2=' + rPow2 + ' → gate blocked by R (never pow2)');
 });
 
 // ============================================================================
@@ -240,7 +321,7 @@ if (bindingAvailable) {
 }
 
 // ============================================================================
-// Section 4 — end-to-end: the canonical bench shape never dispatches Fenger
+// Section 4 — end-to-end: canonical bench shapes still never dispatch Fenger
 // ============================================================================
 
 console.log('\n--- Section 4: end-to-end on canonical bench shapes (mock binding) ---');
@@ -250,7 +331,7 @@ scenarios.forEach(function (sc) {
 		var b = makeBinding();
 		dispatchRecovery(b, null, null, s.totalBlocks, s.recoverySlices, sc.blockSize, 0, 0n, 0);
 		var called = b.calls.length ? b.calls[b.calls.length - 1].kernel : '(none)';
-		check(called !== 'fenger', sc.label + ' (N=' + s.totalBlocks + ', R=' + s.recoverySlices + ') with FORCE env → falls back to ' + called + ', never fenger');
+		check(called !== 'fenger', sc.label + ' (N=' + s.totalBlocks + ', R=' + s.recoverySlices + ') with FORCE env → falls back to ' + called + ', never fenger (R gate)');
 	});
 });
 

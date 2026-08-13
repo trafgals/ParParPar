@@ -169,6 +169,25 @@ int main(void) {
 	printf("gf64_poly_invmod_mod contract test (PR #49 step 1)\n");
 	printf("===================================================\n\n");
 
+	/* Zero-degree modulus (cubic review 5a3b44c9 P1): f is a nonzero
+	 * constant, so the inverse is the scalar 1/g[0] written to
+	 * inv_out[0] — one slot, hence the max(1, deg_f) sizing contract. */
+	printf("Case (deg_g=1, deg_f=0) — constant modulus, scalar inverse\n");
+	{
+		gf64_t g[2] = { 0x1234, 0x5678 };
+		gf64_t f[1] = { 0x9ABC };
+		gf64_t u[1] = { 0xDEAD };
+		int rc = gf64_poly_invmod_mod(g, 1, f, 0, u);
+		gf64_t want = gf64_invert_ita_one(g[0]);
+		if (rc == 0 && u[0] == want) {
+			pass("invmod_mod (deg_f=0) writes scalar 1/g[0]");
+		} else {
+			printf("    rc=%d u[0]=0x%016llx want=0x%016llx\n",
+			       rc, (unsigned long long)u[0], (unsigned long long)want);
+			fail("invmod_mod (deg_f=0) scalar inverse");
+		}
+	}
+
 	const size_t deg_pairs[][2] = {
 		{4, 4}, {8, 8}, {16, 16}, {32, 32},
 		{64, 64}, {128, 128}, {256, 256},

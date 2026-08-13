@@ -34,20 +34,19 @@
  *
  * CONSTRAINTS
  * -----------
- *   - numInputs must be 0, 1, or a power of 2 (subproduct-tree constraint).
- *   - numRecovery must be 0, 1, or a power of 2.
+ *   - Any numInputs / numRecovery (issue #59 A2 always-pad routing):
+ *     non-power-of-2 counts are padded to the next power of 2 with
+ *     synthetic zero-data inputs placed at a base above both the real
+ *     input range and the (padded) recovery range. Synthetic data is
+ *     never read, so the real recovery rows are bit-identical to the
+ *     unpadded computation (test_gf64_fenger_padded + the engine
+ *     routing contract).
  *   - The disjointness condition (no x_c coincides with y_r) is enforced
- *     by gf64_fenger_matvec itself via the V(y_r) inverse.
- *
- *   A padded route (gf64_fenger_prepare_padded) exists in gf64_fenger.c
- *   for non-power-of-2 shapes and is bit-exact for small N (see
- *   test_gf64_fenger_padded, 9/9 PASS at N <= 1000). It is NOT routed
- *   from production dispatch here because its underlying tree-prep
- *   (schoolbook EGCD inv cache) and MPE (schoolbook divmod) are
- *   O(N^2), making it asymptotically slower than the O(N*R) legacy
- *   fallback it would replace. Subquadratic prep (Newton/reverse-poly
- *   invmod) and subquadratic MPE (FFT divmod) are Phase A follow-ups;
- *   until those land, non-power-of-2 falls through to the legacy path.
+ *     by gf64_fenger_matvec itself via the V(y_r) inverse; the padded
+ *     routing additionally falls back to the legacy path when the
+ *     synthetic base would overflow uint64 or when a padded recovery
+ *     range would reach into the real input range (non-canonical id
+ *     ordering).
  *
  * THREADING
  * ---------
@@ -63,11 +62,12 @@
  *
  * FALLBACK
  * --------
- *   When numInputs or numRecovery is not 0/1/power-of-2, the function
- *   delegates to ComputeRecoveryBlocks (the legacy Cauchy muladd path).
- *   This keeps the NAPI binding contract intact for non-power-of-2
- *   workloads while the Fenger path is exercised on the canonical
- *   power-of-2 shapes.
+ *   Non-power-of-2 counts are padded (issue #59 A2 always-pad routing,
+ *   see CONSTRAINTS). The only fallbacks to ComputeRecoveryBlocks are
+ *   synthetic-base uint64 overflow and padded-recovery collision with
+ *   the real input range (non-canonical id ordering). The legacy path
+ *   is bit-exact and works for any shape, so the NAPI binding contract
+ *   stays safe for all workloads.
  * ============================================================================
  */
 
@@ -139,17 +139,64 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 		if (numThreads < 1) numThreads = 1;
 	}
 
-	/* Power-of-2 gate for the subproduct tree. If the workload isn't
-	 * power-of-2, fall back to the legacy path (which is bit-exact and
-	 * works for any shape). A padded Fenger route exists in
-	 * gf64_fenger.c (gf64_fenger_prepare_padded) and is bit-exact for
-	 * small N (see test_gf64_fenger_padded), but its underlying tree-prep
-	 * and MPE are O(N^2) — slower than the legacy O(N*R) path it would
-	 * replace. Subquadratic prep is a Phase A follow-up (issue #46); the
-	 * padded route is therefore NOT routed from production dispatch here. */
-	int numInputs_pow2  = (numInputs  >= 1) && ((numInputs  & (numInputs  - 1)) == 0);
-	int numRecovery_pow2 = (numRecovery >= 1) && ((numRecovery & (numRecovery - 1)) == 0);
-	if (!numInputs_pow2 || !numRecovery_pow2) {
+	/* Issue #59 §3 / A2: always-pad routing. The subproduct tree needs
+	 * power-of-2 point counts; non-power-of-2 workloads are padded with
+	 * synthetic zero-data inputs at a base disjoint from both the real
+	 * input range and the recovery range. The Fenger identity holds for
+	 * any point set and synthetic inputs contribute 0 (their DATA is
+	 * never read), so the real recovery rows are bit-identical to the
+	 * unpadded computation (verified by test_gf64_fenger_padded and the
+	 * engine's padded routing contract). */
+	size_t numInputsPadded = 1;
+	while (numInputsPadded < numInputs) {
+		/* Overflow guard: shifting a count >= 2^63 wraps to 0 and would
+		 * loop forever. Such counts cannot be padded — fall back to the
+		 * legacy path (cubic review f70a81ef P2). */
+		if (numInputsPadded > (SIZE_MAX >> 1)) {
+			GF64Controller::ComputeRecoveryBlocks(
+				inputs, numInputs,
+				recovery, numRecovery,
+				blockSize64,
+				firstInput, firstRecovery,
+				/* numThreads */ 0
+			);
+			return;
+		}
+		numInputsPadded <<= 1;
+	}
+	size_t numRecoveryPadded = 1;
+	while (numRecoveryPadded < numRecovery) {
+		if (numRecoveryPadded > (SIZE_MAX >> 1)) {
+			GF64Controller::ComputeRecoveryBlocks(
+				inputs, numInputs,
+				recovery, numRecovery,
+				blockSize64,
+				firstInput, firstRecovery,
+				/* numThreads */ 0
+			);
+			return;
+		}
+		numRecoveryPadded <<= 1;
+	}
+
+	const bool padInputs   = (numInputsPadded != numInputs);
+	const bool padRecovery = (numRecoveryPadded != numRecovery);
+
+	/* Any overlap of the REAL input range [firstInput, inEnd) with the
+	 * (padded) recovery range [firstRecovery, recEnd) forces the legacy
+	 * fallback: Fenger would compute V(y_r) == 0 on a colliding point
+	 * and emit a zero recovery row instead of the legacy row. Checked
+	 * for EVERY workload — including unpadded power-of-2 shapes, which
+	 * never enter the synthetic-base block below (cubic review f70a81ef
+	 * P2 / f44ead49 P1 / ce3679b0 P2). inEnd/recEnd saturate on uint64
+	 * overflow so the comparison stays sound. */
+	const uint64_t inEnd  = (firstInput > UINT64_MAX - (uint64_t)numInputs)
+	                        ? UINT64_MAX
+	                        : firstInput + (uint64_t)numInputs;
+	const uint64_t recEnd = (firstRecovery > UINT64_MAX - (uint64_t)numRecoveryPadded)
+	                        ? UINT64_MAX
+	                        : firstRecovery + (uint64_t)numRecoveryPadded;
+	if ((firstRecovery < inEnd) && (firstInput < recEnd)) {
 		GF64Controller::ComputeRecoveryBlocks(
 			inputs, numInputs,
 			recovery, numRecovery,
@@ -160,9 +207,45 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 		return;
 	}
 
-	gf64_fenger_ctx *ctx = gf64_fenger_prepare(
-		firstInput, firstRecovery, numInputs, numRecovery
-	);
+	/* Synthetic input base: strictly above both the real input range
+	 * [firstInput, inEnd) and the (padded) recovery range
+	 * [firstRecovery, recEnd), so the synthetic points collide with
+	 * nothing. On uint64 overflow (the synthetic base itself would
+	 * wrap), fall back to the legacy path rather than risking a point
+	 * collision (V(y_r) == 0 would abort). */
+	uint64_t syntheticInputBase = 0;
+	if (padInputs || padRecovery) {
+		const uint64_t padCount = (uint64_t)(numInputsPadded - numInputs);
+		const bool overflow =
+			firstInput > UINT64_MAX - (uint64_t)numInputs ||
+			firstRecovery > UINT64_MAX - (uint64_t)numRecoveryPadded ||
+			(inEnd > recEnd ? inEnd : recEnd) > UINT64_MAX - padCount;
+		if (overflow) {
+			GF64Controller::ComputeRecoveryBlocks(
+				inputs, numInputs,
+				recovery, numRecovery,
+				blockSize64,
+				firstInput, firstRecovery,
+				/* numThreads */ 0
+			);
+			return;
+		}
+		syntheticInputBase = (inEnd > recEnd) ? inEnd : recEnd;
+	}
+
+	gf64_fenger_ctx *ctx;
+	if (padInputs || padRecovery) {
+		ctx = gf64_fenger_prepare_padded(
+			firstInput, firstRecovery,
+			numInputs, numRecovery,
+			numInputsPadded, numRecoveryPadded,
+			syntheticInputBase
+		);
+	} else {
+		ctx = gf64_fenger_prepare(
+			firstInput, firstRecovery, numInputs, numRecovery
+		);
+	}
 
 	/* Single-thread fast path: avoid the std::thread overhead. */
 	if (numThreads == 1) {

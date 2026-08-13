@@ -50,14 +50,17 @@ TEST_GF64_FENGER_KERNEL_SOURCES := test_gf64_fenger_kernel.c
 TEST_GF64_FENGER_PIPELINE_SOURCES := test_gf64_fenger_pipeline.c
 TEST_GF64_FENGER_PADDED_SOURCES := test_gf64_fenger_padded.c
 TEST_GF64_INVMOD_MOD_PARITY_SOURCES := test_gf64_invmod_mod_parity.c
+TEST_GF64_DIVMOD_PARITY_SOURCES := test_gf64_divmod_parity.c
+TEST_GF64_INTERP_PARITY_SOURCES := test_gf64_interp_parity.c
 TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES := test_gf64_additive_fft_hqc2026.c
 TEST_GF64_POLY_MUL_INTERNAL_DISPATCH_SOURCES := test_gf64_poly_mul_internal_dispatch.c
 BENCH_GF64_FENGER_VS_CAUCHY_SOURCES := bench_gf64_fenger_vs_cauchy.c
 BENCH_HQC_VS_KARATSUBA_SOURCES := bench_hqc_vs_karatsuba.c
+BENCH_GF64_SUBQUADRATIC_SOURCES := bench_gf64_subquadratic.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -110,8 +113,9 @@ test_gf64_additive_fft_hqc2026: $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) $(GF64
 # which in turn depends on gf64_mul_avx512.c (T1) and gf64_square.c (T2).
 # gf64_poly_mul_karatsuba.c (PR #42 helper) is required because
 # gf64_poly_mul_internal now dispatches into it at n >= 128.
-# gf64_mpe.c (PR #43, T8a) is required because gf64_subproduct_tree_build
-# calls gf64_poly_invmod_mod (defined there) to populate inv_mod_data.
+# gf64_mpe.c (PR #43, T8a) is required for gf64_poly_divmod / gf64_poly_invmod
+# (the Newton-reciprocal divmod path, issue #59 A1). Since A1 the tree build
+# no longer calls gf64_poly_invmod_mod (the O(N^2) inverse cache was removed).
 # gf64_invert_ita.c (T5) is required because gf64_mpe.c calls
 # gf64_invert_ita_one for polynomial modular inverse's leading-coeff invert.
 # Needs AVX-512F + VPCLMULQDQ at runtime.
@@ -124,8 +128,7 @@ test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) $(GF64_SOURCES)
 # AVX-512 scalar multiply (T1) and the Frobenius squaring (T2). The full
 # additive FFT (T3) is needed because gf64_subproduct.c calls gf64_poly_mul,
 # which now dispatches into gf64_poly_mul_karatsuba.c (PR #42 helper) at
-# n >= 128. gf64_mpe.c (PR #43, T8a) is required because
-# gf64_subproduct_tree_build calls gf64_poly_invmod_mod (defined there).
+# n >= 128. gf64_mpe.c (PR #43, T8a) is required for the fast divmod path.
 # Needs AVX-512F + VPCLMULQDQ at runtime.
 test_gf64_barycentric: $(TEST_GF64_BARYCENTRIC_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_BARYCENTRIC_SOURCES) $(GF64_SOURCES)
@@ -196,13 +199,30 @@ test_gf64_fenger_pipeline: $(TEST_GF64_FENGER_PIPELINE_SOURCES) $(GF64_SOURCES) 
 test_gf64_fenger_padded: $(TEST_GF64_FENGER_PADDED_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_PADDED_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
-# PR #49 step 1: contract test for gf64_poly_invmod_mod (now using
-# Newton-reciprocal inner divmod + Karatsuba-dispatched s_curr update).
-# Verifies g * u == 1 (mod f) bit-exactly across degrees {4, 8, 16, 32,
-# 64, 128, 256} plus unbalanced (deg_g, deg_f) pairs. Same source set
-# as test_gf64_mpe (the function lives in gf64_mpe.c).
+# PR #49 step 1: contract test for gf64_poly_invmod_mod (half-extended GCD;
+# its internal divmod steps route through the fast Newton-reciprocal
+# gf64_poly_divmod since issue #59 A1). Verifies g * u == 1 (mod f)
+# bit-exactly across degrees {4, 8, 16, 32, 64, 128, 256} plus unbalanced
+# (deg_g, deg_f) pairs. Same source set as test_gf64_mpe (the function
+# lives in gf64_mpe.c).
 test_gf64_invmod_mod_parity: $(TEST_GF64_INVMOD_MOD_PARITY_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVMOD_MOD_PARITY_SOURCES) $(GF64_SOURCES)
+
+# Issue #59 A1: parity of the fast Newton-reciprocal gf64_poly_divmod
+# against the schoolbook reference gf64_poly_divmod_schoolbook across the
+# dispatch boundary (quotient length m = 95/96/97), at FFT-mul sizes
+# (up to 4096/2048), and at unbalanced / edge shapes (linear divisor,
+# deg_f < deg_g, deg_f == deg_g, constant divisor). Same source set as
+# test_gf64_mpe.
+test_gf64_divmod_parity: $(TEST_GF64_DIVMOD_PARITY_SOURCES) $(GF64_SOURCES)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_DIVMOD_PARITY_SOURCES) $(GF64_SOURCES)
+
+# Issue #59 A1: contract tests for the derivative-based interpolation
+# (gf64_multi_point_interp_internal): round-trip against MPE at N in
+# {2..1024}, direct Lagrange-basis construction at N=8, N==1 edge, and
+# repeated-call determinism. Same source set as test_gf64_mpe.
+test_gf64_interp_parity: $(TEST_GF64_INTERP_PARITY_SOURCES) $(GF64_SOURCES)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INTERP_PARITY_SOURCES) $(GF64_SOURCES)
 
 # Issue #51 Step 7(b): boundary regression for gf64_poly_mul_internal's
 # three-tier dispatch (HQC FFT / Karatsuba / schoolbook). Loops
@@ -236,5 +256,12 @@ bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURC
 bench_hqc_vs_karatsuba: $(BENCH_HQC_VS_KARATSUBA_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_invert.c ../gf64_single.c ../cpu_detect.c
 	$(CC) $(CFLAGS) $(GF64_INCLUDES) -O3 $(LDFLAGS) -o $@ $(BENCH_HQC_VS_KARATSUBA_SOURCES) ../gf64_additive_fft_hqc2026.c ../gf64_poly_mul_karatsuba.c ../gf64_mul_avx512.c ../gf64_square.c ../gf64_invert.c ../gf64_single.c ../cpu_detect.c
 
+# Issue #59 A1 evidence bench: tree build / MPE / interp phase timings at
+# N = 4096..2^20 plus the P1 gate shape (bit-exact Fenger vs explicit
+# Cauchy at N=131072 / R=4096). Same source set as
+# bench_gf64_fenger_vs_cauchy.
+bench_gf64_subquadratic: $(BENCH_GF64_SUBQUADRATIC_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BENCH_GF64_SUBQUADRATIC_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic

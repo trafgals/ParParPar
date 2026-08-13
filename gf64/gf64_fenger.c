@@ -10,10 +10,14 @@
  * single-threaded case.
  *
  * Asymptotic correctness: the per-word interpolation step is Bostan-Schost
- * top-down via gf64_multi_point_interp (T8b) which already uses the
- * cached inv_mod_data from the tree build. The per-word evaluation step
- * is Bostan-Schost top-down via gf64_multi_point_eval (T8a). The product
- * gives p(y_r) in O((N + R) log² (N + R)) per word.
+ * top-down via the weights-aware gf64_multi_point_interp_weights (T8b) —
+ * derivative-based Lagrange form since issue #59 A1, needing no cached
+ * tree inverses; the prepare phase's barycentric weights (ctx->V_prime_inv)
+ * skip the per-word P'-MPE + N inversions. (The gated public wrapper
+ * gf64_multi_point_interp is NOT the Fenger entry point; cubic review
+ * 50f46d24 P3.) The per-word
+ * evaluation step is Bostan-Schost top-down via gf64_multi_point_eval
+ * (T8a). The product gives p(y_r) in O((N + R) log² (N + R)) per word.
  *
  * Field operations are delegated to gf64_mul_reference (scalar SSE2) and
  * gf64_invert_ita_one (T5). The AVX-512 swap-in is deferred; the
@@ -43,6 +47,8 @@ struct gf64_fenger_ctx {
 	SubproductTree tree_x; /* input-point tree       */
 	SubproductTree tree_y; /* recovery-point tree    */
 	gf64_t *V_prime;       /* V'(x_c) for each input */
+	gf64_t *V_prime_inv;   /* 1/V'(x_c) for each input (barycentric weights;
+	                        * reused per word by the weights-aware interp) */
 	gf64_t *V_at_y_inv;    /* 1/V(y_r) for each r    */
 	size_t  N;             /* padded input count (power of 2)  */
 	size_t  R;             /* padded recovery count (power of 2) */
@@ -86,6 +92,7 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 	ctx->num_inputs_real   = numInputsReal;
 	ctx->num_recovery_real = numRecoveryReal;
 	ctx->V_prime    = NULL;
+	ctx->V_prime_inv = NULL;
 	ctx->V_at_y_inv = NULL;
 
 	/* ---- Build T_X over input points ----
@@ -118,17 +125,21 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 	gf64_subproduct_tree_build(y_points, numRecoveryPadded, &ctx->tree_y);
 	free(y_points);
 
-	/* ---- Barycentric weights (1/V'(x_c)) then invert to V'(x_c) ---- */
+	/* ---- Barycentric weights (1/V'(x_c)) and their inverses ----
+	 * The weights are kept in ctx->V_prime_inv: the per-word
+	 * interpolation (gf64_multi_point_interp_weights) consumes exactly
+	 * 1/P'(x_c) = 1/V'(x_c), so keeping them avoids re-running the
+	 * P'-MPE + N inversions once per word (issue #59 A1). */
 	gf64_t *bary = (gf64_t *)malloc(numInputsPadded * sizeof(gf64_t));
 	if (bary == NULL) abort();
 	gf64_barycentric_weights(&ctx->tree_x, bary);
 
+	ctx->V_prime_inv = bary;
 	ctx->V_prime = (gf64_t *)malloc(numInputsPadded * sizeof(gf64_t));
 	if (ctx->V_prime == NULL) abort();
 	for (size_t c = 0; c < numInputsPadded; c++) {
 		ctx->V_prime[c] = gf64_invert_ita_one(bary[c]);
 	}
-	free(bary);
 
 	/* ---- V(y_r) for each recovery point (MPE on tree_y) ---- */
 	gf64_t *V_at_y = (gf64_t *)malloc(numRecoveryPadded * sizeof(gf64_t));
@@ -242,10 +253,13 @@ void gf64_fenger_execute(
 		}
 		/* 4b: interpolate to polynomial p_w of degree < N. Fenger is the
 		 * sanctioned consumer of the Bostan-Schost body, so it calls the
-		 * ungated gf64_multi_point_interp_internal directly — the
+		 * ungated weights-aware variant directly — the
 		 * PAR3_GF64_USE_INTERP opt-in gate is for production code that
-		 * does not require interpolation. */
-		gf64_multi_point_interp_internal(tree_x, weighted, poly_p);
+		 * does not require interpolation. The prepare phase precomputed
+		 * ctx->V_prime_inv = 1/V'(x_c) (barycentric weights), so this
+		 * call skips the per-word P'-MPE + N inversions (issue #59 A1). */
+		gf64_multi_point_interp_weights(tree_x, weighted,
+		                                ctx->V_prime_inv, poly_p);
 		/* 4c: evaluate p_w at each recovery point. */
 		gf64_multi_point_eval(poly_p, deg_p, tree_y, p_at_y);
 		/* 4d: divide by V(y_r) — only real recovery rows are written
@@ -268,6 +282,7 @@ void gf64_fenger_release(gf64_fenger_ctx *ctx) {
 	gf64_subproduct_tree_free(&ctx->tree_x);
 	gf64_subproduct_tree_free(&ctx->tree_y);
 	free(ctx->V_prime);
+	free(ctx->V_prime_inv);
 	free(ctx->V_at_y_inv);
 	free(ctx);
 }

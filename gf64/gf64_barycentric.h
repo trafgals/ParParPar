@@ -48,14 +48,15 @@
  *
  * CURRENT EVALUATION STRATEGY
  * ---------------------------
- * Multi-point evaluation P'(x_j) for every input point currently uses the
- * naive Horner loop per point (O(N) per evaluation, O(N^2) total). The
- * subproduct tree was built for exactly this: a Bostan-Schost-style
- * multi-point evaluation (MPE) reduces this to O(N log^2 N).
- *
- * TODO: replace this naive O(N^2) Horner evaluation in step 2 with the
- * subproduct-tree-driven Bostan-Schost MPE once T8 lands (see
- * gf64_mpe.{c,h}).
+ * Multi-point evaluation of P'(x_j) for every input point uses the
+ * Bostan-Schost top-down tree walk (gf64_multi_point_eval, T8) with the
+ * Newton-reciprocal divmod from issue #59 A1 — O(M(N) log N) instead of
+ * the old O(N^2) Horner stop-gap. The derivative array is built in O(N)
+ * XORs (char-2 rule above) and the N values are inverted in one shot
+ * via T5's batch inverter: gf64_invert_ita_batch when the host has
+ * working VPCLMULQDQ (CPUID + XCR0 + ZMM-probe gated), otherwise the
+ * dispatch-table gf64_inverse_batch path (scalar/SSSE3/AVX-2
+ * specialisations — cubic review 5a3b44c9 P3).
  * ============================================================================
  */
 
@@ -101,9 +102,10 @@ HEDLEY_BEGIN_C_DECLS
  *
  * Complexity:
  *   - Step 1 (formal derivative):  O(N) memory + O(N) work.
- *   - Step 2 (multi-point evaluation): O(N^2) field multiplications per the
- *                                  naive Horner loop. (T8 will replace this
- *                                  with Bostan-Schost MPE at O(N log^2 N).)
+ *   - Step 2 (multi-point evaluation): O(M(N) log N) via the Bostan-Schost
+ *                                  tree walk (issue #59 A1; the O(N^2)
+ *                                  Horner stop-gap and its T8 TODO are
+ *                                  gone).
  *   - Step 3 (ITA inversion):      O(N log k) field ops per element, vectorized.
  *
  * On allocation failure: calls abort().

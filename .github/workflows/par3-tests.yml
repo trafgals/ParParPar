@@ -55,6 +55,13 @@ jobs:
         timeout-minutes: 5
         run: node test/par3-recovery-perf.js
 
+      - name: Run par3 golden recovery test
+        timeout-minutes: 5
+        # No --openssl-legacy-provider: the golden recovery path uses only
+        # blake3 + default-provider algorithms (sha256/md5); the flag was
+        # dropped after verifying locally (cubic review f44ead49 P3).
+        run: node test/par3-golden.js
+
   test-wave9:
     name: Wave 9 Tests
     runs-on: ubuntu-latest

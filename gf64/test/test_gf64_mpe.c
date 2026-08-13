@@ -430,7 +430,13 @@ case_c: {
 static void test_invmod(void) {
 	printf("Test 4: gf64_poly_invmod — g * (1/g) ≡ 1 mod x^n (multiple n)\n");
 
-	const size_t n_cases[] = { 1, 2, 3, 4, 7, 8, 16, 32, 64, 128 };
+	/* n_cases includes NON-power-of-2 sizes (96, 192, 255): the final
+	 * Newton step then has m_new = n with m = 2^floor(log2(n-1)) > n/2,
+	 * so the full product g * r^2 is up to 3n - 2 coefficients long —
+	 * regression pin for the issue #59 A1 prod-buffer sizing fix (the
+	 * old 2n sizing overflowed the heap, e.g. n = 96 writes 222
+	 * coefficients into a 192-slot buffer). */
+	const size_t n_cases[] = { 1, 2, 3, 4, 7, 8, 16, 32, 64, 96, 128, 192, 255 };
 	const size_t num_n = sizeof(n_cases) / sizeof(n_cases[0]);
 	int all_ok = 1;
 
@@ -503,6 +509,25 @@ static void test_invmod_zero_n(void) {
 		printf("    dst=0x%016llx, want 0xDEADBEEF\n",
 		       (unsigned long long)dst);
 		fail("invmod(n=0) no-op contract");
+	}
+
+	/* Buffer-arithmetic overflow guard (cubic review c509dd2b P1): n
+	 * beyond SIZE_MAX/3 must be refused without writing — the Newton
+	 * buffers are sized 2n/3n and 3n - 2 coefficients are written, so
+	 * a wrapped calloc would under-allocate and the loop would write
+	 * out of bounds. On unfixed code this call aborts (calloc fails). */
+	{
+		gf64_t huge_dst[2] = { 0x1111111111111111ULL, 0x2222222222222222ULL };
+		gf64_t huge_g = 1ULL;
+		const size_t huge_n = SIZE_MAX / 3 + 1;
+		gf64_poly_invmod(&huge_g, 0, huge_n, huge_dst);
+		if (huge_dst[0] == 0x1111111111111111ULL &&
+		    huge_dst[1] == 0x2222222222222222ULL) {
+			pass("invmod(n > SIZE_MAX/3) refused without writing (overflow guard)");
+		} else {
+			printf("    dst modified by refused invmod call\n");
+			fail("invmod overflow guard");
+		}
 	}
 }
 
