@@ -49,6 +49,7 @@ TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 TEST_GF64_FENGER_KERNEL_SOURCES := test_gf64_fenger_kernel.c
 TEST_GF64_FENGER_PIPELINE_SOURCES := test_gf64_fenger_pipeline.c
 TEST_GF64_FENGER_PADDED_SOURCES := test_gf64_fenger_padded.c
+TEST_GF64_FENGER_BATCH_SOURCES := test_gf64_fenger_batch.c
 TEST_GF64_INVMOD_MOD_PARITY_SOURCES := test_gf64_invmod_mod_parity.c
 TEST_GF64_DIVMOD_PARITY_SOURCES := test_gf64_divmod_parity.c
 TEST_GF64_INTERP_PARITY_SOURCES := test_gf64_interp_parity.c
@@ -248,6 +249,12 @@ test_gf64_poly_mul_internal_dispatch: $(TEST_GF64_POLY_MUL_INTERNAL_DISPATCH_SOU
 # execute path via the prepare/execute/release API.
 bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 	$(CC) $(CFLAGS) -fopenmp $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+
+# Issue #59 A3 (word-batched tree passes): bit-exact parity of the
+# K-word-batched execute against the single-word reference, driven via
+# PAR3_FENGER_BATCH_WORDS. Same source set as test_gf64_fenger_pipeline.
+test_gf64_fenger_batch: $(TEST_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
 # HQC FFT vs Karatsuba polynomial multiplication benchmark.
 # Establishes GF64_HQC_FFT_MIN crossover — informs Step 5 dispatch wiring.

@@ -114,6 +114,10 @@ void gf64_poly_mul_padded(
  */
 
 /* ----- Length caps (exposed for dispatch) ----- */
+/* Minimum operand/out length for the HQC FFT tier (same value as the
+ * private GF64_HQC_FFT_MIN in gf64_additive_fft.c — the dispatch gate
+ * in gf64_mul.c requires all three of len_a/len_b/out_len >= this). */
+#define GF64_HQC_FFT_MIN          ((size_t)96)
 #define GF64_HQC_MAX_MATRIXFORM_N ((size_t)16384)
 /* Matrix-free recursive path: Chen 2018 Algorithm 1 general case. At
  * power-of-2 n ≤ 2^20 (= 1 M), the polyeval-form `hqc_cvt` /

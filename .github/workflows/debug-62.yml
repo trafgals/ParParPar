@@ -28,10 +28,6 @@ jobs:
       - name: Engine repro — knob matrix
         shell: bash
         run: |
-          # Capture minidumps via WER LocalDumps (HKCU — no admin needed).
-          reg add "HKCU\\Software\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps\\node.exe" /v DumpFolder /t REG_EXPAND_SZ /d "D:\\a\\_temp\\dumps" /f
-          reg add "HKCU\\Software\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps\\node.exe" /v DumpType /t REG_DWORD /d 2 /f
-          mkdir -p "D:/a/_temp/dumps" || true
           set +e
           for combo in default noavx512 forceavx512; do
             case $combo in
@@ -43,7 +39,9 @@ jobs:
             echo "=== combo=$combo exit=$? ==="
             cat "repro-$combo.log"
           done
-          ls -la "D:/a/_temp/dumps" 2>/dev/null || echo "no dumps"
+          # Faulting-module details from the Windows Application event log
+          # (no admin/registry needed) — pinpoints the crashing function.
+          powershell -Command "Get-WinEvent -LogName Application -MaxEvents 12 | Where-Object { $_.ProviderName -match 'Application Error|Windows Error Reporting' } | Select-Object -First 2 | ForEach-Object { $_.Message }" 2>&1 | head -40
 
       - name: Full create repro (original crash path)
         shell: bash
@@ -60,7 +58,6 @@ jobs:
           echo "=== create (enable + force) exit=$? ==="
           cat create-force.log
           ls -la par3-test-output 2>/dev/null
-          ls -la "D:/a/_temp/dumps" 2>/dev/null || echo "no dumps"
 
   repro-node22:
     name: '#62 repro (windows-2025, node 22)'
