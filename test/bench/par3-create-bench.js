@@ -26,8 +26,6 @@ var par3 = require('../../lib/par3gen.js');
 var DEFAULT_SIZE = helpers.parseSize(); // 1 GiB
 var DEFAULT_BLOCK_SIZE = 4096;
 var DEFAULT_RUNS = 1;
-var RECOVERY_PERCENT = 10;
-var MIN_RECOVERY_SLICES = 10;
 
 function parseArgs() {
   var args = process.argv.slice(2);
@@ -83,9 +81,10 @@ function run(opts) {
   }
 
   var sliceCount = opts.slices;
-  var sliceSize = Math.ceil(opts.size / sliceCount);
-  var actualSize = sliceSize * sliceCount;
-  var recoverySlices = Math.max(MIN_RECOVERY_SLICES, Math.floor(sliceCount * RECOVERY_PERCENT / 100));
+  var shape = helpers.computeCreateShape(opts.size, sliceCount, opts.blockSize);
+  var sliceSize = shape.sliceSize;
+  var actualSize = shape.actualSize;
+  var recoverySlices = shape.recoverySlices;
   var gf = helpers.ensureGfMethod();
 
   var tmpDir = helpers.getTempDir('par3-create-bench');
@@ -122,7 +121,7 @@ function run(opts) {
       var diagBuf = Buffer.allocUnsafe(opts.blockSize);
       var bufAddr = diagBuf.buffer ? Number(diagBuf.buffer) : 0;
       console.log('  Buffer alignment:    ' + ((bufAddr % 64 === 0) ? '64-byte aligned' : 'NOT 64-byte aligned'));
-      console.log('  Total input blocks:  ' + Math.ceil(actualSize / opts.blockSize));
+      console.log('  Total input blocks:  ' + shape.totalBlocks);
       console.log('  PAR3_GF64_INPUT_POOL_SIZE: ' + (process.env.PAR3_GF64_INPUT_POOL_SIZE || '(not set)'));
 
       var tCreate = Date.now();

@@ -248,12 +248,18 @@ function withFengerEnv(value, fn) {
     }
 }
 
-console.log('\n--- Test 13: power-of-2 workload, env unset → Fenger by default ---');
+console.log('\n--- Test 13: power-of-2 workload, env unset → Fenger by default (non-Windows only) ---');
 withFengerEnv(undefined, function () {
     var b = makeFengerBinding();
     var result = dispatchRecovery(b, null, null, 64, 4, 4096, 0, 0n, 0);
-    check(result === 'fenger-result', 'returned Fenger result by default (got: ' + JSON.stringify(result) + ')');
-    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'kernel was compute_recovery_fenger (got: ' + callsToString(b.calls) + ')');
+    // The Fenger default is platform-gated (issue #46 Phase 2 blocker): on
+    // Windows the MSVC addon keeps scalar/Barycentric default until the
+    // Node 22 access-violation / hang is root-caused, so the unset-env
+    // expectation is platform-dependent.
+    var expected = (process.platform === 'win32') ? 'full-result' : 'fenger-result';
+    var expectedKernel = (process.platform === 'win32') ? 'full' : 'fenger';
+    check(result === expected, (process.platform === 'win32' ? 'returned compute_recovery_full on Windows (got: ' : 'returned Fenger result by default (got: ') + JSON.stringify(result) + ')');
+    check(b.calls.length === 1 && b.calls[0].kernel === expectedKernel, 'kernel was compute_recovery_' + expectedKernel + ' (got: ' + callsToString(b.calls) + ')');
 });
 
 console.log('\n--- Test 14: power-of-2 workload, PAR3_GF64_USE_FENGER=0 → kill switch, skip Fenger ---');
@@ -331,11 +337,12 @@ withFengerEnv(undefined, function () {
     check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'blockSize=4097 (%8!=0) dispatches to full, NOT Fenger (got: ' + callsToString(b.calls) + ')');
 });
 
-console.log('\n--- Test 20: numInputs=0 (trivial), env unset → Fenger (0 is power-of-2-or-trivial) ---');
+console.log('\n--- Test 20: numInputs=0 (trivial), env unset → Fenger on non-Windows (0 is power-of-2-or-trivial; platform gate applies) ---');
 withFengerEnv(undefined, function () {
     var b = makeFengerBinding();
     dispatchRecovery(b, null, null, 0, 4, 4096, 0, 0n, 0);
-    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'numInputs=0 (trivial) dispatches to Fenger (got: ' + callsToString(b.calls) + ')');
+    var expectedKernel = (process.platform === 'win32') ? 'full' : 'fenger';
+    check(b.calls.length === 1 && b.calls[0].kernel === expectedKernel, 'numInputs=0 (trivial) dispatches to compute_recovery_' + expectedKernel + ' (got: ' + callsToString(b.calls) + ')');
 });
 
 // ============================================================================
