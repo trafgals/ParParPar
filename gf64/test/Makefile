@@ -53,14 +53,15 @@ TEST_GF64_INVMOD_MOD_PARITY_SOURCES := test_gf64_invmod_mod_parity.c
 TEST_GF64_DIVMOD_PARITY_SOURCES := test_gf64_divmod_parity.c
 TEST_GF64_INTERP_PARITY_SOURCES := test_gf64_interp_parity.c
 TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES := test_gf64_additive_fft_hqc2026.c
+TEST_GF64_MUL_BATCH_SHARED_SOURCES := test_gf64_mul_batch_shared.c
 TEST_GF64_POLY_MUL_INTERNAL_DISPATCH_SOURCES := test_gf64_poly_mul_internal_dispatch.c
 BENCH_GF64_FENGER_VS_CAUCHY_SOURCES := bench_gf64_fenger_vs_cauchy.c
 BENCH_HQC_VS_KARATSUBA_SOURCES := bench_hqc_vs_karatsuba.c
 BENCH_GF64_SUBQUADRATIC_SOURCES := bench_gf64_subquadratic.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -107,6 +108,12 @@ test_gf64_additive_fft: $(TEST_GF64_ADDITIVE_FFT_SOURCES) $(GF64_SOURCES)
 # sizes go up to 131072 for the recursive family.
 test_gf64_additive_fft_hqc2026: $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) $(GF64_SOURCES)
+
+# Batch-shared mul parity test (issue #59 §4 A3): K products with one
+# shared operand must be bit-exact to K sequential
+# gf64_addfft64_poly_mul_recursive_scratch calls (scalar and AVX-512).
+test_gf64_mul_batch_shared: $(TEST_GF64_MUL_BATCH_SHARED_SOURCES) $(GF64_SOURCES)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MUL_BATCH_SHARED_SOURCES) $(GF64_SOURCES)
 
 # FFT-based bottom-up subproduct tree test (par3-cauchy-fft-kernel T6).
 # gf64_subproduct.c (T6) depends on gf64_additive_fft.c (T3) for gf64_poly_mul,
@@ -264,4 +271,4 @@ bench_gf64_subquadratic: $(BENCH_GF64_SUBQUADRATIC_SOURCES) $(GF64_SOURCES) ../g
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BENCH_GF64_SUBQUADRATIC_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic

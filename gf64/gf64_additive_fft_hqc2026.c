@@ -1257,4 +1257,91 @@ void gf64_addfft64_poly_mul_recursive_scratch_avx512(
     if (copy_n < out_len) memset(out + copy_n, 0, (out_len - copy_n) * sizeof(gf64_t));
 }
 
+/* ----- Batch-shared primitive (issue #59 §4 A3) ----- */
+
+static void gf64_addfft64_poly_mul_batch_shared_core(
+    gf64_t *const *outs, size_t K,
+    const gf64_t *shared, size_t len_shared,
+    const gf64_t *f, size_t len_f,
+    size_t out_len,
+    gf64_t *scratch, size_t scratch_words,
+    int use_avx512)
+{
+    if (K == 0) {
+        return;
+    }
+    if (len_shared == 0 || len_f == 0 || out_len == 0) {
+        for (size_t k = 0; k < K; k++) {
+            memset(outs[k], 0, out_len * sizeof(gf64_t));
+        }
+        return;
+    }
+    size_t full_len = len_shared + len_f - 1;
+    if (full_len < out_len) full_len = out_len;
+    size_t n = 1;
+    while (n < full_len) n <<= 1;
+    assert(n <= GF64_HQC_MAX_LM_N);
+    assert(scratch_words >= gf64_addfft64_poly_mul_recursive_scratch_words(n));
+
+    /* Scratch layout: [pt: n | pf: n | inner: 2n] = 4n. pt persists
+     * across the K words (the hoisted shared transform); pf is the
+     * per-word transform buffer. */
+    gf64_t *pt    = scratch;
+    gf64_t *pf    = scratch + n;
+    gf64_t *inner = scratch + 2 * n;
+
+    /* Hoist the shared operand's forward transform. */
+    memcpy(pt, shared, len_shared * sizeof(gf64_t));
+    memset(pt + len_shared, 0, (n - len_shared) * sizeof(gf64_t));
+    if (use_avx512) {
+        gf64_addfft64_fwd_recursive_scratch_avx512(pt, n, inner, 2 * n);
+    } else {
+        gf64_addfft64_fwd_recursive_scratch(pt, n, inner, 2 * n);
+    }
+
+    for (size_t k = 0; k < K; k++) {
+        const gf64_t *fk = f + k * len_f;
+        memcpy(pf, fk, len_f * sizeof(gf64_t));
+        memset(pf + len_f, 0, (n - len_f) * sizeof(gf64_t));
+        if (use_avx512) {
+            gf64_addfft64_fwd_recursive_scratch_avx512(pf, n, inner, 2 * n);
+        } else {
+            gf64_addfft64_fwd_recursive_scratch(pf, n, inner, 2 * n);
+        }
+        for (size_t i = 0; i < n; i++) pf[i] = gf64_mul_reference(pf[i], pt[i]);
+        if (use_avx512) {
+            gf64_addfft64_inv_recursive_scratch_avx512(pf, n, inner, 2 * n);
+        } else {
+            gf64_addfft64_inv_recursive_scratch(pf, n, inner, 2 * n);
+        }
+        size_t copy_n = (full_len < out_len) ? full_len : out_len;
+        memcpy(outs[k], pf, copy_n * sizeof(gf64_t));
+        if (copy_n < out_len) memset(outs[k] + copy_n, 0, (out_len - copy_n) * sizeof(gf64_t));
+    }
+}
+
+void gf64_addfft64_poly_mul_batch_shared(
+    gf64_t *const *outs, size_t K,
+    const gf64_t *shared, size_t len_shared,
+    const gf64_t *f, size_t len_f,
+    size_t out_len,
+    gf64_t *scratch, size_t scratch_words)
+{
+    gf64_addfft64_poly_mul_batch_shared_core(
+        outs, K, shared, len_shared, f, len_f, out_len,
+        scratch, scratch_words, /* use_avx512 */ 0);
+}
+
+void gf64_addfft64_poly_mul_batch_shared_avx512(
+    gf64_t *const *outs, size_t K,
+    const gf64_t *shared, size_t len_shared,
+    const gf64_t *f, size_t len_f,
+    size_t out_len,
+    gf64_t *scratch, size_t scratch_words)
+{
+    gf64_addfft64_poly_mul_batch_shared_core(
+        outs, K, shared, len_shared, f, len_f, out_len,
+        scratch, scratch_words, /* use_avx512 */ 1);
+}
+
 HEDLEY_END_C_DECLS
