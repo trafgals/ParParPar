@@ -83,16 +83,16 @@ test_gf64_mul_avx512: $(TEST_GF64_MUL_AVX512_SOURCES) ../gf64_mul_avx512.c ../gf
 # Parity test for the GF(2^64) Frobenius squaring (par3-cauchy-fft-kernel T2).
 # Compiles only gf64_square.c + gf64_single.c (the public scalar SSE2 reference
 # used for cross-checking). Needs AVX-512F at runtime.
-test_gf64_square: $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_single.c
+test_gf64_square: $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_square_avx512.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_square_avx512.c ../gf64_single.c
 
 # Parity test for the Itoh-Tsujii batched inversion (par3-cauchy-fft-kernel T5).
 # Compiles only the four TUs the inverter transitively touches: the new
 # gf64_invert_ita.c plus the primitives it depends on (gf64_square.c,
 # gf64_mul_avx512.c) and the scalar reference gf64_single.c. Needs
 # AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_invert_ita: $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_square.c ../gf64_mul_avx512.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_square.c ../gf64_mul_avx512.c ../gf64_single.c
+test_gf64_invert_ita: $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_invert_ita_avx512.c ../gf64_square.c ../gf64_square_avx512.c ../gf64_mul_avx512.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_invert_ita_avx512.c ../gf64_square.c ../gf64_square_avx512.c ../gf64_mul_avx512.c ../gf64_single.c
 
 # Scalar + AVX-512 Gao-Mateer-style additive FFT tests (par3-cauchy-fft-kernel T3 + T4).
 # The AVX-512 implementation lives in gf64_additive_fft.c (same TU as the
