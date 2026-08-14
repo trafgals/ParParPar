@@ -217,24 +217,18 @@ function recoveryDataHash(par3File) {
 
 function runBug2(tempDir) {
   return new Promise(function(resolve) {
-    var bindingExisted = false;
-    var bindingBackup = BINDING_PATH + '.bak';
-
-    if (fs.existsSync(BINDING_PATH)) {
-      bindingExisted = true;
-      fs.renameSync(BINDING_PATH, bindingBackup);
-    }
+    // NOTE: the binding is deliberately LEFT IN PLACE for both creates —
+    // the 'native' archive must exercise the native kernel, and the JS
+    // archive forces the JS kernel via PAR3_USE_JS_KERNEL=1 (which takes
+    // precedence over the binding's presence). Moving the binding aside
+    // for the native create would compare JS-kernel vs JS-kernel and
+    // could never detect a JS/native divergence (cubic review on PR #64).
 
     var observedError = null;
     var nativeHash = null;
     var jsHash = null;
 
     function done() {
-      try {
-        if (bindingExisted && fs.existsSync(bindingBackup)) {
-          fs.renameSync(bindingBackup, BINDING_PATH);
-        }
-      } catch (e) { /* ignore */ }
       resolve({ observedError: observedError, nativeHash: nativeHash, jsHash: jsHash });
     }
 
