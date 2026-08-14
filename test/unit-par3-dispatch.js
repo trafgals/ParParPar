@@ -1,23 +1,21 @@
 "use strict";
 
-// TDD red for fix-gf64-recovery — Todo 3
+// TDD red for fix-gf64-recovery — Todo 3 (now Todo 6: both JS path bugs
+// fixed; this file pins the fixed contracts):
 //
-// Captures TWO JS path math bugs in lib/par3gen.js:
+//   1. Dispatch check bug (lib/par3gen.js repair path, near the
+//      "Singular matrix" error): `if(!ok || ok < 0)` treated the JS
+//      gf64_js.solve_and_reconstruct success return (0) as failure
+//      (!0 === true) — JS-path repair always threw "Singular matrix".
+//      FIXED: `if(ok !== 0 && ok !== true)` accepts both the JS (0/-1)
+//      and the native (true/false) return conventions.
 //
-//   1. Dispatch check bug (lib/par3gen.js:1917):
-//        if(!ok || ok < 0) {
-//            cb(new Error('Singular matrix - cannot solve'));
-//            return;
-//        }
-//      JS gf64_js.solve_and_reconstruct returns 0 on success (and -1 on failure),
-//      but in JavaScript `!0 === true`, so the dispatch check ALWAYS fires
-//      "Singular matrix" when the JS path is used.
-//
-//   2. XOR bug (lib/par3gen.js:744):
-//        var denom = xj + yi;          // BUGGY: addition
-//      GF(2^64) is XOR-based. The repair path correctly uses XOR at lines 1893
-//      and 1959. The JS create kernel must match — using addition produces
-//      recovery blocks inconsistent with the XOR-based math.
+//   2. XOR bug: the JS create kernel must use `xj ^ yi` (GF(2^64) is
+//      XOR-based; the repair path correctly uses `xi ^ yj`). The old
+//      `xj + yi` site is fixed; the recovery data is compared via the
+//      REC packet bodies only (whole-archive hashes are NOT comparable:
+//      every create draws a random 16-byte fileId, which lands in the
+//      FIL/UNX/ROOT packets).
 //
 // After Todo 6 fixes both bugs, this test PASSES.
 //
@@ -196,6 +194,27 @@ function runBug1(tempDir) {
 // kernel.
 //
 // Fix (Todo 6): change `xj + yi` to `xj ^ yi` in lib/par3gen.js:744.
+// Hash ONLY the recovery-block packets' bodies of a PAR3 archive.
+// Comparing whole-archive hashes is a false positive: each create
+// generates a RANDOM 16-byte fileId (lib/par3gen.js _createFilePackets,
+// crypto.randomBytes), which flows into the FIL/UNX/ROOT packets — two
+// runs over the same input ALWAYS differ there, kernel-independent.
+// The recovery data (the kernel's actual output) is deterministic.
+function recoveryDataHash(par3File) {
+  var content = fs.readFileSync(par3File);
+  var recBodies = [];
+  var idx = 0;
+  while ((idx = content.indexOf('PAR REC\0', idx)) !== -1) {
+    var pktStart = idx - 40;
+    if (pktStart >= 0 && content.slice(pktStart, pktStart + 8).toString('ascii') === 'PAR3\0PKT') {
+      var pktLen = Number(content.readBigUInt64LE(pktStart + 24));
+      recBodies.push(content.slice(pktStart + 48, pktStart + 48 + pktLen - 48));
+    }
+    idx += 8;
+  }
+  return hashBuffer(Buffer.concat(recBodies));
+}
+
 function runBug2(tempDir) {
   return new Promise(function(resolve) {
     var bindingExisted = false;
@@ -239,7 +258,7 @@ function runBug2(tempDir) {
           return done();
         }
 
-        nativeHash = hashBuffer(fs.readFileSync(nativePar3File));
+        nativeHash = recoveryDataHash(nativePar3File);
 
         // Now create with PAR3_USE_JS_KERNEL=1 forcing the JS create kernel.
         var jsBase = path.join(tempDir, 'bug2_out_js');
@@ -260,7 +279,7 @@ function runBug2(tempDir) {
             return done();
           }
 
-          jsHash = hashBuffer(fs.readFileSync(jsPar3File));
+          jsHash = recoveryDataHash(jsPar3File);
           done();
         });
       });
