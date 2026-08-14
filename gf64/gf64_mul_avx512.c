@@ -197,9 +197,9 @@ static inline __m512i gf64_reduce_mul_512(__m512i lo_v, __m512i hi_v) {
  * --------------------------------------------------------------------------- */
 __attribute__((target("avx512f,vpclmulqdq")))
 void gf64_mul_avx512(
-	gf64_t *HEDLEY_RESTRICT out,
-	const gf64_t *HEDLEY_RESTRICT a,
-	const gf64_t *HEDLEY_RESTRICT b,
+	gf64_t *out,
+	const gf64_t *a,
+	const gf64_t *b,
 	size_t N
 ) {
 	size_t i = 0;

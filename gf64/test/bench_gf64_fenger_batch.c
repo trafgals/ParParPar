@@ -7,10 +7,12 @@
  * reference shapes. Reports per-K execute time + speedup over K=1, the
  * P2 gate evidence ("10G/100k kernel ≤ 3 min" projection).
  *
- * Shapes (B is capped at 8 — the minimum for a full K=8 batch — because
- * the interp costs ~40-100 s/word at N=262144 on WSL2; the K-speedup
- * ratio is B-relative and larger B favors K>1 more, so this is a
- * conservative lower bound — see the comment in main()):
+ * Shapes (the 1G/10K-ish large shape caps B at 8 — the minimum for a
+ * full K=8 batch — because the interp costs ~40-100 s/word at N=262144
+ * on WSL2; the K-speedup ratio is B-relative and larger B favors K>1
+ * more, so the B=8 shape is a conservative lower bound — see the
+ * comment in main() — while medium uses a larger B=64 as a fast
+ * cross-check):
  *   medium:      N = 2^14, R = 2^9,  B = 64  (fast cross-check)
  *   1G/10K-ish:  N = 2^18, R = 2^10, B = 8   (fully inside the HQC window)
  *

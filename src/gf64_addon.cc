@@ -2354,12 +2354,14 @@ static napi_value ComputeRecoveryStreaming_NAPI(napi_env env, napi_callback_info
 	// is fixed by the gf64_pipeline TU split, so Windows dispatches
 	// Fenger by the same rules as other hosts. An optional defensive
 	// size cap remains via PAR3_FENGER_WINDOWS_MAX_INPUTS (default:
-	// no cap); PAR3_FENGER_WINDOWS_ENABLE is dead and ignored.
-	long fengerWinMax = LONG_MAX;
+	// no cap); PAR3_FENGER_WINDOWS_ENABLE is dead and ignored. The cap
+	// is int64 (LLONG_MAX on MSVC where long is 32-bit) to mirror the
+	// JS side's Infinity default.
+	long long fengerWinMax = LLONG_MAX;
 	const char* fengerWinMaxEnv = getenv("PAR3_FENGER_WINDOWS_MAX_INPUTS");
 	if (fengerWinMaxEnv) {
 		char* endp = nullptr;
-		long v = strtol(fengerWinMaxEnv, &endp, 10);
+		long long v = strtoll(fengerWinMaxEnv, &endp, 10);
 		if (endp != fengerWinMaxEnv && v > 0) fengerWinMax = v;
 	}
 	const bool fengerEligible =

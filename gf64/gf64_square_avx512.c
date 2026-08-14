@@ -144,8 +144,8 @@ static inline __m512i gf64_reduce_square_512(__m512i lo_v, __m512i hi_v) {
  * --------------------------------------------------------------------------- */
 __attribute__((target("avx512f")))
 void gf64_square_avx512(
-	gf64_t *HEDLEY_RESTRICT out,
-	const gf64_t *HEDLEY_RESTRICT in,
+	gf64_t *out,
+	const gf64_t *in,
 	size_t N
 ) {
 	const size_t LANES = 8;
