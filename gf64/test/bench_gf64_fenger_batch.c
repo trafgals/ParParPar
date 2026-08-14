@@ -60,7 +60,7 @@ static void bench_shape(const char *name, size_t N, size_t R, size_t B,
 	}
 	for (size_t i = 0; i < N * B; i++) in[i] = next_rand();
 
-	const size_t Ks[] = {1, 4, 8};
+	const size_t Ks[] = {1, 4, 8, 16, 32};
 	double base[1] = {0.0};  /* K=1 column time (speedup denominator) */
 	double t0 = now_sec();
 	/* Warm-up at the default K (also pins the env-cache-free read). */

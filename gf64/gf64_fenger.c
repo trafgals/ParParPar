@@ -316,7 +316,7 @@ void gf64_fenger_execute(
  * pointwise, same combine), so the batched result is bit-exact to the
  * per-word loop — pinned by test_gf64_fenger_batch.
  *
- * The env var PAR3_FENGER_BATCH_WORDS (default 4, clamp [1, 16])
+ * The env var PAR3_FENGER_BATCH_WORDS (default 4, clamp [1, 32])
  * selects K; 1 selects the per-word loop above. Read per call (no
  * cache) so tests can flip it between runs.
  * --------------------------------------------------------------------------*/
@@ -325,7 +325,7 @@ static size_t fenger_batch_words(void) {
 	const char *e = getenv("PAR3_FENGER_BATCH_WORDS");
 	long v = (e != NULL) ? strtol(e, NULL, 10) : 4;
 	if (v < 1) v = 1;
-	if (v > 16) v = 16;
+	if (v > 32) v = 32;
 	return (size_t)v;
 }
 
@@ -419,7 +419,7 @@ static void fenger_interp_recurse_batch(
 	if (fenger_hqc_eligible(f_size + 1, f_size, N_at_lev)) {
 		const size_t n = 2 * f_size; /* next_pow2(max(2·f_size, N_at_lev)) */
 		const size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n);
-		gf64_t *ptrs[16];
+		gf64_t *ptrs[32];
 		for (size_t k = 0; k < K; k++) ptrs[k] = slot2 + k * N_at_lev;
 		fenger_batch_shared_mul(ptrs, K, P_R, f_size + 1, slot0, f_size,
 		                        N_at_lev, mul_scratch, sw);
@@ -531,7 +531,7 @@ static void fenger_eval_recurse_batch(
 	}
 
 	/* 2K entries: left children occupy [0, K), right children [K, 2K). */
-	size_t child_degs[32];
+	size_t child_degs[64];
 	if (any_needs && fenger_hqc_eligible(child_deg + 1, m_max, child_deg)) {
 		/* Shared reciprocals: rev(P)^{-1} mod x^{m_max} (P monic, so
 		 * rev(P)[0] = 1 != 0). */
@@ -547,7 +547,7 @@ static void fenger_eval_recurse_batch(
 
 		const size_t n = 2 * child_deg;
 		const size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n);
-		gf64_t *ptrs[16];
+		gf64_t *ptrs[32];
 
 		/* rev_f slabs (zero-padded to m_max; aliases the q output slab —
 		 * safe: the batch mul reads f_k into its transform buffer before
