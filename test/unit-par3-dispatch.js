@@ -330,6 +330,17 @@ function run() {
     var jsHash = b2.jsHash;
     bug2Info = { nativeHash: nativeHash, jsHash: jsHash, observedError: observedError };
 
+    if (b2.skipped) {
+      // Stub/non-x86 build: the native kernel was not loadable, so the
+      // native-vs-JS parity comparison is vacuous — report a genuine SKIP
+      // (not "archives match") and exit 0 (cubic review on PR #64, round 3).
+      console.log('--- Bug 2 (XOR vs +) ---');
+      console.log('  RESULT: SKIPPED — native binding not usable, native-vs-JS parity not exercised');
+      console.log('\nSKIP: both JS path math checks (native binding unavailable for parity)');
+      rmrf(tempDir);
+      process.exit(0);
+    }
+
     if (!observedError && nativeHash && jsHash && nativeHash !== jsHash) {
       bug2Failed = true;
     }

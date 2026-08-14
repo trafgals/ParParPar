@@ -178,18 +178,24 @@ function runRepairScenario(tempDir) {
       if (err) { rmrf(tempDir); return resolve(new Error('setup create failed: ' + err.message)); }
       try {
         rewriteCauTo24(par3File);
-        var corrupted = corruptDataBlocks(par3File, [1]);
-        // The corruption must actually have hit block 1 — otherwise the
-        // archive is intact and repair takes the no-repair-needed path,
-        // and the test would pass without exercising the recovery path
-        // (cubic review on PR #64, round 2).
-        if (corrupted.indexOf(1) === -1) {
-          rmrf(tempDir);
-          return resolve(new Error('setup corruption failed: DATA packet for block 1 not found'));
-        }
       } catch (e) {
         rmrf(tempDir);
         return resolve(new Error('setup rewrite failed: ' + e.message));
+      }
+      var corrupted;
+      try {
+        corrupted = corruptDataBlocks(par3File, [1]);
+      } catch (e) {
+        rmrf(tempDir);
+        return resolve(new Error('setup corruption failed: ' + e.message));
+      }
+      // The corruption must actually have hit block 1 — otherwise the
+      // archive is intact and repair takes the no-repair-needed path,
+      // and the test would pass without exercising the recovery path
+      // (cubic review on PR #64, round 2).
+      if (corrupted.indexOf(1) === -1) {
+        rmrf(tempDir);
+        return resolve(new Error('setup corruption failed: DATA packet for block 1 not found'));
       }
 
       var outDir = path.join(tempDir, 'repaired');
