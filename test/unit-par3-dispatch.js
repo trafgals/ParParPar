@@ -333,9 +333,16 @@ function run() {
     if (b2.skipped) {
       // Stub/non-x86 build: the native kernel was not loadable, so the
       // native-vs-JS parity comparison is vacuous — report a genuine SKIP
-      // (not "archives match") and exit 0 (cubic review on PR #64, round 3).
+      // (not "archives match") — but do NOT mask a Bug 1 regression: the
+      // dispatch-check scenario already ran and its failure must still
+      // fail the test (cubic review on PR #64, round 4).
       console.log('--- Bug 2 (XOR vs +) ---');
       console.log('  RESULT: SKIPPED — native binding not usable, native-vs-JS parity not exercised');
+      if (bug1Failed) {
+        console.error('\nTEST FAILED: Bug 1 (dispatch check) present on a stub build: ' + (bug1Error ? bug1Error.message : 'Singular matrix'));
+        rmrf(tempDir);
+        process.exit(1);
+      }
       console.log('\nSKIP: both JS path math checks (native binding unavailable for parity)');
       rmrf(tempDir);
       process.exit(0);
