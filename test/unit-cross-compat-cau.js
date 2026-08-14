@@ -34,6 +34,7 @@
 var fs = require('fs');
 var path = require('path');
 var os = require('os');
+var crypto = require('crypto');
 var par3 = require('../lib/par3gen.js');
 
 function makeTempDir() {
@@ -94,6 +95,133 @@ function buildMinimalArchive() {
     makePacket('PAR STA\0', staBody),
     makePacket('PAR CAU\0', cauBody),
   ]);
+}
+
+// Find all DATA packet offsets in a PAR3 archive. Returns array of
+// { start, pktLen, blockIdx } records, in file order.
+function findDataPackets(content) {
+  var dataPackets = [];
+  var idx = 0;
+  while ((idx = content.indexOf('PAR DAT\0', idx)) !== -1) {
+    var pktStart = idx - 40;
+    if (pktStart >= 0 && content.slice(pktStart, pktStart + 8).toString('ascii') === 'PAR3\0PKT') {
+      var pktLen = Number(content.readBigUInt64LE(pktStart + 24));
+      dataPackets.push({
+        start: pktStart,
+        pktLen: pktLen,
+        blockIdx: Number(content.readBigUInt64LE(pktStart + 48))
+      });
+    }
+    idx += 8;
+  }
+  return dataPackets;
+}
+
+// Corrupt the body of specific DATA packets (write zeros) so their BLAKE3
+// checksum check fails and they're treated as missing during repair.
+function corruptDataBlocks(par3File, blockIndices) {
+  var content = fs.readFileSync(par3File);
+  var dataPackets = findDataPackets(content);
+  var fd = fs.openSync(par3File, 'r+');
+  var corrupted = [];
+  dataPackets.forEach(function(p) {
+    if (blockIndices.indexOf(p.blockIdx) !== -1) {
+      var zeroBuf = Buffer.alloc(p.pktLen - 48);
+      fs.writeSync(fd, zeroBuf, 0, zeroBuf.length, p.start + 48);
+      corrupted.push(p.blockIdx);
+    }
+  });
+  fs.closeSync(fd);
+  return corrupted;
+}
+
+// Rewrite a real archive's 40-byte CAU packet to the 24-byte par3cmdline
+// form (drop recovery_count) and fix the packet-length field so the
+// streaming parser advances correctly.
+function rewriteCauTo24(par3File) {
+  var content = fs.readFileSync(par3File);
+  var idx = content.indexOf('PAR CAU\0');
+  if (idx === -1) throw new Error('no CAU packet found');
+  var pktStart = idx - 40;
+  var pktLen = Number(content.readBigUInt64LE(pktStart + 24));
+  var bodyStart = pktStart + 48;
+  var oldBody = content.slice(bodyStart, bodyStart + pktLen - 48);
+  if (oldBody.length < 32) return; // already short
+
+  var newBody = oldBody.slice(0, 24);
+  var newPktLen = 48 + newBody.length;
+  var out = Buffer.concat([
+    content.slice(0, pktStart + 24),
+    (function() { var b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(newPktLen), 0); return b; })(),
+    content.slice(pktStart + 32, bodyStart),
+    newBody,
+    content.slice(bodyStart + oldBody.length)
+  ]);
+  fs.writeFileSync(par3File, out);
+}
+
+// Repair-path scenario: a real archive whose CAU was rewritten to the
+// 24-byte form must still repair after a data-block corruption — the
+// recovery count is derived from the recovery-block packets (the
+// pass-1 recoveryOffsets; cubic review on PR #64 pinned that the
+// derivation must not read pass-2 data).
+function runRepairScenario(tempDir) {
+  return new Promise(function(resolve) {
+    var par3 = require('../lib/par3gen.js');
+    var testFile = path.join(tempDir, 'repair_input.bin');
+    var outputBase = path.join(tempDir, 'repair_out');
+    var par3File = outputBase + '.par3';
+    var originalData = crypto.randomBytes(1024 * 1024 * 2); // 2 blocks
+
+    fs.writeFileSync(testFile, originalData);
+    par3.create([testFile], outputBase, { outputBase: outputBase, recoverySlices: 3 }, function(err) {
+      if (err) { rmrf(tempDir); return resolve(new Error('setup create failed: ' + err.message)); }
+      try {
+        rewriteCauTo24(par3File);
+      } catch (e) {
+        rmrf(tempDir);
+        return resolve(new Error('setup rewrite failed: ' + e.message));
+      }
+      var corrupted;
+      try {
+        corrupted = corruptDataBlocks(par3File, [1]);
+      } catch (e) {
+        rmrf(tempDir);
+        return resolve(new Error('setup corruption failed: ' + e.message));
+      }
+      // The corruption must actually have hit block 1 — otherwise the
+      // archive is intact and repair takes the no-repair-needed path,
+      // and the test would pass without exercising the recovery path
+      // (cubic review on PR #64, round 2).
+      if (corrupted.indexOf(1) === -1) {
+        rmrf(tempDir);
+        return resolve(new Error('setup corruption failed: DATA packet for block 1 not found'));
+      }
+
+      var outDir = path.join(tempDir, 'repaired');
+      fs.mkdirSync(outDir);
+      par3.repair(par3File, outDir, {}, function(err2) {
+        var finish = function(err3) {
+          rmrf(tempDir);
+          resolve(err3);
+        };
+        if (err2) return finish(new Error('repair failed on 24-byte-CAU archive: ' + err2.message));
+        // The repair writes the FULL reconstructed file to block_0.dat
+        // (the no-repair-needed path's convention) plus one block_<idx>.dat
+        // per reconstructed block for inspection — compare block_0.dat
+        // against the original input.
+        var fullPath = path.join(outDir, 'block_0.dat');
+        if (!fs.existsSync(fullPath)) {
+          return finish(new Error('repair produced no block_0.dat output'));
+        }
+        var repaired = fs.readFileSync(fullPath);
+        if (!repaired.equals(originalData)) {
+          return finish(new Error('repaired output differs from the original input'));
+        }
+        finish(null);
+      });
+    });
+  });
 }
 
 function run() {
@@ -174,6 +302,17 @@ function run() {
   });
 }
 
-run().then(function(exitCode) {
-  process.exit(exitCode);
+run().then(function(verifyExit) {
+  if (verifyExit !== 0) {
+    process.exit(verifyExit);
+  }
+  // Verify-path scenario passed — now the repair-path scenario.
+  return runRepairScenario(makeTempDir()).then(function(repairError) {
+    if (repairError) {
+      console.error('TEST FAILED:', repairError.message);
+      process.exit(1);
+    }
+    console.log('OK: repair recovered a corrupted block from a 24-byte-CAU archive');
+    process.exit(0);
+  });
 });
