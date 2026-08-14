@@ -224,6 +224,21 @@ function runBug2(tempDir) {
     // for the native create would compare JS-kernel vs JS-kernel and
     // could never detect a JS/native divergence (cubic review on PR #64).
 
+    // Guard: on stub/non-x86 builds the .node file exists but exports too
+    // few keys, so getGf64Binding() falls back to the JS kernel and the
+    // 'native' create would silently be JS — the comparison would be
+    // JS-vs-JS and could never detect a divergence. Skip the compare when
+    // the loaded binding does not actually provide the native kernels
+    // (cubic review on PR #64, round 2).
+    var binding = null;
+    try {
+      binding = require('../build/Release/parpar_gf64.node');
+    } catch (e) { /* missing — the JS-only fallback below covers it */ }
+    if (!binding || typeof binding.compute_recovery_full !== 'function' || typeof binding.compute_recovery !== 'function') {
+      console.log('  SKIP: native binding not usable (compute_recovery/compute_recovery_full missing) — native-vs-JS parity not exercised');
+      return resolve({ observedError: null, nativeHash: null, jsHash: null, skipped: true });
+    }
+
     var observedError = null;
     var nativeHash = null;
     var jsHash = null;

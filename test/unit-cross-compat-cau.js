@@ -175,31 +175,44 @@ function runRepairScenario(tempDir) {
 
     fs.writeFileSync(testFile, originalData);
     par3.create([testFile], outputBase, { outputBase: outputBase, recoverySlices: 3 }, function(err) {
-      if (err) return resolve(new Error('setup create failed: ' + err.message));
+      if (err) { rmrf(tempDir); return resolve(new Error('setup create failed: ' + err.message)); }
       try {
         rewriteCauTo24(par3File);
-        corruptDataBlocks(par3File, [1]);
+        var corrupted = corruptDataBlocks(par3File, [1]);
+        // The corruption must actually have hit block 1 — otherwise the
+        // archive is intact and repair takes the no-repair-needed path,
+        // and the test would pass without exercising the recovery path
+        // (cubic review on PR #64, round 2).
+        if (corrupted.indexOf(1) === -1) {
+          rmrf(tempDir);
+          return resolve(new Error('setup corruption failed: DATA packet for block 1 not found'));
+        }
       } catch (e) {
+        rmrf(tempDir);
         return resolve(new Error('setup rewrite failed: ' + e.message));
       }
 
       var outDir = path.join(tempDir, 'repaired');
       fs.mkdirSync(outDir);
       par3.repair(par3File, outDir, {}, function(err2) {
-        if (err2) return resolve(new Error('repair failed on 24-byte-CAU archive: ' + err2.message));
+        var finish = function(err3) {
+          rmrf(tempDir);
+          resolve(err3);
+        };
+        if (err2) return finish(new Error('repair failed on 24-byte-CAU archive: ' + err2.message));
         // The repair writes the FULL reconstructed file to block_0.dat
         // (the no-repair-needed path's convention) plus one block_<idx>.dat
         // per reconstructed block for inspection — compare block_0.dat
         // against the original input.
         var fullPath = path.join(outDir, 'block_0.dat');
         if (!fs.existsSync(fullPath)) {
-          return resolve(new Error('repair produced no block_0.dat output'));
+          return finish(new Error('repair produced no block_0.dat output'));
         }
         var repaired = fs.readFileSync(fullPath);
         if (!repaired.equals(originalData)) {
-          return resolve(new Error('repaired output differs from the original input'));
+          return finish(new Error('repaired output differs from the original input'));
         }
-        resolve(null);
+        finish(null);
       });
     });
   });
