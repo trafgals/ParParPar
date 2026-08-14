@@ -52,9 +52,9 @@ HEDLEY_BEGIN_C_DECLS
  * to this only when the host supports those features.
  */
 void gf64_mul_avx512(
-	gf64_t *HEDLEY_RESTRICT out,
-	const gf64_t *HEDLEY_RESTRICT a,
-	const gf64_t *HEDLEY_RESTRICT b,
+	gf64_t *out,
+	const gf64_t *a,
+	const gf64_t *b,
 	size_t N
 );
 

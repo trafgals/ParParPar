@@ -17,6 +17,7 @@ GF64_SOURCES := ../gf64_single.c \
 	../gf64_region_avx512.c \
 	../gf64_region_avx512_arr.c \
 	../gf64_mul_avx512.c \
+	../gf64_square_avx512.c \
 	../gf64_square.c \
 	../gf64_additive_fft.c \
 	../gf64_additive_fft_hqc2026.c \
@@ -29,6 +30,7 @@ GF64_SOURCES := ../gf64_single.c \
 	../gf64_invert_ssse3.c \
 	../gf64_invert_avx2.c \
 	../gf64_invert_avx512.c \
+	../gf64_invert_ita_avx512.c \
 	../gf64_invert_ita.c \
 	../gf64_poly_mul_karatsuba.c
 GF64_INCLUDES := -I..
@@ -49,18 +51,22 @@ TEST_GF64_POLY_MUL_KARATSUBA_SOURCES := test_gf64_poly_mul_karatsuba.c
 TEST_GF64_FENGER_KERNEL_SOURCES := test_gf64_fenger_kernel.c
 TEST_GF64_FENGER_PIPELINE_SOURCES := test_gf64_fenger_pipeline.c
 TEST_GF64_FENGER_PADDED_SOURCES := test_gf64_fenger_padded.c
+TEST_GF64_FENGER_BATCH_SOURCES := test_gf64_fenger_batch.c
 TEST_GF64_INVMOD_MOD_PARITY_SOURCES := test_gf64_invmod_mod_parity.c
 TEST_GF64_DIVMOD_PARITY_SOURCES := test_gf64_divmod_parity.c
 TEST_GF64_INTERP_PARITY_SOURCES := test_gf64_interp_parity.c
 TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES := test_gf64_additive_fft_hqc2026.c
+TEST_GF64_MUL_BATCH_SHARED_SOURCES := test_gf64_mul_batch_shared.c
+TEST_GF64_REGION_MULARR_SOURCES := test_gf64_region_mularr.c
 TEST_GF64_POLY_MUL_INTERNAL_DISPATCH_SOURCES := test_gf64_poly_mul_internal_dispatch.c
 BENCH_GF64_FENGER_VS_CAUCHY_SOURCES := bench_gf64_fenger_vs_cauchy.c
 BENCH_HQC_VS_KARATSUBA_SOURCES := bench_hqc_vs_karatsuba.c
 BENCH_GF64_SUBQUADRATIC_SOURCES := bench_gf64_subquadratic.c
+BENCH_GF64_FENGER_BATCH_SOURCES := bench_gf64_fenger_batch.c
 
-.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
+.PHONY: all test clean test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_region_mularr test_gf64_poly_mul_internal_dispatch test_gf64_fenger_batch bench_gf64_fenger_batch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
 
-all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
+all: test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_region_mularr test_gf64_poly_mul_internal_dispatch test_gf64_fenger_batch bench_gf64_fenger_batch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
 
 test: $(TEST_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCES) $(GF64_SOURCES)
@@ -75,18 +81,20 @@ test_gf64_mul_avx512: $(TEST_GF64_MUL_AVX512_SOURCES) ../gf64_mul_avx512.c ../gf
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MUL_AVX512_SOURCES) ../gf64_mul_avx512.c ../gf64_single.c
 
 # Parity test for the GF(2^64) Frobenius squaring (par3-cauchy-fft-kernel T2).
-# Compiles only gf64_square.c + gf64_single.c (the public scalar SSE2 reference
-# used for cross-checking). Needs AVX-512F at runtime.
-test_gf64_square: $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_single.c
+# Compiles gf64_square.c + the split gf64_square_avx512.c + gf64_single.c
+# (the public scalar SSE2 reference used for cross-checking). Needs
+# AVX-512F at runtime.
+test_gf64_square: $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_square_avx512.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SQUARE_SOURCES) ../gf64_square.c ../gf64_square_avx512.c ../gf64_single.c
 
 # Parity test for the Itoh-Tsujii batched inversion (par3-cauchy-fft-kernel T5).
-# Compiles only the four TUs the inverter transitively touches: the new
-# gf64_invert_ita.c plus the primitives it depends on (gf64_square.c,
-# gf64_mul_avx512.c) and the scalar reference gf64_single.c. Needs
-# AVX-512F + VPCLMULQDQ at runtime.
-test_gf64_invert_ita: $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_square.c ../gf64_mul_avx512.c ../gf64_single.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_square.c ../gf64_mul_avx512.c ../gf64_single.c
+# Compiles the seven TUs the inverter transitively touches: the split
+# gf64_invert_ita.c + gf64_invert_ita_avx512.c plus the primitives it
+# depends on (gf64_square.c, gf64_square_avx512.c, gf64_mul_avx512.c) and
+# the scalar reference gf64_single.c. Needs AVX-512F + VPCLMULQDQ at
+# runtime.
+test_gf64_invert_ita: $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_invert_ita_avx512.c ../gf64_square.c ../gf64_square_avx512.c ../gf64_mul_avx512.c ../gf64_single.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_INVERT_ITA_SOURCES) ../gf64_invert_ita.c ../gf64_invert_ita_avx512.c ../gf64_square.c ../gf64_square_avx512.c ../gf64_mul_avx512.c ../gf64_single.c
 
 # Scalar + AVX-512 Gao-Mateer-style additive FFT tests (par3-cauchy-fft-kernel T3 + T4).
 # The AVX-512 implementation lives in gf64_additive_fft.c (same TU as the
@@ -107,6 +115,19 @@ test_gf64_additive_fft: $(TEST_GF64_ADDITIVE_FFT_SOURCES) $(GF64_SOURCES)
 # sizes go up to 131072 for the recursive family.
 test_gf64_additive_fft_hqc2026: $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) $(GF64_SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_ADDITIVE_FFT_HQC2026_SOURCES) $(GF64_SOURCES)
+
+# Batch-shared mul parity test (issue #59 §4 A3): K products with one
+# shared operand must be bit-exact to K sequential
+# gf64_addfft64_poly_mul_recursive_scratch calls (scalar and AVX-512).
+test_gf64_mul_batch_shared: $(TEST_GF64_MUL_BATCH_SHARED_SOURCES) $(GF64_SOURCES)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_MUL_BATCH_SHARED_SOURCES) $(GF64_SOURCES)
+
+# Region mul_arr per-word CYCLING contract test (branch drive-by): the
+# SIMD n_coeff > 1 general case was a dot product; the dispatched
+# gf64_region_mul_arr must match the scalar reference for every method
+# the host can run, at n_coeff in {1,2,3,4,7} and odd lens (tail epilog).
+test_gf64_region_mularr: $(TEST_GF64_REGION_MULARR_SOURCES) $(GF64_SOURCES)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_REGION_MULARR_SOURCES) $(GF64_SOURCES)
 
 # FFT-based bottom-up subproduct tree test (par3-cauchy-fft-kernel T6).
 # gf64_subproduct.c (T6) depends on gf64_additive_fft.c (T3) for gf64_poly_mul,
@@ -242,6 +263,17 @@ test_gf64_poly_mul_internal_dispatch: $(TEST_GF64_POLY_MUL_INTERNAL_DISPATCH_SOU
 bench_gf64_fenger_vs_cauchy: $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 	$(CC) $(CFLAGS) -fopenmp $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_VS_CAUCHY_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
+# Issue #59 A3 (word-batched tree passes): bit-exact parity of the
+# K-word-batched execute against the single-word reference, driven via
+# PAR3_FENGER_BATCH_WORDS. Same source set as test_gf64_fenger_pipeline.
+test_gf64_fenger_batch: $(TEST_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+
+# Issue #59 A3 evidence bench: K = 1/4/8 execute wall-times at the
+# reference shapes. Same source set as test_gf64_fenger_batch.
+bench_gf64_fenger_batch: $(BENCH_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BENCH_GF64_FENGER_BATCH_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
+
 # HQC FFT vs Karatsuba polynomial multiplication benchmark.
 # Establishes GF64_HQC_FFT_MIN crossover — informs Step 5 dispatch wiring.
 # HQC FFT vs Karatsuba polynomial multiplication benchmark.
@@ -264,4 +296,4 @@ bench_gf64_subquadratic: $(BENCH_GF64_SUBQUADRATIC_SOURCES) $(GF64_SOURCES) ../g
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BENCH_GF64_SUBQUADRATIC_SOURCES) $(GF64_SOURCES) ../gf64_fenger.c
 
 clean:
-	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_poly_mul_internal_dispatch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
+	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_region_mularr test_gf64_poly_mul_internal_dispatch test_gf64_fenger_batch bench_gf64_fenger_batch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic

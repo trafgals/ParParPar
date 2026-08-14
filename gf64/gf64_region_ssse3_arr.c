@@ -168,26 +168,21 @@ void gf64_region_mul_ssse3_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLEY
 			i++;
 		}
 	} else {
-		size_t blocks = len / 2;
-		i = 0;
+		/* General case (n_coeff > 1): PER-WORD coefficient cycling —
+		 * out[i] = in[i] * coeff[i % n_coeff] (NOT a dot product; the
+		 * SUM semantics belong to gf64_region_muladd_*). The packed
+		 * clmul helper multiplies both elements by ONE coefficient, so
+		 * the odd element is recomputed with its own cycling index. */
 		for (size_t b = 0; b < blocks; b++) {
-			uint64_t acc0 = 0, acc1 = 0;
-			for (size_t c = 0; c < n_coeff; c++) {
-				uint64_t r0, r1;
-				gf64_clmul_reduce_64x64_packed(in[i + 0], in[i + 1], coeff[c], &r0, &r1);
-				acc0 ^= r0;
-				acc1 ^= r1;
-			}
-			out[i + 0] = acc0;
-			out[i + 1] = acc1;
+			uint64_t r0, r1;
+			gf64_clmul_reduce_64x64_packed(in[i + 0], in[i + 1],
+				coeff[(i + 0) % n_coeff], &r0, &r1);
+			out[i + 0] = r0;
+			out[i + 1] = gf64_mul_reference(in[i + 1], coeff[(i + 1) % n_coeff]);
 			i += 2;
 		}
 		while (i < len) {
-			uint64_t sum = 0;
-			for (size_t c = 0; c < n_coeff; c++) {
-				sum ^= gf64_mul_reference(in[i], coeff[c]);
-			}
-			out[i] = sum;
+			out[i] = gf64_mul_reference(in[i], coeff[i % n_coeff]);
 			i++;
 		}
 	}

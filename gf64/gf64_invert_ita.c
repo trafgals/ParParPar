@@ -3,8 +3,14 @@
  * gf64/gf64_invert_ita.c — Itoh-Tsujii batched inversion in GF(2^64)
  *
  * T5 of the par3-cauchy-fft-kernel plan. Provides:
- *   void gf64_invert_ita_batch(gf64_t* out, const gf64_t* in, size_t N)
  *   gf64_t gf64_invert_ita_one (gf64_t a)
+ *
+ * The AVX-512 batched kernel (gf64_invert_ita_batch) was split into
+ * gf64/gf64_invert_ita_avx512.c (issue #62): the MSVC /arch flag is
+ * whole-TU, and compiling the scalar inversion with /arch:AVX512 let the
+ * auto-vectorizer emit EVEX (ZMM) instructions into the scalar path,
+ * which SIGILLs on hosts without AVX-512 even when the dispatcher
+ * correctly selected the AVX-2 method.
  *
  * MATH
  *   In GF(2^k), a^(2^k - 1) = 1 for any non-zero a (Fermat's Little
@@ -46,8 +52,9 @@
  *
  * ISA / DISPATCH
  *   gf64_invert_ita_one is portable C (single-element, scalar). The
- *   AVX-512 version of gf64_invert_ita_batch is compiled with
- *   __attribute__((target("avx512f,vpclmulqdq"))) — it calls
+ *   AVX-512 version of gf64_invert_ita_batch lives in
+ *   gf64_invert_ita_avx512.c (compiled with /arch:AVX512 on MSVC,
+ *   __attribute__((target("avx512f,vpclmulqdq"))) on GCC/Clang) — it calls
  *   gf64_mul_avx512 (which requires VPCLMULQDQ) and gf64_square_avx512
  *   (which requires only AVX-512F but is a separate TU compiled with that
  *   target). The N % 8 tail falls back to gf64_invert_ita_one (scalar).
@@ -130,84 +137,6 @@ gf64_t gf64_invert_ita_one(gf64_t a) {
 	 * = a^(-1) by Fermat's Little Theorem (a^(2^64 - 1) = 1 in GF(2^64)). */
 	gf64_square(&sq, &t, 1);
 	return sq;
-}
-
-/* ---------------------------------------------------------------------------
- * AVX-512 vectorized Itoh-Tsujii batched inversion of a length-N vector.
- *
- *   out[i] = gf64_invert_ita_one(in[i])   for i in [0, N)
- *
- * Per outer iteration: load 8 inputs, run the 63-step squaring + 62-step
- * multiplication chain on the 8 lanes in lockstep using the existing
- * vectorized primitives from T1 (gf64_mul_avx512) and T2
- * (gf64_square_avx512), then store 8 inverses. N % 8 tail falls back to
- * gf64_invert_ita_one.
- *
- * The 8 inputs are loaded once into `a_in_buf[8]` and reused across all
- * 62 chain iterations — a single load amortizes the input bandwidth. The
- * running state `t_buf[8]` is updated in place via the aliasing contract
- * of both gf64_square_avx512 and gf64_mul_avx512 (`out` MAY alias `in`
- * and `a` respectively; the multiply's `a` parameter is the running t
- * buffer and `b` is the saved input buffer).
- *
- * Target attribute: avx512f + vpclmulqdq (broader of the two callees'
- * targets — gf64_mul_avx512 requires VPCLMULQDQ, gf64_square_avx512
- * requires only AVX-512F).
- *
- * Bit-exact to gf64_invert_ita_one applied element-wise (verified by
- * test/test_gf64_invert_ita.c). Naive in counter: each outer iteration
- *   = 62 * (1 squaring + 1 mul by a) + 1 squaring
- *   = 63 squarings + 62 multiplications of 8 elements per call.
- * --------------------------------------------------------------------------- */
-__attribute__((target("avx512f,vpclmulqdq")))
-void gf64_invert_ita_batch(
-	gf64_t *HEDLEY_RESTRICT out,
-	const gf64_t *HEDLEY_RESTRICT in,
-	size_t N
-) {
-	if (N == 0) return;
-
-	/* LANES must be an integer constant expression for MSVC stack-array
-	 * sizing (C2057: "expected constant expression"). A `const size_t` is
-	 * NOT acceptable to MSVC; a #define is. Keep LANES == 8 (one ZMM). */
-#define LANES 8
-	gf64_t a_in_buf[LANES];   /* saved inputs (lane-aligned) */
-	gf64_t t_buf[LANES];      /* running state across the chain */
-
-	size_t i = 0;
-	for (; i + LANES <= N; i += LANES) {
-		/* Snapshot the 8 inputs once. The whole 62-step chain reads them.
-		 * Unaligned variant — safe regardless of stack alignment and
-		 * equivalent in cost on Zen4 / Ice Lake (no AVX-512 unaligned
-		 * penalty once you cross the split-load threshold). */
-		__m512i a_in_zmm = _mm512_loadu_si512((const __m512i *)(in + i));
-		_mm512_storeu_si512((__m512i *)a_in_buf, a_in_zmm);
-
-		/* t = a (initial value of the chain). */
-		_mm512_storeu_si512((__m512i *)t_buf, a_in_zmm);
-
-		/* Itoh-Tsujii chain: t_k = t_{k-1}^2 * a for k = 2..63. */
-		for (int k = 2; k <= 63; k++) {
-			/* t = t^2 — in-place aliasing supported by gf64_square_avx512. */
-			gf64_square_avx512(t_buf, t_buf, LANES);
-			/* t = t * a_in_buf — in-place aliasing supported by
-			 * gf64_mul_avx512 (out is the running t, a is the same t,
-			 * b is the saved input). */
-			gf64_mul_avx512(t_buf, t_buf, a_in_buf, LANES);
-		}
-
-		/* Final squaring: t = a^(2^64 - 2) = a^(-1). */
-		gf64_square_avx512(t_buf, t_buf, LANES);
-
-		/* Store 8 inverses. */
-		_mm512_storeu_si512((__m512i *)(out + i),
-		                    _mm512_loadu_si512((const __m512i *)t_buf));
-	}
-
-	/* Scalar tail epilog (0..7 elements). */
-	for (; i < N; i++) {
-		out[i] = gf64_invert_ita_one(in[i]);
-	}
 }
 
 #endif /* GF64_INVERT_ITA_TU_BODY */

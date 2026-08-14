@@ -154,22 +154,23 @@
       "target_name": "gf64_avx512_arr",
       "type": "static_library",
       "defines": ["NDEBUG"],
-      # Polynomial API closure mirrors the corresponding GF64 test aggregate;
-      # keep each transitive translation unit explicit so static linking cannot
-      # silently drop a required symbol.
+      # Issue #62: this target compiles with /arch:AVX512 (MSVC) — a
+      # WHOLE-TU flag. It must contain ONLY translation units whose
+      # functions are dispatched exclusively under method==GF64_AVX512.
+      # The scalar pipeline TUs (gf64_additive_fft.c, hqc2026, subproduct,
+      # barycentric, mpe, karatsuba, fenger, square, invert_ita) were moved
+      # to gf64_pipeline: compiling them with /arch:AVX512 let the MSVC
+      # auto-vectorizer emit EVEX (ZMM) instructions into the scalar path,
+      # which SIGILLs on hosts without AVX-512 (windows-2025 fleet AMD
+      # Milan runners) even when the dispatcher selected the AVX-2 method.
+      # The AVX-512 halves of square.c / invert_ita.c were split into
+      # dedicated TUs below.
       "sources": [
         "gf64/gf64_region_avx512_arr.c",
         "gf64/gf64_invert_avx512.c",
         "gf64/gf64_mul_avx512.c",
-        "gf64/gf64_square.c",
-        "gf64/gf64_invert_ita.c",
-        "gf64/gf64_additive_fft.c",
-        "gf64/gf64_additive_fft_hqc2026.c",
-        "gf64/gf64_subproduct.c",
-        "gf64/gf64_barycentric.c",
-        "gf64/gf64_mpe.c",
-        "gf64/gf64_poly_mul_karatsuba.c",
-        "gf64/gf64_fenger.c"
+        "gf64/gf64_square_avx512.c",
+        "gf64/gf64_invert_ita_avx512.c"
       ],
       "include_dirs": ["gf64"],
       "conditions": [
@@ -184,8 +185,44 @@
       ]
     },
     {
+      # Issue #62: the scalar GF64 pipeline. On MSVC this target compiles
+      # with /arch:AVX2 (never AVX-512) so no EVEX/ZMM instructions can be
+      # auto-vectorized into the scalar path; on POSIX -mno-avx512f keeps
+      # the same guarantee (the AVX-512 functions carry per-function
+      # __attribute__((target(...))) markers, so they still compile).
+      # The AVX-512 kernels these TUs dispatch to live in gf64_avx512_arr.
+      "target_name": "gf64_pipeline",
+      "type": "static_library",
+      "defines": ["NDEBUG"],
+      "sources": [
+        "gf64/gf64_additive_fft.c",
+        "gf64/gf64_additive_fft_hqc2026.c",
+        "gf64/gf64_subproduct.c",
+        "gf64/gf64_barycentric.c",
+        "gf64/gf64_mpe.c",
+        "gf64/gf64_poly_mul_karatsuba.c",
+        "gf64/gf64_fenger.c",
+        "gf64/gf64_square.c",
+        "gf64/gf64_invert_ita.c"
+      ],
+      "include_dirs": ["gf64"],
+      "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
+      "cflags_cc": ["-fpermissive"],
+      "conditions": [
+        ['target_arch in "ia32 x64" and OS=="win"', {
+          "cflags": ["/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS"],
+          "msvs_settings": {
+            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX2"], "EnableEnhancedInstructionSet": "0"}
+          }
+        }],
+        ['target_arch=="arm64" or target_arch=="arm"', {
+          "sources": []
+        }]
+      ]
+    },
+    {
       "target_name": "parpar_gf64",
-      "dependencies": ["parpar_gf64_cpu_detect", "gf64_avx512", "gf64_avx512_arr"],
+      "dependencies": ["parpar_gf64_cpu_detect", "gf64_avx512", "gf64_avx512_arr", "gf64_pipeline"],
       "conditions": [
         ['target_arch in "ia32 x64"', {
           "sources": [

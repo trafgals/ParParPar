@@ -114,6 +114,11 @@ void gf64_poly_mul_padded(
  */
 
 /* ----- Length caps (exposed for dispatch) ----- */
+/* Minimum operand/out length for the HQC FFT tier (same value as the
+ * private GF64_HQC_FFT_MIN in gf64_additive_fft.c — the dispatch gate
+ * in gf64_additive_fft.c requires all three of len_a/len_b/out_len
+ * >= this). */
+#define GF64_HQC_FFT_MIN          ((size_t)96)
 #define GF64_HQC_MAX_MATRIXFORM_N ((size_t)16384)
 /* Matrix-free recursive path: Chen 2018 Algorithm 1 general case. At
  * power-of-2 n ≤ 2^20 (= 1 M), the polyeval-form `hqc_cvt` /
@@ -177,6 +182,47 @@ void gf64_addfft64_poly_mul_recursive_scratch(
 	gf64_t *out,
 	const gf64_t *a, size_t len_a,
 	const gf64_t *b, size_t len_b,
+	size_t out_len,
+	gf64_t *scratch, size_t scratch_words
+);
+
+/*
+ * gf64_addfft64_poly_mul_batch_shared — K products with ONE shared operand
+ * (issue #59 §4 A3 word-batching primitive).
+ *
+ *   outs[k][0..out_len) = shared[0..len_shared) * f_k[0..len_f)
+ *   for k in [0, K), where f_k = f + k*len_f (K contiguous slabs).
+ *
+ * The shared operand's forward transform is computed ONCE per call;
+ * each f_k is forward-transformed, pointwise-multiplied by the shared
+ * transform, and inverse-transformed. Bit-exact to K sequential
+ * gf64_addfft64_poly_mul_recursive_scratch calls — identical pipeline
+ * and per-word operation order; the shared transform is a pure hoist
+ * (pinned by test_gf64_mul_batch_shared).
+ *
+ * Constraints (the caller's responsibility, mirroring the single-mul
+ * dispatch): all K products must map onto the SAME padded size n —
+ * uniform len_f and out_len; variable-length operands must be
+ * zero-extended by the caller. Sizes outside the HQC window
+ * (n < GF64_HQC_FFT_MIN or n > GF64_HQC_MAX_LM_N) are not handled
+ * here; the caller falls back to per-word muls.
+ *
+ * Scratch: [pt: n | pf: n | inner: 2n] = 4n total (same budget as the
+ * single-mul entry — pt holds the shared transform across the K words,
+ * pf is reused per word). n = next_pow2(max(len_shared + len_f - 1,
+ * out_len)); assert n <= GF64_HQC_MAX_LM_N.
+ */
+void gf64_addfft64_poly_mul_batch_shared(
+	gf64_t *const *outs, size_t K,
+	const gf64_t *shared, size_t len_shared,
+	const gf64_t *f, size_t len_f,
+	size_t out_len,
+	gf64_t *scratch, size_t scratch_words
+);
+void gf64_addfft64_poly_mul_batch_shared_avx512(
+	gf64_t *const *outs, size_t K,
+	const gf64_t *shared, size_t len_shared,
+	const gf64_t *f, size_t len_f,
 	size_t out_len,
 	gf64_t *scratch, size_t scratch_words
 );

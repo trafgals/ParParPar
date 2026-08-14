@@ -308,7 +308,13 @@ try {
 
 if (encoder) {
 	var rngG = mulberry32(0xCAFEBABE);
-	var nativeNCoeffs = [1, 2, 4];
+	// n_coeff=1 (fast path), 2/4 (SIMD general case), 3 (non-pow2
+	// cycling + tail) — the cycling contract out[w]=in[w]*coeff[w%nc]
+	// was previously misimplemented as a dot product in the SIMD
+	// region kernels (fixed with the AVX-512/AVX-2/SSSE3 general-case
+	// rewrite; regression pinned by the odd-length trials too, which
+	// exercise the scalar tail epilog).
+	var nativeNCoeffs = [1, 2, 4, 3];
 	var nativeLenWords = 16;
 	var nativeTrial = 0;
 
@@ -351,6 +357,43 @@ if (encoder) {
 			}
 		}
 	}
+
+	// Odd-length trials: len=17 forces the SIMD kernels' scalar tail
+	// epilog (len % 4 != 0), whose cycling index must also hold.
+	var nativeLenOdd = 17;
+	[2, 3].forEach(function (ncOdd) {
+		[0, 1].forEach(function (repOdd) {
+			nativeTrial++;
+			var nativeIn = Buffer.alloc(nativeLenOdd * 8);
+			for (var w = 0; w < nativeLenOdd; w++) {
+				var hi = (rngG() * 4294967296) >>> 0;
+				var lo = (rngG() * 4294967296) >>> 0;
+				nativeIn.writeBigUInt64LE((BigInt(hi) << 32n) | BigInt(lo), w * 8);
+			}
+			var nativeCoeffs = Buffer.alloc(ncOdd * 8);
+			for (var c = 0; c < ncOdd; c++) {
+				var chi = (rngG() * 4294967296) >>> 0;
+				var clo = (rngG() * 4294967296) >>> 0;
+				nativeCoeffs.writeBigUInt64LE((BigInt(chi) << 32n) | BigInt(clo), c * 8);
+			}
+			var nativeOutJS = Buffer.alloc(nativeLenOdd * 8);
+			mod.mul_arr(nativeOutJS, nativeIn, nativeCoeffs, nativeLenOdd, ncOdd);
+			var nativeOutNat = Buffer.alloc(nativeLenOdd * 8);
+			nativeOutNat.fill(0);
+			encoder.mul_arr(nativeOutNat, nativeIn, nativeCoeffs, nativeLenOdd, ncOdd);
+			var label = 'Native parity trial ' + nativeTrial + ': n_coeff=' + ncOdd + ', len_words=' + nativeLenOdd + ' (tail)';
+			if (!nativeOutJS.equals(nativeOutNat)) {
+				console.error('    FAIL: ' + label);
+				console.error('    JS:  ' + nativeOutJS.toString('hex'));
+				console.error('    NAT: ' + nativeOutNat.toString('hex'));
+				failed++;
+				process.exitCode = 1;
+			} else {
+				console.log('  PASS: ' + label);
+				passed++;
+			}
+		});
+	});
 }
 
 // ============================================================================

@@ -399,11 +399,7 @@ function makeTestInputs(numWords, n_coeff) {
 		coeff[c] = (BigInt(hi) << 32n) | BigInt(lo);
 	}
 	for (var w = 0; w < numWords; w++) {
-		var sum = 0n;
-		for (var c = 0; c < n_coeff; c++) {
-			sum ^= gf64_mul(inp[w], coeff[c]);
-		}
-		expected[w] = sum;
+		expected[w] = gf64_mul(inp[w], coeff[w % n_coeff]);
 	}
 	return { inp: inp, coeff: coeff, expected: expected };
 }
@@ -425,7 +421,12 @@ function fromBuffer(buf) {
 	return arr;
 }
 
-// TDD RED: Make n_coeff > 1 cases fail deliberately until kernel is implemented
+// n_coeff > 1 section: the SIMD region kernels previously computed the
+// MULADD dot product (XOR_c in[w]*coeff[c]) here; the documented +
+// JS-reference contract is per-word CYCLING (out[w] = in[w] *
+// coeff[w % n_coeff]). The kernels were fixed (per-lane coefficient
+// gather, gf64_region_*_arr.c) and the expectations below pin the
+// cycling contract.
 for (var ci = 0; ci < COEFF_COUNTS.length; ci++) {
   var n_coeff = COEFF_COUNTS[ci];
   for (var bi = 0; bi < BLOCK_SIZES_C.length; bi++) {
@@ -506,11 +507,7 @@ function makeVectorizedTestInputs(numWords, n_coeff, rng) {
 		coeff[c] = (BigInt(hi) << 32n) | BigInt(lo);
 	}
 	for (var w = 0; w < numWords; w++) {
-		var sum = 0n;
-		for (var c = 0; c < n_coeff; c++) {
-			sum ^= gf64_mul(inp[w], coeff[c]);
-		}
-		expected[w] = sum;
+		expected[w] = gf64_mul(inp[w], coeff[w % n_coeff]);
 	}
 	return { inp: inp, coeff: coeff, expected: expected };
 }
@@ -659,8 +656,9 @@ if (process.env.PAR3_KERNEL_MICROBENCH === '1') {
 //   - 200 randomized scenarios at block_size = 64 elements (8 words).
 //   - Per scenario: zero-init out[], fill coeff[0..G-1] with random 64-bit
 //     values, fill in[] with random 64-bit values, call encoder.mul_arr,
-//     compare element-wise against the JS XOR-fold reference
-//     (jsMulArr defined below — out[w] = XOR_c (in[w] * coeff[c])).
+//     compare element-wise against the JS CYCLING reference
+//     (out[w] = in[w] * coeff[w % G] — the mul_arr contract; the
+//     XOR-fold belongs to the muladd entry, not this section).
 //   - One negative scenario per group size: deliberately flip a bit in
 //     coeff[0] and assert the comparison FAILS — proves the test is
 //     non-trivial (not always-true / not always-pass).
@@ -752,15 +750,13 @@ function _runGroupSizeParity(detectedMethodName) {
 			fillRandCoeff(coeffBuf, G, rngF);
 			fillRandU64(inBuf, rngF);
 
-			// Compute JS XOR-fold reference: ref[w] = XOR_c (in[w] * coeff[c]).
-			// Reads inBuf and coeffBuf (both populated above), writes refBuf.
+			// Compute JS CYCLING reference (the mul_arr contract —
+			// out[w] = in[w] * coeff[w % G]; the XOR-fold belongs to the
+			// muladd entry, which this section does not call). Reads
+			// inBuf and coeffBuf (both populated above), writes refBuf.
 			for (var w = 0; w < NUM_WORDS_F; w++) {
-				var sum = 0n;
 				var inW = inBuf.readBigUInt64LE(w * 8);
-				for (var c = 0; c < G; c++) {
-					sum ^= gf64_mul(inW, coeffBuf.readBigUInt64LE(c * 8));
-				}
-				refBuf.writeBigUInt64LE(sum, w * 8);
+				refBuf.writeBigUInt64LE(gf64_mul(inW, coeffBuf.readBigUInt64LE((w % G) * 8)), w * 8);
 			}
 
 			// Run the kernel: zero-init outBuf then call mul_arr(out, in, coeff, len, G).
@@ -799,14 +795,10 @@ function _runGroupSizeParity(detectedMethodName) {
 		fillRandCoeff(coeffBuf, G, negRng);
 		fillRandU64(inBuf, negRng);
 
-		// Compute reference (uses unflipped coeff).
+		// Compute reference (uses unflipped coeff) — CYCLING contract.
 		for (var wn = 0; wn < NUM_WORDS_F; wn++) {
-			var sumN = 0n;
 			var inWN = inBuf.readBigUInt64LE(wn * 8);
-			for (var cn = 0; cn < G; cn++) {
-				sumN ^= gf64_mul(inWN, coeffBuf.readBigUInt64LE(cn * 8));
-			}
-			refBuf.writeBigUInt64LE(sumN, wn * 8);
+			refBuf.writeBigUInt64LE(gf64_mul(inWN, coeffBuf.readBigUInt64LE((wn % G) * 8)), wn * 8);
 		}
 
 		// Flip the low bit of coeff[0] in-place.

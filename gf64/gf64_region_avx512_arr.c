@@ -258,48 +258,34 @@ void gf64_region_mul_avx512_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLE
 			i++;
 		}
 	} else {
-		/* General case: each input element is multiplied by ALL coefficients
-		 * and the products are XORed together (dot product per element).
-		 * Process 4 elements per VPCLMULQDQ call (one per 128-bit lane).
-		 *
-		 * Vectorized approach: split each VPCLMULQDQ product into (lo, hi)
-		 * ZMMs, XOR-fold the (lo, hi) pairs across all coefficients, and apply
-		 * the reduction once at the end. This is bit-exact to the per-coeff
-		 * reduce-then-XOR path because XOR is linear over GF(2)[x]:
-		 *   (a^b)*0x1B = (a*0x1B) ^ (b*0x1B)
-		 * and (a+b)*0x1B = (a*0x1B)+(b*0x1B) in GF(2)[x] (same thing).
+		/* General case (n_coeff > 1): PER-WORD coefficient cycling —
+		 * out[i] = in[i] * coeff[i % n_coeff] (NOT a dot product; the
+		 * SUM semantics belong to gf64_region_muladd_*). The per-lane
+		 * coefficients are gathered so ONE VPCLMULQDQ per 4-element
+		 * block suffices (the 0x00 imm multiplies each 128-bit lane's
+		 * low 64 bits by its own coefficient) — bit-exact to the
+		 * n_coeff=1 fast path with per-lane coefficient values.
 		 */
 		size_t blocks = len / 4;
-		__m512i zero = _mm512_setzero_si512();
 		for (size_t b = 0; b < blocks; b++) {
 			__m512i in_vec = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
 			                                   0, (int64_t)in[i + 1], 0, (int64_t)in[i + 0]);
-
-			__m512i acc_lo = _mm512_setzero_si512();
-			__m512i acc_hi = _mm512_setzero_si512();
-
-			for (size_t c = 0; c < n_coeff; c++) {
-				__m512i coeff_bc = _mm512_set1_epi64((int64_t)coeff[c]);
-				__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_bc, 0x00);
-				__m512i lo_v = _mm512_permutex2var_epi64(prod, GF64_IDX_LO, zero);
-				__m512i hi_v = _mm512_permutex2var_epi64(prod, GF64_IDX_HI, zero);
-				acc_lo = _mm512_xor_si512(acc_lo, lo_v);
-				acc_hi = _mm512_xor_si512(acc_hi, hi_v);
-			}
-
-			__m512i result = gf64_reduce_512(acc_lo, acc_hi);
+			__m512i coeff_vec = _mm512_set_epi64(0, (int64_t)coeff[(i + 3) % n_coeff],
+			                                     0, (int64_t)coeff[(i + 2) % n_coeff],
+			                                     0, (int64_t)coeff[(i + 1) % n_coeff],
+			                                     0, (int64_t)coeff[(i + 0) % n_coeff]);
+			__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_vec, 0x00);
+			__m512i lo_v, hi_v;
+			gf64_split_prod_512(prod, &lo_v, &hi_v);
+			__m512i result = gf64_reduce_512(lo_v, hi_v);
 			_mm512_mask_storeu_epi64(out + i, (__mmask8)0x0F, result);
 
 			i += 4;
 		}
 
-		/* Tail (0..3 elements) -- scalar epilog with SUM semantics. */
+		/* Tail (0..3 elements) — scalar epilog with CYCLING semantics. */
 		while (i < len) {
-			uint64_t sum = 0;
-			for (size_t c = 0; c < n_coeff; c++) {
-				sum ^= gf64_mul_reference(in[i], coeff[c]);
-			}
-			out[i] = sum;
+			out[i] = gf64_mul_reference(in[i], coeff[i % n_coeff]);
 			i++;
 		}
 	}

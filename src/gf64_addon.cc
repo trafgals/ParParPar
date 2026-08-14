@@ -2107,10 +2107,13 @@ static napi_value ComputeRecoveryWithCoeff_NAPI(napi_env env, napi_callback_info
 // Dispatch mirrors lib/par3gen.js's dispatchRecovery so the streaming entry
 // produces the same bytes as the per-batch loop on the same workload:
 //   1. Fenger  — padding-reasonable N (next_pow2(N) <= 2N), power-of-2 R,
-//                blockSize%8==0, non-Windows (default) or size-gated AND
-//                opt-in on Windows (PAR3_FENGER_WINDOWS_ENABLE=1, N <=
-//                PAR3_FENGER_WINDOWS_MAX_INPUTS, default 65536; issue #59
-//                A4) or env-forced (PAR3_GF64_USE_FENGER=1). Non-power-of-2
+//                blockSize%8==0, every host (the Windows opt-in gate was
+//                removed with the #62 fix — the SIGILL came from
+//                whole-TU /arch:AVX512 EVEX in the scalar pipeline, now
+//                confined to the intrinsic TUs). An optional defensive
+//                cap remains: N <= PAR3_FENGER_WINDOWS_MAX_INPUTS
+//                (Windows only, default: no cap) or env-forced
+//                (PAR3_GF64_USE_FENGER=1). Non-power-of-2
 //                counts are padded internally by the engine (issue #59 A2;
 //                falls back to the legacy Cauchy path only on
 //                synthetic-base overflow / recovery collision).
@@ -2346,29 +2349,27 @@ static napi_value ComputeRecoveryStreaming_NAPI(napi_env env, napi_callback_info
 		(numInputs <= 1) || (n_pad <= (size_t)numInputs * 2);
 	const bool isPowerOfTwoOrTrivial_R =
 		(numRecovery == 0) || (numRecovery == 1) || ((numRecovery > 1) && ((numRecovery & (numRecovery - 1)) == 0));
-	// Issue #59 A4: Windows Fenger enablement is size-gated AND opt-in
-	// (PAR3_FENGER_WINDOWS_ENABLE=1; default off pending the Node-20
-	// windows-2025 native crash follow-up). Override the size cap with
-	// PAR3_FENGER_WINDOWS_MAX_INPUTS.
-	long fengerWinMax = 65536;
+	// Issue #59 A4 / #62: the Windows opt-in gate is REMOVED — the SIGILL
+	// that forced it (whole-TU /arch:AVX512 EVEX in the scalar pipeline)
+	// is fixed by the gf64_pipeline TU split, so Windows dispatches
+	// Fenger by the same rules as other hosts. An optional defensive
+	// size cap remains via PAR3_FENGER_WINDOWS_MAX_INPUTS (default:
+	// no cap); PAR3_FENGER_WINDOWS_ENABLE is dead and ignored. The cap
+	// is int64 (LLONG_MAX on MSVC where long is 32-bit) to mirror the
+	// JS side's Infinity default.
+	long long fengerWinMax = LLONG_MAX;
 	const char* fengerWinMaxEnv = getenv("PAR3_FENGER_WINDOWS_MAX_INPUTS");
 	if (fengerWinMaxEnv) {
 		char* endp = nullptr;
-		long v = strtol(fengerWinMaxEnv, &endp, 10);
+		long long v = strtoll(fengerWinMaxEnv, &endp, 10);
 		if (endp != fengerWinMaxEnv && v > 0) fengerWinMax = v;
 	}
-	const char* fengerWinEnableEnv = getenv("PAR3_FENGER_WINDOWS_ENABLE");
-	const bool fengerWinEnabled = fengerWinEnableEnv && (
-		strcmp(fengerWinEnableEnv, "1") == 0 ||
-		strcasecmp(fengerWinEnableEnv, "true") == 0 ||
-		strcasecmp(fengerWinEnableEnv, "yes") == 0 ||
-		strcasecmp(fengerWinEnableEnv, "on") == 0);
 	const bool fengerEligible =
 		paddingReasonable_N &&
 		isPowerOfTwoOrTrivial_R &&
 		(blockSize % 8 == 0) &&
 		(fengerForced || !defined_win32() ||
-		 (fengerWinEnabled && numInputs <= fengerWinMax));
+		 numInputs <= fengerWinMax);
 
 	long baryMin = 10000;
 	const char* baryEnv = getenv("PAR3_BF64_MIN_INPUTS");
