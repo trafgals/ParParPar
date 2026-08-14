@@ -116,7 +116,8 @@ void gf64_poly_mul_padded(
 /* ----- Length caps (exposed for dispatch) ----- */
 /* Minimum operand/out length for the HQC FFT tier (same value as the
  * private GF64_HQC_FFT_MIN in gf64_additive_fft.c — the dispatch gate
- * in gf64_mul.c requires all three of len_a/len_b/out_len >= this). */
+ * in gf64_additive_fft.c requires all three of len_a/len_b/out_len
+ * >= this). */
 #define GF64_HQC_FFT_MIN          ((size_t)96)
 #define GF64_HQC_MAX_MATRIXFORM_N ((size_t)16384)
 /* Matrix-free recursive path: Chen 2018 Algorithm 1 general case. At
@@ -208,7 +209,7 @@ void gf64_addfft64_poly_mul_recursive_scratch(
  *
  * Scratch: [pt: n | pf: n | inner: 2n] = 4n total (same budget as the
  * single-mul entry — pt holds the shared transform across the K words,
- * pf is reused per word). n = next_pow2(max(2*max(len_shared, len_f) - 1,
+ * pf is reused per word). n = next_pow2(max(len_shared + len_f - 1,
  * out_len)); assert n <= GF64_HQC_MAX_LM_N.
  */
 void gf64_addfft64_poly_mul_batch_shared(

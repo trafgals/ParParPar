@@ -168,8 +168,12 @@ void gf64_square_avx512(
 		i += LANES;
 	}
 
-	/* Scalar tail epilog (0..7 elements) — bit-exact via the scalar TU. */
-	gf64_square(out + i, in + i, N - i);
+	/* Scalar tail epilog (0..7 elements) — bit-exact via the scalar TU.
+	 * Guarded: with N == 0 both pointers may be NULL and out + 0 is
+	 * undefined pointer arithmetic. */
+	if (i < N) {
+		gf64_square(out + i, in + i, N - i);
+	}
 }
 
 #endif /* GF64_SQUARE_AVX512_TU_BODY */

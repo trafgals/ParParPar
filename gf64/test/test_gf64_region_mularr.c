@@ -55,7 +55,6 @@ int main(void) {
 		for (size_t ni = 0; ni < sizeof(ncoeffs) / sizeof(ncoeffs[0]); ni++) {
 			const size_t len = lens[li];
 			const size_t n_coeff = ncoeffs[ni];
-			if (len > 0 && n_coeff == 0) continue;
 
 			gf64_t *in    = malloc((len ? len : 1) * sizeof(gf64_t));
 			gf64_t *coeff = malloc((n_coeff ? n_coeff : 1) * sizeof(gf64_t));

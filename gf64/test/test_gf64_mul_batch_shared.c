@@ -147,6 +147,8 @@ static void run_case(size_t len_shared, size_t len_f, size_t out_len,
 int main(void) {
 	printf("GF64 batch-shared mul parity tests (issue #59 A3)\n");
 	printf("=================================================\n\n");
+	/* Populate the cached hwcap flags used by the AVX-512 gate below. */
+	gf64_init_dispatch();
 
 	/* HQC-window sizes. len_shared/len_f/out_len chosen so the padded
 	 * n lands on the listed value: n = next_pow2(len_shared+len_f-1). */
@@ -165,9 +167,16 @@ int main(void) {
 	/* Truncated output (out_len < full product). */
 	run_case(256, 257, 300, 4, 0x8888888888888888ULL, 0);
 
-	/* AVX-512 variants (host-gated). */
-	run_case(64, 65, 128, 4, 0x9999999999999999ULL, 1);
-	run_case(2048, 2049, 4096, 8, 0xAAAAAAAAAAAAAAAAULL, 1);
+	/* AVX-512 variants (host-gated: the _avx512 primitives execute
+	 * EVEX + VPCLMULQDQ unconditionally; on hosts without them these
+	 * cases would SIGILL the whole test binary — the non-AVX-512
+	 * runners this PR targets). */
+	if (gf64_zmm_works && gf64_has_vpclmulqdq) {
+		run_case(64, 65, 128, 4, 0x9999999999999999ULL, 1);
+		run_case(2048, 2049, 4096, 8, 0xAAAAAAAAAAAAAAAAULL, 1);
+	} else {
+		printf("SKIP: AVX-512 batch cases (host lacks AVX-512F/VPCLMULQDQ)\n");
+	}
 
 	/* Zero-length operands: all outputs must be zero. */
 	{

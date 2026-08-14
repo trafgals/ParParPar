@@ -69,8 +69,8 @@ void gf64_square(
  * responsible for dispatching here only when the host supports AVX-512F.
  */
 void gf64_square_avx512(
-	gf64_t *HEDLEY_RESTRICT out,
-	const gf64_t *HEDLEY_RESTRICT in,
+	gf64_t *out,
+	const gf64_t *in,
 	size_t N
 );
 

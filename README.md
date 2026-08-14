@@ -230,7 +230,7 @@ The full option list is in [`help.txt`](help.txt) and [`help-full.txt`](help-ful
 | `PAR3_AVX512_FORCE` | off | Override the AVX-512 downclock heuristic regardless of workload size. |
 | `PAR3_GF64_PARALLEL_HASH` | on | Parallel BLAKE3 hashing across `worker_threads` pool. Disable for single-threaded debugging. |
 | `PAR3_GF64_GROUP` | 12 | Group size for the coupled-input kernel (PA1-PA7). |
-| `PAR3_GF64_USE_FENGER` | off on Windows, on elsewhere | Route `compute_recovery_streaming` through the Fenger Toeplitz pipeline when (numInputs, numRecovery) are both powers of two and `blockSize` is 8-byte aligned. |
+| `PAR3_GF64_USE_FENGER` | on | Route `compute_recovery_streaming` through the Fenger Toeplitz pipeline when (numInputs, numRecovery) are both powers of two and `blockSize` is 8-byte aligned. Default on every host since the #62 fix (the Windows-only opt-in gate `PAR3_FENGER_WINDOWS_ENABLE` is removed; `PAR3_FENGER_WINDOWS_MAX_INPUTS` remains an optional defensive cap). |
 
 ## Development
 

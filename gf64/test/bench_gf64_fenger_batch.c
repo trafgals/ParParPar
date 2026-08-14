@@ -7,10 +7,12 @@
  * reference shapes. Reports per-K execute time + speedup over K=1, the
  * P2 gate evidence ("10G/100k kernel ≤ 3 min" projection).
  *
- * Shapes:
- *   1G/10K-ish:  N = 2^18, R = 2^10, B = 512  (fully inside the HQC window)
- *   4G/4K-ish:   N = 2^20, R = 2^12, B = 128  (root n = 2^20 = HQC cap)
- *   10G/100k:    N = 2^22, R = 2^14, B = 16   (top 2 levels above the cap)
+ * Shapes (B is capped at 8 — the minimum for a full K=8 batch — because
+ * the interp costs ~40-100 s/word at N=262144 on WSL2; the K-speedup
+ * ratio is B-relative and larger B favors K>1 more, so this is a
+ * conservative lower bound — see the comment in main()):
+ *   medium:      N = 2^14, R = 2^9,  B = 64  (fast cross-check)
+ *   1G/10K-ish:  N = 2^18, R = 2^10, B = 8   (fully inside the HQC window)
  *
  * Env (same as the P1 benches):
  *   PAR3_GF64_USE_AVX512=1 PAR3_AVX512_FORCE=2   force AVX-512

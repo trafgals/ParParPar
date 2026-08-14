@@ -2349,29 +2349,25 @@ static napi_value ComputeRecoveryStreaming_NAPI(napi_env env, napi_callback_info
 		(numInputs <= 1) || (n_pad <= (size_t)numInputs * 2);
 	const bool isPowerOfTwoOrTrivial_R =
 		(numRecovery == 0) || (numRecovery == 1) || ((numRecovery > 1) && ((numRecovery & (numRecovery - 1)) == 0));
-	// Issue #59 A4: Windows Fenger enablement is size-gated AND opt-in
-	// (PAR3_FENGER_WINDOWS_ENABLE=1; default off pending the Node-20
-	// windows-2025 native crash follow-up). Override the size cap with
-	// PAR3_FENGER_WINDOWS_MAX_INPUTS.
-	long fengerWinMax = 65536;
+	// Issue #59 A4 / #62: the Windows opt-in gate is REMOVED — the SIGILL
+	// that forced it (whole-TU /arch:AVX512 EVEX in the scalar pipeline)
+	// is fixed by the gf64_pipeline TU split, so Windows dispatches
+	// Fenger by the same rules as other hosts. An optional defensive
+	// size cap remains via PAR3_FENGER_WINDOWS_MAX_INPUTS (default:
+	// no cap); PAR3_FENGER_WINDOWS_ENABLE is dead and ignored.
+	long fengerWinMax = LONG_MAX;
 	const char* fengerWinMaxEnv = getenv("PAR3_FENGER_WINDOWS_MAX_INPUTS");
 	if (fengerWinMaxEnv) {
 		char* endp = nullptr;
 		long v = strtol(fengerWinMaxEnv, &endp, 10);
 		if (endp != fengerWinMaxEnv && v > 0) fengerWinMax = v;
 	}
-	const char* fengerWinEnableEnv = getenv("PAR3_FENGER_WINDOWS_ENABLE");
-	const bool fengerWinEnabled = fengerWinEnableEnv && (
-		strcmp(fengerWinEnableEnv, "1") == 0 ||
-		strcasecmp(fengerWinEnableEnv, "true") == 0 ||
-		strcasecmp(fengerWinEnableEnv, "yes") == 0 ||
-		strcasecmp(fengerWinEnableEnv, "on") == 0);
 	const bool fengerEligible =
 		paddingReasonable_N &&
 		isPowerOfTwoOrTrivial_R &&
 		(blockSize % 8 == 0) &&
 		(fengerForced || !defined_win32() ||
-		 (fengerWinEnabled && numInputs <= fengerWinMax));
+		 numInputs <= fengerWinMax);
 
 	long baryMin = 10000;
 	const char* baryEnv = getenv("PAR3_BF64_MIN_INPUTS");
