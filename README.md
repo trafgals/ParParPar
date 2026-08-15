@@ -4,6 +4,11 @@ High-performance PAR3 create and repair with GF(2^64) recovery, written in C++ w
 
 A fork of [animetosho/ParPar](https://github.com/animetosho/ParPar) that adds PAR3 (the next-generation PAR archive format), unlimited input-block-per-slice GF(2^64) Cauchy-matrix recovery, and a C++ kernel exposed via NAPI.
 
+[![PAR3 create 1 GiB / 1 MiB](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2Fcreate-1g-1m.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
+[![interp speedup (B1-1.4 interleave)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2Finterp-speedup.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
+[![tree build @ N=131072 (A1)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2Ftree-build-a1.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
+[![MPE @ N=131072 (A1)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2Fmpe-a1.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
+
 - **PAR3 create, verify, and repair** — upstream has none of the three for PAR3
 - **GF(2^64) Cauchy-matrix recovery** with no 65 537 input-block-per-slice cap
 - **No 2 GiB file-size limit** — verified on a 4.3 GiB archive
