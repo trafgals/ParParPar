@@ -241,15 +241,24 @@ int main(void) {
 	printf("==========================================\n\n");
 
 	printf("Phases (tree build / MPE / interp):\n");
-	bench_phase(4096);
-	bench_phase(16384);
-	bench_phase(65536);
-	bench_phase(131072);
-	/* Tree + MPE only at 2^18 and 2^20 (the interp there is dominated
-	 * by the same muls; keeps the run bounded — cubic review f70a81ef
-	 * P3: the header documents interp only up to 2^17). */
-	bench_tree_mpe_only(262144);
-	bench_tree_mpe_only(1048576);
+	if (getenv("PAR3_CI_BENCH")) {
+		/* CI mode: bounded sizes only (a full 2^20 run is minutes on a
+		 * shared runner and adds nothing the badges read). */
+		bench_phase(4096);
+		bench_phase(16384);
+		bench_phase(65536);
+		bench_phase(131072);
+	} else {
+		bench_phase(4096);
+		bench_phase(16384);
+		bench_phase(65536);
+		bench_phase(131072);
+		/* Tree + MPE only at 2^18 and 2^20 (the interp there is dominated
+		 * by the same muls; keeps the run bounded — cubic review f70a81ef
+		 * P3: the header documents interp only up to 2^17). */
+		bench_tree_mpe_only(262144);
+		bench_tree_mpe_only(1048576);
+	}
 
 	printf("\nP1 gate shape (Fenger vs explicit Cauchy):\n");
 	const int gate_ok = gate_shape(131072, 4096, 4);

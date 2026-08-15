@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "label": "interp speedup (B1-1.4 interleave)",
+  "message": "1.55x",
+  "color": "brightgreen"
+}
