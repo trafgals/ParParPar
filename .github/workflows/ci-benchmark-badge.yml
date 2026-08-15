@@ -51,7 +51,10 @@ jobs:
         working-directory: repo
         run: |
           set -o pipefail
-          npm install --production --no-audit --no-fund
+          # Full install (devDeps included): the addon rebuild needs node-gyp
+          # and the root package's prepare script runs husky — both live in
+          # devDependencies, so --production would break this step.
+          npm ci --no-audit --no-fund
           node scripts/ci-bench-create.js 2>&1 | tee /tmp/create.log
 
       - name: Parse create number
