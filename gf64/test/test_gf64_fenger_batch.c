@@ -125,9 +125,16 @@ int main(void) {
 	 * fallback; N=512/R=65536 reaches an HQC-eligible level with
 	 * deg_fs[k] >= child_deg (the shared-reciprocal branch). */
 	run_case("N=4/R=1024 (walk fallback)", 0, 4096, 4, 1024, 0, 0, 0, 8, K4, 2);
-	run_case("N=512/R=65536 (walk HQC)", 0, 1048576, 512, 65536, 0, 0, 0, 8, K4, 2);
+	/* B=32 + K=16/32 so the walk's K-scaled stack arrays
+	 * (left_degs/right_degs/degs) are actually exercised at K_eff=32 —
+	 * with B=8 the walk never wrote past 8 entries (cubic review on
+	 * PR #65: the arrays were still sized for the old 16 cap). */
+	run_case("N=512/R=65536 (walk HQC)", 0, 1048576, 512, 65536, 0, 0, 0, 32, K1632, 3);
 	run_case("N=8/R=4", 0, 16, 8, 4, 0, 0, 0, 16, K4, 2);
-	run_case("N=1024/R=32", 0, 4096, 1024, 32, 0, 0, 0, 16, K1632, 3);
+	/* B=32 so the K=32 column actually runs a full K_eff=32 batch
+	 * (with B=16 the K=32 case collapsed to K_eff=16 — cubic review
+	 * on PR #65). */
+	run_case("N=1024/R=32", 0, 4096, 1024, 32, 0, 0, 0, 32, K1632, 3);
 	run_case("N=16384/R=512", 0, 65536, 16384, 512, 0, 0, 0, 16, K1632, 3);
 	run_case("N=262144/R=1024 (1G/10K-ish)", 0, 1000000, 262144, 1024, 0, 0, 0, 8, K4, 2);
 	run_case("N=1024/R=32 B=5 (K_eff tail)", 0, 4096, 1024, 32, 0, 0, 0, 5, K484, 3);

@@ -668,7 +668,7 @@ static void fenger_eval_recurse_batch(
 	/* Recurse into both children (K slabs each; the child's f degree
 	 * array is child_degs[0..K) for the left and [K..2K) for the right). */
 	{
-		size_t left_degs[16], right_degs[16];
+		size_t left_degs[32], right_degs[32];
 		for (size_t k = 0; k < K; k++) {
 			left_degs[k]  = child_degs[2 * k];
 			right_degs[k] = child_degs[2 * k + 1];
@@ -747,7 +747,7 @@ static void gf64_fenger_execute_batched(
 		 * The interp output (poly_p) is N-strided per word — the eval
 		 * root's f_stride. */
 		{
-			size_t degs[16];
+			size_t degs[32];
 			if (R == 1 || deg_p >= R) {
 				const gf64_t *leaves =
 					tree_y->level_data[tree_y->num_levels - 1];
