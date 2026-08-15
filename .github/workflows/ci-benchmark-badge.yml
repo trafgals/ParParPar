@@ -1,0 +1,82 @@
+name: ci-benchmark-badge
+
+# Measure benchmark numbers on the CI runner and refresh the CI-column
+# shields.io badges (benchmarks/badges/ci-*.json on the
+# feat/ci-benchmark-badge branch). Runs on every master push and on
+# manual dispatch. The Zen4 reference-host badges (sources.json) are
+# hand-recorded and untouched by this job.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Build A1 bench
+        working-directory: repo/gf64/test
+        run: make bench_gf64_subquadratic
+
+      - name: Run A1 bench (CI mode)
+        working-directory: repo/gf64/test
+        run: |
+          PAR3_CI_BENCH=1 ./bench_gf64_subquadratic 2>&1 | tee /tmp/a1.log
+          grep 'N=131072' /tmp/a1.log
+
+      - name: Parse A1 numbers
+        run: |
+          LINE=$(grep 'N=131072' /tmp/a1.log)
+          echo "TREE=$(echo "$LINE" | sed -E 's/.*tree=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "MPE=$(echo "$LINE" | sed -E 's/.*mpe=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "INTERP=$(echo "$LINE" | sed -E 's/.*interp=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"
+        id: parse
+
+      - name: Create bench (1 GiB / 1 MiB, R=8)
+        working-directory: repo
+        run: |
+          npm install --production --no-audit --no-fund
+          node scripts/ci-bench-create.js 2>&1 | tee /tmp/create.log
+
+      - name: Parse create number
+        run: |
+          CREATE=$(grep '^create-1g-1m:' /tmp/create.log | sed -E 's/.*: ([0-9.]+) MB\/s.*/\1/')
+          echo "CREATE=$CREATE" >> "$GITHUB_OUTPUT"
+        id: parsecreate
+
+      - name: Update sources-ci.json
+        working-directory: repo
+        env:
+          CI_CREATE_MBS: ${{ steps.parsecreate.outputs.CREATE }}
+          CI_TREE_S: ${{ steps.parse.outputs.TREE }}
+          CI_MPE_S: ${{ steps.parse.outputs.MPE }}
+          CI_INTERP_S: ${{ steps.parse.outputs.INTERP }}
+        run: node scripts/update-sources-ci.js
+
+      - name: Regenerate endpoint JSONs
+        working-directory: repo
+        run: node scripts/update-benchmark-badges.js
+
+      - name: Push badge data to feat/ci-benchmark-badge
+        run: |
+          git clone --depth 1 --branch feat/ci-benchmark-badge \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/trafgals/ParParPar.git" badge-branch
+          cp repo/benchmarks/badges/*.json badge-branch/benchmarks/badges/
+          cd badge-branch
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no badge changes"
+          else
+            git commit -m "ci(benchmark-badge): refresh CI-runner badge data on master change"
+            git push origin feat/ci-benchmark-badge
+          fi

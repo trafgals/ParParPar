@@ -1,0 +1,12 @@
+{
+  "repo": "trafgals/ParParPar",
+  "branch": "feat/ci-benchmark-badge",
+  "host": "GitHub Actions ubuntu-latest (shared runner — noisy by nature; absolute numbers, not ratios)",
+  "date": "2026-08-16",
+  "badges": [
+    {"id": "ci-create-1g-1m", "label": "create 1 GiB / 1 MiB (CI)", "message": "pending", "color": "lightgrey", "detail": "ubuntu-latest, R=8, auto threads; regenerated on every master push by ci-benchmark-badge"},
+    {"id": "ci-tree-131072", "label": "tree build @ N=131072 (CI)", "message": "pending", "color": "lightgrey", "detail": "bench_gf64_subquadratic CI mode (PAR3_CI_BENCH=1), ubuntu-latest"},
+    {"id": "ci-mpe-131072", "label": "MPE @ N=131072 (CI)", "message": "pending", "color": "lightgrey", "detail": "bench_gf64_subquadratic CI mode (PAR3_CI_BENCH=1), ubuntu-latest"},
+    {"id": "ci-interp-131072", "label": "interp @ N=131072 (CI)", "message": "pending", "color": "lightgrey", "detail": "bench_gf64_subquadratic CI mode (PAR3_CI_BENCH=1), ubuntu-latest"}
+  ]
+}
