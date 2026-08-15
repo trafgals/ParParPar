@@ -39,7 +39,9 @@ jobs:
 
       - name: Parse A1 numbers
         run: |
-          LINE=$(grep 'N=131072' /tmp/a1.log)
+          # The phase line is the only one carrying 'tree=' (the gate line
+          # also contains N=131072 but no tree=).
+          LINE=$(grep 'N=131072' /tmp/a1.log | grep 'tree=')
           echo "TREE=$(echo "$LINE" | sed -E 's/.*tree=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"
           echo "MPE=$(echo "$LINE" | sed -E 's/.*mpe=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"
           echo "INTERP=$(echo "$LINE" | sed -E 's/.*interp=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"

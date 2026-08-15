@@ -298,5 +298,4 @@ bench_gf64_subquadratic: $(BENCH_GF64_SUBQUADRATIC_SOURCES) $(GF64_SOURCES) ../g
 clean:
 	rm -f test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_region_mularr test_gf64_poly_mul_internal_dispatch test_gf64_fenger_batch bench_gf64_fenger_batch bench_gf64_fenger_vs_cauchy bench_hqc_vs_karatsuba bench_gf64_subquadratic
 
-bench_gf64_subquadratic: bench_gf64_subquadratic.c $(GF64_SOURCES) ../gf64_fenger.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ bench_gf64_subquadratic.c $(GF64_SOURCES) ../gf64_fenger.c
+.PHONY: clean

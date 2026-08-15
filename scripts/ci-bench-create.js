@@ -41,6 +41,7 @@ par3.create([f], base, { outputBase: base, recoverySlices: 8, blockSize: BLOCK }
   var mb = SIZE / (1024 * 1024);
   if (err) {
     console.log('create-1g-1m: ERROR ' + err.message);
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
     process.exit(1);
   }
   console.log('create-1g-1m: ' + (mb / dt).toFixed(1) + ' MB/s (' + dt.toFixed(1) + ' s)');

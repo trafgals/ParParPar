@@ -37,20 +37,31 @@ var tree = val('CI_TREE_S', ' s');
 var mpe = val('CI_MPE_S', ' s');
 var interp = val('CI_INTERP_S', ' s');
 
+/* Threshold helpers. */
+function colorFor(value, bestCeil, okCeil) {      /* lower is better */
+  if (value === null) return 'lightgrey';
+  var v = parseFloat(value);
+  if (v <= bestCeil) return 'brightgreen';
+  if (v <= okCeil) return 'green';
+  return 'yellow';
+}
+function colorForHigher(value, bestFloor, okFloor) { /* higher is better */
+  if (value === null) return 'lightgrey';
+  var v = parseFloat(value);
+  if (v >= bestFloor) return 'brightgreen';
+  if (v >= okFloor) return 'green';
+  return 'yellow';
+}
+
 var colors = {
-  create: create === null ? 'lightgrey'
-    : (parseFloat(create) >= 25 ? 'brightgreen'
-      : (parseFloat(create) >= 15 ? 'green' : 'yellow')),
-  tree: tree === null ? 'lightgrey'
-    : (parseFloat(tree) <= 40 ? 'brightgreen'
-      : (parseFloat(tree) <= 80 ? 'green' : 'yellow')),
-  mpe: mpe === null ? 'lightgrey'
-    : (parseFloat(mpe) <= 80 ? 'brightgreen'
-      : (parseFloat(mpe) <= 160 ? 'green' : 'yellow')),
-  interp: interp === null ? 'lightgrey'
-    : (parseFloat(interp) <= 100 ? 'brightgreen'
-      : (parseFloat(interp) <= 200 ? 'green' : 'yellow'))
+  create: colorForHigher(create, 25, 15),   /* MB/s */
+  tree: colorFor(tree, 40, 80),             /* s */
+  mpe: colorFor(mpe, 80, 160),
+  interp: colorFor(interp, 100, 200)
 };
+
+/* Stamp the measurement date so the badge data is self-dating. */
+src.date = new Date().toISOString().slice(0, 10);
 
 src.badges.forEach(function (b) {
   switch (b.id) {
