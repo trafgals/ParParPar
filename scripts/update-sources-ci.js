@@ -1,31 +1,43 @@
 #!/usr/bin/env node
 /* Rewrite the CI badge messages/colors in sources-ci.json from env vars,
  * preserving everything else. Runs in the ci-benchmark-badge workflow
- * after the benches complete.
+ * after the benches complete. ES5 only (repo runtime is Node >=0.10).
  *
  * Env: CI_CREATE_MBS, CI_TREE_S, CI_MPE_S, CI_INTERP_S (floats as strings).
+ * Values are validated strictly (finite, non-negative) — a malformed
+ * measurement must never be published as a badge.
  * Colors are thresholded so a regressing CI runner shows up at a glance.
  */
 'use strict';
-const fs = require('fs');
-const path = require('path');
+var fs = require('fs');
+var path = require('path');
 
-const FILE = path.join(__dirname, '..', 'benchmarks', 'badges', 'sources-ci.json');
-const src = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+var FILE = path.join(__dirname, '..', 'benchmarks', 'badges', 'sources-ci.json');
+var src = JSON.parse(fs.readFileSync(FILE, 'utf8'));
 
+/* Strict: optional sign-free decimal, finite, >= 0. Returns the number or
+ * null when the env var is unset/empty; exits nonzero on malformed input. */
 function val(name, unit) {
-  const v = process.env[name];
+  var v = process.env[name];
   if (v === undefined || v === '') return null;
-  const f = parseFloat(v);
-  return (isFinite(f) ? f.toFixed(1) : v) + unit;
+  if (!/^\d+(\.\d+)?$/.test(v)) {
+    console.error('malformed ' + name + '="' + v + '" (expected a non-negative number)');
+    process.exit(1);
+  }
+  var f = parseFloat(v);
+  if (!isFinite(f) || f < 0) {
+    console.error('out-of-range ' + name + '="' + v + '"');
+    process.exit(1);
+  }
+  return f.toFixed(1) + unit;
 }
 
-const create = val('CI_CREATE_MBS', ' MB/s');
-const tree = val('CI_TREE_S', ' s');
-const mpe = val('CI_MPE_S', ' s');
-const interp = val('CI_INTERP_S', ' s');
+var create = val('CI_CREATE_MBS', ' MB/s');
+var tree = val('CI_TREE_S', ' s');
+var mpe = val('CI_MPE_S', ' s');
+var interp = val('CI_INTERP_S', ' s');
 
-const colors = {
+var colors = {
   create: create === null ? 'lightgrey'
     : (parseFloat(create) >= 25 ? 'brightgreen'
       : (parseFloat(create) >= 15 ? 'green' : 'yellow')),
@@ -37,10 +49,10 @@ const colors = {
       : (parseFloat(mpe) <= 160 ? 'green' : 'yellow')),
   interp: interp === null ? 'lightgrey'
     : (parseFloat(interp) <= 100 ? 'brightgreen'
-      : (parseFloat(interp) <= 200 ? 'green' : 'yellow')),
+      : (parseFloat(interp) <= 200 ? 'green' : 'yellow'))
 };
 
-for (const b of src.badges) {
+src.badges.forEach(function (b) {
   switch (b.id) {
     case 'ci-create-1g-1m': if (create) { b.message = create; b.color = colors.create; } break;
     case 'ci-tree-131072': if (tree) { b.message = tree; b.color = colors.tree; } break;
@@ -48,7 +60,7 @@ for (const b of src.badges) {
     case 'ci-interp-131072': if (interp) { b.message = interp; b.color = colors.interp; } break;
     default: break;
   }
-}
+});
 
 fs.writeFileSync(FILE, JSON.stringify(src, null, 2) + '\n');
 console.log('sources-ci.json updated: create=' + create + ' tree=' + tree +

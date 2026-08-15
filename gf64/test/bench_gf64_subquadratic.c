@@ -156,8 +156,11 @@ static void cauchy_reference(
 
 /* ----------------------------------------------------------------------------
  * P1 gate shape: bit-exact Fenger vs Cauchy at N=131072 / R=4096.
+ * Returns nonzero on divergence — the P1 acceptance gate must fail the
+ * run (the CI badge workflow publishes from this bench's output, so a
+ * MISMATCH must never produce a green badge).
  * ---------------------------------------------------------------------------- */
-static void gate_shape(size_t N, size_t R, size_t B) {
+static int gate_shape(size_t N, size_t R, size_t B) {
 	gf64_t *in         = (gf64_t *)malloc(N * B * sizeof(gf64_t));
 	gf64_t *cauchy_out = (gf64_t *)calloc(R * B, sizeof(gf64_t));
 	gf64_t *fenger_out = (gf64_t *)calloc(R * B, sizeof(gf64_t));
@@ -182,6 +185,7 @@ static void gate_shape(size_t N, size_t R, size_t B) {
 	       N, R, B, t_cauchy, t_fenger, ok ? "BIT-EXACT" : "MISMATCH");
 
 	free(in); free(cauchy_out); free(fenger_out);
+	return ok ? 0 : 1;
 }
 
 int main(void) {
@@ -219,8 +223,8 @@ int main(void) {
 	}
 
 	printf("\nP1 gate shape (Fenger vs explicit Cauchy):\n");
-	gate_shape(131072, 4096, 4);
+	int gate_fail = gate_shape(131072, 4096, 4);
 
 	printf("\nDone.\n");
-	return 0;
+	return gate_fail;
 }
