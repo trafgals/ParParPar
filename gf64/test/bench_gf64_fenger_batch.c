@@ -60,7 +60,7 @@ static void bench_shape(const char *name, size_t N, size_t R, size_t B,
 	}
 	for (size_t i = 0; i < N * B; i++) in[i] = next_rand();
 
-	const size_t Ks[] = {1, 4, 8};
+	const size_t Ks[] = {1, 4, 8, 16, 32};
 	double base[1] = {0.0};  /* K=1 column time (speedup denominator) */
 	double t0 = now_sec();
 	/* Warm-up at the default K (also pins the env-cache-free read). */
@@ -70,6 +70,14 @@ static void bench_shape(const char *name, size_t N, size_t R, size_t B,
 	printf("%-14s N=%6zu R=%6zu B=%4zu  (warm %6.3f s)\n",
 	       name, N, R, B, t_warm);
 	for (size_t ki = 0; ki < sizeof(Ks) / sizeof(Ks[0]); ki++) {
+		/* Skip K > B columns: the batch's K_eff = min(K, B), so K > B
+		 * would rerun the same batch as the B column and mislead the
+		 * reader into thinking K saturates (cubic review on PR #65). */
+		if (Ks[ki] > B) {
+			printf("  K=%zu: skipped (K > B=%zu — would be a %zu-word batch)\n",
+			       Ks[ki], B, B);
+			continue;
+		}
 		char env[32];
 		snprintf(env, sizeof(env), "%zu", Ks[ki]);
 		setenv("PAR3_FENGER_BATCH_WORDS", env, 1);
