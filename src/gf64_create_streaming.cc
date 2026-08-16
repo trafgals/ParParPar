@@ -28,6 +28,7 @@
 #  define fstat _fstati64
 #  define lseek _lseek
 #  define O_RDONLY _O_RDONLY
+#  define O_BINARY _O_BINARY
 #  define read  _read
 #  define ssize_t int
 // _aligned_malloc is in global namespace on MSVC, NOT std::.
@@ -50,6 +51,14 @@
 
 #include "gf64_global.h"
 #include "par3_engine.h"
+
+/* A2-rev: the recovery buffer outlives the NAPI call — freed by the GC
+ * finalizer on the external buffer (must match the aligned_alloc used at
+ * the call site). */
+static void Par3csRecoveryFinalizer(napi_env env, void* data, void* hint) {
+	(void)env; (void)hint;
+	if(data) aligned_free(data);
+}
 
 static napi_status par3cs_get_uint64(napi_env env, napi_value val, uint64_t* result);
 
@@ -163,7 +172,13 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	int fd = ::open(sourcePath, O_RDONLY);
+	int fd = ::open(sourcePath, O_RDONLY
+#ifndef O_BINARY
+	               /* POSIX: binary is the default */
+#else
+	               | O_BINARY
+#endif
+	);
 	if(fd < 0) {
 		int err = errno;
 		char msg[256];
@@ -305,7 +320,6 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 	if(readBuffer) {
 		aligned_free(readBuffer);
 	}
-	aligned_free(recovery);
 	::close(fd);
 
 	napi_value resultObj;
@@ -326,6 +340,21 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 	napi_value durationVal;
 	napi_create_double(env, durationMs, &durationVal);
 	napi_set_named_property(env, resultObj, "durationMs", durationVal);
+
+	/* A2-rev: hand the recovery buffer to JS (external buffer, GC-finalized)
+	 * so the opt-in streaming path can feed _finalizeRecoveryBlocks directly
+	 * instead of being telemetry-only. On failure, fall back to the
+	 * telemetry-only result (legacy path remains authoritative). */
+	{
+		napi_value recoveryBufferVal;
+		status = napi_create_external_buffer(env, recoveryBytes, recovery, Par3csRecoveryFinalizer, NULL, &recoveryBufferVal);
+		if(status == napi_ok) {
+			status = napi_set_named_property(env, resultObj, "recoveryBuffer", recoveryBufferVal);
+		}
+		if(status != napi_ok) {
+			aligned_free(recovery);
+		}
+	}
 
 	napi_value cbArgs[2];
 	napi_get_null(env, &cbArgs[0]);
