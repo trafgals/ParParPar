@@ -3,8 +3,6 @@
 /*
  * PAR3 Creation Performance Benchmark
  *
- * LOCAL ONLY — never run in CI.
- *
  * Usage:
  *   node test/bench/par3-create-bench.js --size=1G --slices=10000
  *   node test/bench/par3-create-bench.js --size=10G --slices=100000
@@ -13,10 +11,11 @@
  * Workload:
  *   - Configurable source size (default 1 GiB)
  *   - slice size = sourceSize / --slices
- *   - 10% recovery slices (or 10, whichever is greater)
+ *   - 10% recovery slices (or 10, whichever is greater), or --recovery=N
  *   - AVX512 used if available
  *
  * Output: matches the JSON-shape of par2-create-bench.js for direct PAR2 vs PAR3 comparison.
+ * Runs in the monthly ci-benchmark-badge workflow (CI) and on the reference host.
  */
 
 var path = require('path');
@@ -34,7 +33,8 @@ function parseArgs() {
     slices: 10000,
     blockSize: DEFAULT_BLOCK_SIZE,
     runs: DEFAULT_RUNS,
-    keep: false
+    keep: false,
+    recovery: null
   };
   for (var i = 0; i < args.length; i++) {
     var a = args[i];
@@ -42,6 +42,8 @@ function parseArgs() {
       opts.keep = true;
     } else if (a.indexOf('--slices=') === 0) {
       opts.slices = parseInt(a.substring('--slices='.length), 10);
+    } else if (a.indexOf('--recovery=') === 0) {
+      opts.recovery = parseInt(a.substring('--recovery='.length), 10);
     } else if (a.indexOf('--block-size=') === 0) {
       opts.blockSize = parseInt(a.substring('--block-size='.length), 10);
     } else if (a.indexOf('--runs=') === 0) {
@@ -84,7 +86,7 @@ function run(opts) {
   var shape = helpers.computeCreateShape(opts.size, sliceCount, opts.blockSize);
   var sliceSize = shape.sliceSize;
   var actualSize = shape.actualSize;
-  var recoverySlices = shape.recoverySlices;
+  var recoverySlices = (opts.recovery != null) ? opts.recovery : shape.recoverySlices;
   var gf = helpers.ensureGfMethod();
 
   var tmpDir = helpers.getTempDir('par3-create-bench');

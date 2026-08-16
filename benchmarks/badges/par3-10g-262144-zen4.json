@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "label": "interp @ N=131072 (CI)",
+  "label": "PAR3 10GB/262144 (Zen4)",
   "message": "pending",
   "color": "lightgrey"
 }

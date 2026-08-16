@@ -1,16 +1,19 @@
 name: ci-benchmark-badge
 
-# Measure benchmark numbers on the CI runner and refresh the CI-column
-# shields.io badges. Badge JSONs live in a public gist (updated via the
-# Gists API with the BADGE_GIST_TOKEN fine-grained PAT — a repo-scoped
-# workflow token cannot push in a fork, and the gist keeps any
-# repo-write credential out of CI). The Zen4 reference-host badges
-# (sources.json on the feat/ci-benchmark-badge branch) are hand-recorded
-# and untouched by this job.
+# Monthly (30th, 20:00 UTC) benchmark of the README badge table's CI
+# column: four create legs on the shared runner, one job per leg (each
+# gets its own 6 h budget; legs run in parallel so wall time is the
+# slowest leg), then a publish job combines the numbers into
+# sources-ci.json, regenerates the endpoint JSONs and PATCHes the public
+# badge gist (fork workflow tokens are read-only, so the gist — updated
+# with the gists-only BADGE_GIST_TOKEN — keeps any repo-write credential
+# out of CI). The two 10 GiB rows are kernel-bound beyond 6 h and stay
+# "N/A >6h". The Zen4 reference-host badges (sources.json on the
+# feat/ci-benchmark-badge branch) are hand-recorded and untouched.
 
 on:
-  push:
-    branches: [master]
+  schedule:
+    - cron: '0 20 30 * *'
   workflow_dispatch:
 
 concurrency:
@@ -18,57 +21,116 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  benchmark:
+  par2-1g-32k:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           path: repo
-
-      - name: Build A1 bench
-        working-directory: repo/gf64/test
-        run: make bench_gf64_subquadratic
-
-      - name: Run A1 bench (CI mode)
-        working-directory: repo/gf64/test
-        run: |
-          set -o pipefail
-          PAR3_CI_BENCH=1 ./bench_gf64_subquadratic 2>&1 | tee /tmp/a1.log
-          grep 'N=131072' /tmp/a1.log
-
-      - name: Parse A1 numbers
-        run: |
-          # The phase line is the only one carrying 'tree=' (the gate line
-          # also contains N=131072 but no tree=).
-          LINE=$(grep 'N=131072' /tmp/a1.log | grep 'tree=')
-          echo "TREE=$(echo "$LINE" | sed -E 's/.*tree=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"
-          echo "MPE=$(echo "$LINE" | sed -E 's/.*mpe=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"
-          echo "INTERP=$(echo "$LINE" | sed -E 's/.*interp=([0-9.]+)s.*/\1/')" >> "$GITHUB_OUTPUT"
-        id: parse
-
-      - name: Create bench (1 GiB / 1 MiB, R=8)
+      - name: Leg — PAR2 1 GiB / 32768 slices
         working-directory: repo
         run: |
           set -o pipefail
-          # Full install (devDeps included): the addon rebuild needs node-gyp
-          # and the root package's prepare script runs husky — both live in
-          # devDependencies, so --production would break this step.
-          npm ci --no-audit --no-fund
-          node scripts/ci-bench-create.js 2>&1 | tee /tmp/create.log
+          node test/bench/par2-create-bench.js --size=1G --slices=32768 --recovery=8 2>&1 | tee /tmp/par2.log
+          grep -oE 'Throughput: [0-9.]+' /tmp/par2.log | grep -oE '[0-9.]+$'
+          echo "MBS=$(grep -oE 'Throughput: [0-9.]+' /tmp/par2.log | grep -oE '[0-9.]+$')" >> "$GITHUB_OUTPUT"
+        id: leg
+    outputs:
+      MBS: ${{ steps.leg.outputs.MBS }}
 
-      - name: Parse create number
+  par3-1g-32k:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+      - name: Free disk space
         run: |
-          CREATE=$(grep '^create-1g-1m:' /tmp/create.log | sed -E 's/.*: ([0-9.]+) MB\/s.*/\1/')
-          echo "CREATE=$CREATE" >> "$GITHUB_OUTPUT"
-        id: parsecreate
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h / | tail -1
+      - name: Install deps (addon build)
+        working-directory: repo
+        run: npm ci --no-audit --no-fund
+      - name: Leg — PAR3 1 GiB / 32768 slices (32 KiB blocks)
+        working-directory: repo
+        run: |
+          set -o pipefail
+          node test/bench/par3-create-bench.js --size=1G --slices=32768 --block-size=32768 --recovery=8 2>&1 | tee /tmp/p3-32k.log
+          echo "MBS=$(grep -oE 'Throughput: [0-9.]+' /tmp/p3-32k.log | grep -oE '[0-9.]+$')" >> "$GITHUB_OUTPUT"
+        id: leg
+    outputs:
+      MBS: ${{ steps.leg.outputs.MBS }}
 
+  par3-1g-131072:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h / | tail -1
+      - name: Install deps (addon build)
+        working-directory: repo
+        run: npm ci --no-audit --no-fund
+      - name: Leg — PAR3 1 GiB / 131072 slices (8 KiB blocks)
+        working-directory: repo
+        run: |
+          set -o pipefail
+          node test/bench/par3-create-bench.js --size=1G --slices=131072 --block-size=8192 --recovery=8 2>&1 | tee /tmp/p3-131072.log
+          echo "MBS=$(grep -oE 'Throughput: [0-9.]+' /tmp/p3-131072.log | grep -oE '[0-9.]+$')" >> "$GITHUB_OUTPUT"
+        id: leg
+    outputs:
+      MBS: ${{ steps.leg.outputs.MBS }}
+
+  par3-1g-262144:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h / | tail -1
+      - name: Install deps (addon build)
+        working-directory: repo
+        run: npm ci --no-audit --no-fund
+      - name: Leg — PAR3 1 GiB / 262144 slices (4 KiB blocks)
+        working-directory: repo
+        run: |
+          set -o pipefail
+          node test/bench/par3-create-bench.js --size=1G --slices=262144 --block-size=4096 --recovery=8 2>&1 | tee /tmp/p3-262144.log
+          echo "MBS=$(grep -oE 'Throughput: [0-9.]+' /tmp/p3-262144.log | grep -oE '[0-9.]+$')" >> "$GITHUB_OUTPUT"
+        id: leg
+    outputs:
+      MBS: ${{ steps.leg.outputs.MBS }}
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [par2-1g-32k, par3-1g-32k, par3-1g-131072, par3-1g-262144]
+    # Publish whatever legs completed; a timed-out leg leaves its badge
+    # at the committed "pending" state instead of failing the month.
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
       - name: Update sources-ci.json
         working-directory: repo
         env:
-          CI_CREATE_MBS: ${{ steps.parsecreate.outputs.CREATE }}
-          CI_TREE_S: ${{ steps.parse.outputs.TREE }}
-          CI_MPE_S: ${{ steps.parse.outputs.MPE }}
-          CI_INTERP_S: ${{ steps.parse.outputs.INTERP }}
+          CI_PAR2_1G_32K_MBS: ${{ needs.par2-1g-32k.outputs.MBS }}
+          CI_PAR3_1G_32K_MBS: ${{ needs.par3-1g-32k.outputs.MBS }}
+          CI_PAR3_1G_131072_MBS: ${{ needs.par3-1g-131072.outputs.MBS }}
+          CI_PAR3_1G_262144_MBS: ${{ needs.par3-1g-262144.outputs.MBS }}
         run: node scripts/update-sources-ci.js
 
       - name: Regenerate endpoint JSONs
@@ -86,7 +148,7 @@ jobs:
           # recursive object merge — '+' would collapse files to the last);
           # shields.io serves the /raw/ (latest-revision) URLs from the README.
           BODY=$(
-            for f in benchmarks/badges/ci-*.json benchmarks/badges/sources-ci.json; do
+            for f in benchmarks/badges/*-ci.json benchmarks/badges/sources-ci.json; do
               jq -n --arg name "$(basename "$f")" --rawfile c "$f" \
                 '{files: {($name): {content: $c}}}'
             done | jq -s 'reduce .[] as $o ({}; . * $o)'

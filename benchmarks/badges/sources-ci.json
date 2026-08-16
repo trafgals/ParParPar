@@ -1,12 +1,51 @@
 {
   "repo": "trafgals/ParParPar",
-  "branch": "feat/ci-benchmark-badge",
+  "gistUser": "trafgals",
+  "gistId": "de34e89a8dda313fba9565f56ba7767b",
   "host": "GitHub Actions ubuntu-latest (shared runner — noisy by nature; absolute numbers, not ratios)",
   "date": "2026-08-16",
   "badges": [
-    {"id": "ci-create-1g-1m", "label": "create 1 GiB / 1 MiB (CI)", "message": "pending", "color": "lightgrey", "detail": "ubuntu-latest, R=8, auto threads; regenerated on every master push by ci-benchmark-badge"},
-    {"id": "ci-tree-131072", "label": "tree build @ N=131072 (CI)", "message": "pending", "color": "lightgrey", "detail": "bench_gf64_subquadratic CI mode (PAR3_CI_BENCH=1), ubuntu-latest"},
-    {"id": "ci-mpe-131072", "label": "MPE @ N=131072 (CI)", "message": "pending", "color": "lightgrey", "detail": "bench_gf64_subquadratic CI mode (PAR3_CI_BENCH=1), ubuntu-latest"},
-    {"id": "ci-interp-131072", "label": "interp @ N=131072 (CI)", "message": "pending", "color": "lightgrey", "detail": "bench_gf64_subquadratic CI mode (PAR3_CI_BENCH=1), ubuntu-latest"}
+    {
+      "id": "par2-1g-32k-ci",
+      "label": "PAR2 1GB/32k (CI)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR2 create, 1 GiB / 32768 slices (32 KiB), R=8; regenerated monthly (30th, 20:00 UTC) by ci-benchmark-badge"
+    },
+    {
+      "id": "par3-1g-32k-ci",
+      "label": "PAR3 1GB/32k (CI)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8; regenerated monthly"
+    },
+    {
+      "id": "par3-1g-131072-ci",
+      "label": "PAR3 1GB/131072 (CI)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8; regenerated monthly"
+    },
+    {
+      "id": "par3-1g-262144-ci",
+      "label": "PAR3 1GB/262144 (CI)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8; regenerated monthly"
+    },
+    {
+      "id": "par3-10g-131072-ci",
+      "label": "PAR3 10GB/131072 (CI)",
+      "message": "N/A >6h",
+      "color": "lightgrey",
+      "detail": "10 GiB leg is kernel-bound (~14 h on the shared runner) — over the 6 h job cap; not run in CI"
+    },
+    {
+      "id": "par3-10g-262144-ci",
+      "label": "PAR3 10GB/262144 (CI)",
+      "message": "N/A >6h",
+      "color": "lightgrey",
+      "detail": "10 GiB leg is kernel-bound (~36 h on the shared runner) — over the 6 h job cap; not run in CI"
+    }
   ]
 }
