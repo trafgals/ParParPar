@@ -46,14 +46,20 @@ function damageArchive(par3File) {
 }
 
 function run(tag, env, base, tempDir, cb) {
-	Object.keys(env).forEach(function(k) { process.env[k] = env[k]; });
+	Object.keys(env).forEach(function(k) {
+		if (env[k] === null) delete process.env[k];
+		else process.env[k] = env[k];
+	});
 	var outDir = path.join(tempDir, 'rep_' + tag);
 	fs.mkdirSync(outDir);
 	fs.copyFileSync(path.join(tempDir, 'in.bin'), path.join(outDir, 'in.bin'));
 	var t0 = Date.now();
 	par3.repair(base + '.par3', outDir, { verbose: 0 }, function(err, result) {
 		var dt = Date.now() - t0;
-		Object.keys(env).forEach(function(k) { delete process.env[k]; });
+		Object.keys(env).forEach(function(k) {
+			if (env[k] === null) { /* already deleted */ }
+			else delete process.env[k];
+		});
 		if (err) return cb(new Error('repair failed: ' + err.message));
 		cb(null, dt, result);
 	});
@@ -88,7 +94,9 @@ par3.create([inFile], base, {
 		process.exit(1);
 	}
 
-	run('coupled', {}, base, tempDir, function(e1, t1, r1) {
+	// Explicitly clear the env switch so the coupled leg cannot silently
+	// measure the legacy path (cubic review 208da585 P3).
+	run('coupled', { PAR3_REPAIR_COUPLED_RHS: null }, base, tempDir, function(e1, t1, r1) {
 		if (e1) { console.error(e1.message); process.exit(1); }
 		run('legacy', { PAR3_REPAIR_COUPLED_RHS: '0' }, base, tempDir, function(e2, t2, r2) {
 			if (e2) { console.error(e2.message); process.exit(1); }
