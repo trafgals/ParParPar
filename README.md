@@ -30,8 +30,8 @@ Numbers below are measured on the project's workhorse recipe: **1 GiB / 1 MiB bl
 | PAR3 create, 1 GiB / 1 MiB blocks (native Windows) | **66.1 MB/s** (15.5 s, 3-run median) | Post-B1-1.4 interleave (#72): e2e 29.6 → 15.5 s (1.91×); kernel 27.55 → 13.06 s (2.11×) |
 | PAR3 create, 1 GiB / 1000 slices (native Windows) | **98.7 MB/s** | Post-#57 parallel Barycentric (restored the 102.5 historical ceiling); JS-pipeline class |
 | PAR3 create, 1 GiB / 10K slices (native Windows) | 27.3 MB/s | JS-pipeline-bound (NAPI + worker_threads), not kernel — B1 target ≥ 90 |
-| PAR3 repair, 32 MiB / 256 blocks / 8 missing (native Windows) | 120 ms | Post-B2 native matrix (#73/#74) + coupled RHS (#75/#76): 5.7× vs the legacy loop, byte-identical |
-| PAR3 repair coefficient build, 1G/10K geometry (n=1000 × N=10000) | **820×** | JS BigInt invert64 ×10M: 122.6 s → native `build_coefficient_matrix`: 161 ms |
+| PAR3 repair, 32 MiB / 256 blocks / 8 missing (native Windows) | 119 ms | Post-B2 native matrix (#73/#74) + coupled RHS (#75/#76): 5.7× vs the legacy loop, byte-identical |
+| PAR3 repair coefficient build, 1G/10K geometry (n=1000 × N=10000) | **761×** | JS BigInt invert64 ×10M: 122.6 s → native `build_coefficient_matrix`: 161 ms |
 | PAR2 reference, 1 GiB / 1000 slices create (native Windows) | **622 MB/s** | PAR3 GF(2^64) Cauchy-matrix overhead is the dominant cost vs PAR2's GFNI+AVX-512 |
 
 Bench-shape rules (C2): power-of-2 slice counts only; the 10G/100k shape is deprecated (its block sizes are not powers of 2 — the engine requires pow2); the acceptance workload is the **magic shape** (16 GiB @ 4 KiB → N = 2²², R = 2¹⁹ — zero padding, Fenger direct). Every dispatch/gate change ships contract tests (#56 pattern, `AGENTS.md`).
