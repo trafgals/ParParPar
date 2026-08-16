@@ -218,25 +218,32 @@ function leg3(tempDir, cb) {
 		return s;
 	};
 	var usedStreaming = null;
-	gen.run(function(ev, data) {
-		if (ev === 'complete') usedStreaming = data.usedStreamingRecovery;
-	}, function(err) {
+	try {
+		gen.run(function(ev, data) {
+			if (ev === 'complete') usedStreaming = data.usedStreamingRecovery;
+		}, function(err) {
+			fs.statSync = origStat;
+			delete process.env.PAR3_GF64_FAST_CREATE;
+			try { gen.close(); } catch (e) {}
+			if (err) return cb(new Error('leg3 create failed: ' + err.message));
+			par3.verify(outBase + '.par3', function(verr, vres) {
+				if (verr) return cb(new Error('leg3 verify failed: ' + verr.message));
+				try {
+					assert.strictEqual(usedStreaming, false, 'changed source must invalidate the streaming recovery');
+					assert(vres.verified, 'leg3 archive must verify clean (legacy compute took over)');
+					console.log('leg3 ok: mid-flight source change invalidates the streaming recovery, archive verifies clean');
+					cb();
+				} catch (e) {
+					cb(e);
+				}
+			});
+		});
+	} catch (e) {
+		// sync throw from run() — restore the patched global + env
 		fs.statSync = origStat;
 		delete process.env.PAR3_GF64_FAST_CREATE;
-		try { gen.close(); } catch (e) {}
-		if (err) return cb(new Error('leg3 create failed: ' + err.message));
-		par3.verify(outBase + '.par3', function(verr, vres) {
-			if (verr) return cb(new Error('leg3 verify failed: ' + verr.message));
-			try {
-				assert.strictEqual(usedStreaming, false, 'changed source must invalidate the streaming recovery');
-				assert(vres.verified, 'leg3 archive must verify clean (legacy compute took over)');
-				console.log('leg3 ok: mid-flight source change invalidates the streaming recovery, archive verifies clean');
-				cb();
-			} catch (e) {
-				cb(e);
-			}
-		});
-	});
+		cb(e);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -265,26 +272,33 @@ function leg4(tempDir, cb) {
 		return origRead.apply(this, arguments);
 	};
 	var usedStreaming = null;
-	gen.run(function(ev, data) {
-		if (ev === 'complete') usedStreaming = data.usedStreamingRecovery;
-	}, function(err) {
+	try {
+		gen.run(function(ev, data) {
+			if (ev === 'complete') usedStreaming = data.usedStreamingRecovery;
+		}, function(err) {
+			fs.readSync = origRead;
+			delete process.env.PAR3_GF64_FAST_CREATE;
+			try { gen.close(); } catch (e) {}
+			if (err) return cb(new Error('leg4 create failed: ' + err.message));
+			par3.verify(outBase + '.par3', function(verr, vres) {
+				if (verr) return cb(new Error('leg4 verify failed: ' + verr.message));
+				try {
+					assert(threw, 'the simulated bulk-read failure must have engaged');
+					assert.strictEqual(usedStreaming, false, 'bulk-read failure must invalidate the streaming recovery');
+					assert(vres.verified, 'leg4 archive must verify clean (fallback path)');
+					console.log('leg4 ok: bulk-read failure falls back and invalidates the streaming recovery, archive verifies clean');
+					cb();
+				} catch (e) {
+					cb(e);
+				}
+			});
+		});
+	} catch (e) {
+		// sync throw from run() — restore the patched global + env
 		fs.readSync = origRead;
 		delete process.env.PAR3_GF64_FAST_CREATE;
-		try { gen.close(); } catch (e) {}
-		if (err) return cb(new Error('leg4 create failed: ' + err.message));
-		par3.verify(outBase + '.par3', function(verr, vres) {
-			if (verr) return cb(new Error('leg4 verify failed: ' + verr.message));
-			try {
-				assert(threw, 'the simulated bulk-read failure must have engaged');
-				assert.strictEqual(usedStreaming, false, 'bulk-read failure must invalidate the streaming recovery');
-				assert(vres.verified, 'leg4 archive must verify clean (fallback path)');
-				console.log('leg4 ok: bulk-read failure falls back and invalidates the streaming recovery, archive verifies clean');
-				cb();
-			} catch (e) {
-				cb(e);
-			}
-		});
-	});
+		cb(e);
+	}
 }
 
 var tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'par3-stream-parity-'));
