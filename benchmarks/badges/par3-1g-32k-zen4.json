@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "label": "create 1 GiB / 1 MiB (CI)",
+  "label": "PAR3 1GB/32k (Zen4)",
   "message": "pending",
   "color": "lightgrey"
 }

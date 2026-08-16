@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "label": "MPE @ N=131072 (CI)",
+  "label": "PAR3 1GB/131072 (Zen4)",
   "message": "pending",
   "color": "lightgrey"
 }

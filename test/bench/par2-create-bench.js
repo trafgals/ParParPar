@@ -3,21 +3,20 @@
 /*
  * PAR2 Creation Performance Benchmark
  *
- * LOCAL ONLY — never run in CI.
- *
  * Usage:
- *   node test/bench/par2-create-bench.js --size=1G --slices=10000
+ *   node test/bench/par2-create-bench.js --size=1G --slices=10000 [--recovery=N]
  *
  * Workload:
  *   - Configurable source size (default 1 GiB)
- *   - Configurable slice count (default 10,000)
- *   - 10% recovery slices
+ *   - Configurable slice count (default 10,000; max 65536)
+ *   - 10% recovery slices by default, or --recovery=N
  *
  * Output format matches par3-create-bench.js for direct PAR2 vs PAR3 comparison.
  *
- * Note: PAR2 spec limits recovery to 32767 slices max, so we only support
- * 10k slices for direct PAR2 vs PAR3 comparison. Larger slice counts are
- * permitted but the comparison will no longer be like-for-like.
+ * Note: PAR2 packet slice numbers are 16-bit (max 65536 input slices);
+ * recovery slices are limited to 32767 by the spec. The input cap here is
+ * set to 65536. Runs in the monthly ci-benchmark-badge workflow (CI) and
+ * on the reference host; the PAR2 row is the GFNI+AVX-512 speed reference.
  */
 
 var path = require('path');
@@ -29,16 +28,17 @@ var DEFAULT_SLICES = 10000;
 
 function parseArgs() {
   var args = process.argv.slice(2);
-  var opts = { size: DEFAULT_SIZE, slices: DEFAULT_SLICES, keep: false };
+  var opts = { size: DEFAULT_SIZE, slices: DEFAULT_SLICES, keep: false, recovery: null };
   for (var i = 0; i < args.length; i++) {
     var a = args[i];
     if (a === '--keep') opts.keep = true;
     else if (a.indexOf('--slices=') === 0) opts.slices = parseInt(a.substring('--slices='.length), 10);
+    else if (a.indexOf('--recovery=') === 0) opts.recovery = parseInt(a.substring('--recovery='.length), 10);
     else if (a.indexOf('--size=') === 0) opts.size = helpers.parseSize(a.substring('--size='.length));
     else if (a === '--help' || a === '-h') opts.help = true;
   }
-  if (opts.slices > 32767) {
-    console.error('PAR2 spec limit: max 32767 slices. Use --slices=10000 for direct PAR3 comparison.');
+  if (opts.slices > 65536) {
+    console.error('PAR2 spec limit: max 65536 input slices.');
     process.exit(2);
   }
   return opts;
@@ -63,7 +63,7 @@ function printHelp() {
 function runScenario(opts) {
   var sliceCount = opts.slices;
   var sliceCountArg = sliceCount.toString();
-  var recoverySlices = Math.max(1, Math.floor(sliceCount * 0.10));
+  var recoverySlices = (opts.recovery != null) ? opts.recovery : Math.max(1, Math.floor(sliceCount * 0.10));
   var gf = helpers.ensureGfMethod();
 
   var tmpDir = helpers.getTempDir('par2-create-bench');

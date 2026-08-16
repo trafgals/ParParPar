@@ -61,3 +61,6 @@ node_modules/
 gf64/test/test_*
 gf64/test/bench_*
 !gf64/test/*.c
+
+# PAR3_PROFILE=1 dump
+.par3-profile-dump.txt
