@@ -2,5 +2,6 @@
   "schemaVersion": 1,
   "label": "PAR3 1GB/131072 (Zen4)",
   "message": "pending",
-  "color": "lightgrey"
+  "color": "lightgrey",
+  "labelColor": "555"
 }
