@@ -365,6 +365,19 @@ static void fenger_batch_shared_mul(
 	gf64_t *scratch, size_t scratch_words)
 {
 	if (gf64_current_method == GF64_AVX512) {
+		/* Interleaved path: K <= 8 words transformed together in the
+		 * coefficient-major layout. Needs 32n scratch (4 * 8 * n);
+		 * falls back to the within-word SIMD path otherwise. */
+		size_t full_len = len_shared + len_f - 1;
+		if (full_len < out_len) full_len = out_len;
+		size_t n = 1;
+		while (n < full_len) n <<= 1;
+		if (K <= 8 && scratch_words >= 32 * n) {
+			gf64_addfft64_poly_mul_batch_shared_interleaved_avx512(
+				outs, K, shared, len_shared, f, len_f, out_len,
+				scratch, scratch_words);
+			return;
+		}
 		gf64_addfft64_poly_mul_batch_shared_avx512(
 			outs, K, shared, len_shared, f, len_f, out_len,
 			scratch, scratch_words);
@@ -424,7 +437,8 @@ static void fenger_interp_recurse_batch(
 
 	if (fenger_hqc_eligible(f_size + 1, f_size, N_at_lev)) {
 		const size_t n = 2 * f_size; /* next_pow2(max(2·f_size, N_at_lev)) */
-		const size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n);
+		/* 32n (not 4n) so the interleaved batch FFT engages (K <= 8). */
+		const size_t sw = 32 * n;
 		gf64_t *ptrs[FENGER_BATCH_K_MAX];
 		for (size_t k = 0; k < K; k++) ptrs[k] = slot2 + k * N_at_lev;
 		fenger_batch_shared_mul(ptrs, K, P_R, f_size + 1, slot0, f_size,
@@ -713,8 +727,10 @@ static void gf64_fenger_execute_batched(
 	 * walk is over tree_y, whose root size is R (NOT N; R > N is the
 	 * walk's raison d'être). */
 	gf64_t *eval_scratch = (gf64_t *)malloc((6 * K + 4) * R * sizeof(gf64_t));
-	/* batch mul scratch: max eval n = 2·(R/2) = R at the root -> 4R words. */
-	gf64_t *interp_mul = (gf64_t *)malloc(4 * N * sizeof(gf64_t));
+	/* batch mul scratch: max eval n = 2·(R/2) = R at the root -> 4R words.
+	 * The interp's scratch is 8× (32N) so the interleaved batch FFT
+	 * (K <= 8) engages; the scalar/within-word paths use only the first 4N. */
+	gf64_t *interp_mul = (gf64_t *)malloc(32 * N * sizeof(gf64_t));
 	gf64_t *eval_mul   = (gf64_t *)malloc(4 * R * sizeof(gf64_t));
 	if (!weighted || !poly_p || !p_at_y ||
 	    !interp_scratch || !eval_scratch || !interp_mul || !eval_mul) {
@@ -745,7 +761,7 @@ static void gf64_fenger_execute_batched(
 			}
 		}
 		fenger_interp_batch(tree_x, weighted, K_eff, poly_p,
-		                    interp_scratch, interp_mul, mul_sw);
+		                    interp_scratch, interp_mul, 32 * N);
 
 		/* 4c: batched MPE over the recovery tree. The tree walk is only
 		 * valid for deg_p < R (the interpolation bound); for R == 1 or
