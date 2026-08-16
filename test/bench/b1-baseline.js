@@ -34,7 +34,7 @@ function freshRequire() {
   // The profile global persists across requires — wipe it so the env is
   // re-read (the module's init guard skips re-init otherwise).
   delete global.__par3Profile;
-  return require('../lib/par3gen.js');
+  return require('../../lib/par3gen.js');
 }
 
 function runOnce(tag, opts, cb) {

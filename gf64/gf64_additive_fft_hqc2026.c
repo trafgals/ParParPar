@@ -1128,8 +1128,8 @@ void gf64_addfft64_poly_mul_batch_shared_interleaved_avx512(
 	size_t out_len,
 	gf64_t *scratch, size_t scratch_words)
 {
-	if (K == 0) return;
-	if (len_shared == 0 || len_f == 0 || out_len == 0) {
+	if (K == 0 || out_len == 0) return;
+	if (len_shared == 0 || len_f == 0) {
 		for (size_t k = 0; k < K; k++) {
 			memset(outs[k], 0, out_len * sizeof(gf64_t));
 		}
