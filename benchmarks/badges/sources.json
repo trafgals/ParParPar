@@ -21,16 +21,16 @@
     {
       "id": "par3-1g-131072-zen4",
       "label": "PAR3 1GB/131072 (Zen4)",
-      "message": "pending",
-      "color": "lightgrey",
-      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Fenger kernel"
+      "message": "0.45 MB/s",
+      "color": "yellow",
+      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Fenger kernel; 38.0 min"
     },
     {
       "id": "par3-1g-262144-zen4",
       "label": "PAR3 1GB/262144 (Zen4)",
-      "message": "pending",
-      "color": "lightgrey",
-      "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Fenger kernel"
+      "message": "0.22 MB/s",
+      "color": "yellow",
+      "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Fenger kernel; 77.2 min"
     },
     {
       "id": "par3-10g-131072-zen4",
