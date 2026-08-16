@@ -1,4 +1,4 @@
-// par3_create_streaming NAPI binding — fd/path-based zero-copy PAR3 create.
+// par3_create_streaming NAPI binding — async fd/path-based zero-copy PAR3 create.
 //
 // Exposed as `gf64.par3_create_streaming(sourcePath, options, callback)`.
 //
@@ -9,7 +9,13 @@
 //     PAR3_GF64_USE_MMAP=1, otherwise reads the file into a 64-byte-aligned
 //     buffer, then runs GF64Controller::ComputeRecoveryBlocksFull on the
 //     mapped/buffered pointer.
-//   - Returns { recoveryBytes, throughputMBps, durationMs } via callback.
+//   - ASYNC (B1 step 3 overlap): the read + kernel run on the libuv worker
+//     pool (napi_async_work), so the JS read/hash pipeline can overlap the
+//     recovery computation instead of blocking the event loop.
+//   - Returns { recoveryBytes, throughputMBps, durationMs, recoveryBuffer }
+//     via callback. recoveryBuffer is an external Buffer (GC-finalized);
+//     on NAPI failure the recovery is freed and the legacy path stays
+//     authoritative.
 
 #include <node_api.h>
 
@@ -58,6 +64,251 @@
 static void Par3csRecoveryFinalizer(napi_env env, void* data, void* hint) {
 	(void)env; (void)hint;
 	if(data) aligned_free(data);
+}
+
+/* Async work context: inputs parsed on the main thread, the read+kernel in
+ * the execute callback, the result + callback in the complete callback. */
+struct Par3csWork {
+	char sourcePath[4096];
+	int32_t numRecovery;
+	int64_t blockSize;
+	uint64_t firstInput;
+	uint64_t firstRecovery;
+	int32_t numThreads;
+	napi_async_work work;
+	napi_ref callbackRef;
+	/* outputs (written by execute, read by complete) */
+	bool ok;
+	char errorCode[32];
+	char errorMsg[512];
+	uint8_t* recovery;
+	size_t recoveryBytes;
+	double durationMs;
+	double throughputMBps;
+};
+
+static void Par3csExecute(napi_env env, void* data) {
+	(void)env;
+	Par3csWork* ctx = (Par3csWork*)data;
+	ctx->ok = false;
+	ctx->recovery = NULL;
+	ctx->recoveryBytes = 0;
+	ctx->errorCode[0] = '\0';
+	ctx->errorMsg[0] = '\0';
+
+	int fd = ::open(ctx->sourcePath, O_RDONLY
+#ifndef O_BINARY
+	               /* POSIX: binary is the default */
+#else
+	               | O_BINARY
+#endif
+	);
+	if(fd < 0) {
+		int err = errno;
+		const char* nodeCode = "EIO";
+		switch(err) {
+			case ENOENT:  nodeCode = "ENOENT";  break;
+			case EACCES:  nodeCode = "EACCES";  break;
+			case EISDIR:  nodeCode = "EISDIR";  break;
+			case EFBIG:   nodeCode = "EFBIG";   break;
+			case ENOMEM:  nodeCode = "ENOMEM";  break;
+			case ENAMETOOLONG: nodeCode = "ENAMETOOLONG"; break;
+			default: break;
+		}
+		std::snprintf(ctx->errorCode, sizeof(ctx->errorCode), "%s", nodeCode);
+		std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "open failed for sourcePath: errno=%d (%s)", err, std::strerror(err));
+		return;
+	}
+
+	struct stat st;
+	if(::fstat(fd, &st) != 0) {
+		int err = errno;
+		::close(fd);
+		std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "fstat failed: errno=%d (%s)", err, std::strerror(err));
+		return;
+	}
+
+	if(st.st_size <= 0) {
+		::close(fd);
+		std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "sourcePath is empty");
+		return;
+	}
+
+	size_t totalBytes = (size_t)st.st_size;
+	size_t numInputs = (size_t)((totalBytes + (size_t)ctx->blockSize - 1) / (size_t)ctx->blockSize);
+	size_t blockSize64 = (size_t)(ctx->blockSize / 8);
+	uint8_t* mappedPtr = NULL;
+	bool mmapActive = false;
+
+#if PARPAR_STREAMING_USE_MMAP
+	const char* useMmapEnv = std::getenv("PAR3_GF64_USE_MMAP");
+	if(useMmapEnv != NULL && useMmapEnv[0] == '1') {
+		void* mm = ::mmap(NULL, totalBytes, PROT_READ, MAP_PRIVATE, fd, 0);
+		if(mm != MAP_FAILED) {
+			mappedPtr = (uint8_t*)mm;
+			mmapActive = true;
+		}
+	}
+#endif
+	uint8_t* readBuffer = NULL;
+	if(mappedPtr == NULL) {
+		readBuffer = (uint8_t*)aligned_alloc(64, (totalBytes + 63) & ~((size_t)63));
+		if(readBuffer == NULL) {
+			::close(fd);
+			std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "aligned_alloc failed for source buffer");
+			return;
+		}
+		size_t off = 0;
+		while(off < totalBytes) {
+			ssize_t n = ::read(fd, readBuffer + off, totalBytes - off);
+			if(n < 0) {
+				if(errno == EINTR) continue;
+				int err = errno;
+				aligned_free(readBuffer);
+				::close(fd);
+				std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "read failed: errno=%d (%s)", err, std::strerror(err));
+				return;
+			}
+			if(n == 0) {
+				aligned_free(readBuffer);
+				::close(fd);
+				std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "unexpected EOF while reading sourcePath");
+				return;
+			}
+			off += (size_t)n;
+		}
+		mappedPtr = readBuffer;
+	}
+
+	const uint8_t* inputsBytes = mappedPtr;
+	size_t recoveryBytes = (size_t)ctx->numRecovery * (size_t)ctx->blockSize;
+	uint8_t* recovery = (uint8_t*)aligned_alloc(64, (recoveryBytes + 63) & ~((size_t)63));
+	if(recovery == NULL) {
+#if PARPAR_STREAMING_USE_MMAP
+		if(mmapActive) ::munmap((void*)mappedPtr, totalBytes);
+#endif
+		if(readBuffer) aligned_free(readBuffer);
+		::close(fd);
+		std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "aligned_alloc failed for recovery buffer");
+		return;
+	}
+	std::memset(recovery, 0, recoveryBytes);
+
+	gf64_init_dispatch();
+	auto t0 = std::chrono::steady_clock::now();
+	GF64Controller::ComputeRecoveryBlocksFull(
+		(const gf64_t*)inputsBytes, numInputs,
+		(gf64_t*)recovery, (size_t)ctx->numRecovery,
+		blockSize64,
+		ctx->firstInput, ctx->firstRecovery,
+		(int)ctx->numThreads
+	);
+	auto t1 = std::chrono::steady_clock::now();
+
+	double durationMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+	double throughputMBps = 0.0;
+	if(durationMs > 0.0) {
+		throughputMBps = ((double)recoveryBytes / 1048576.0) / (durationMs / 1000.0);
+	}
+
+#if PARPAR_STREAMING_USE_MMAP
+	if(mmapActive) {
+		::munmap((void*)mappedPtr, totalBytes);
+	}
+#endif
+	if(readBuffer) {
+		aligned_free(readBuffer);
+	}
+	::close(fd);
+
+	ctx->ok = true;
+	ctx->recovery = recovery;
+	ctx->recoveryBytes = recoveryBytes;
+	ctx->durationMs = durationMs;
+	ctx->throughputMBps = throughputMBps;
+}
+
+static void Par3csComplete(napi_env env, napi_status status, void* data) {
+	Par3csWork* ctx = (Par3csWork*)data;
+	napi_status s;
+
+	if(status != napi_ok) {
+		ctx->ok = false;
+		if(ctx->errorMsg[0] == '\0') {
+			std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "async work failed (napi status %d)", (int)status);
+		}
+	}
+
+	napi_value cbArgs[2];
+	if(!ctx->ok) {
+		/* error: cb(err, NULL) */
+		napi_value errVal;
+		napi_value msgVal;
+		napi_create_string_utf8(env, ctx->errorMsg[0] ? ctx->errorMsg : "par3_create_streaming failed", NAPI_AUTO_LENGTH, &msgVal);
+		s = napi_create_error(env, NULL, msgVal, &errVal);
+		if(s != napi_ok) {
+			napi_get_undefined(env, &errVal);
+		}
+		cbArgs[0] = errVal;
+		napi_get_null(env, &cbArgs[1]);
+		if(ctx->recovery) {
+			/* execute failed after the recovery alloc — free it here (the
+			 * external buffer was never created). */
+			aligned_free(ctx->recovery);
+			ctx->recovery = NULL;
+		}
+	} else {
+		/* success: cb(null, { recoveryBytes, throughputMBps, durationMs, recoveryBuffer }) */
+		napi_value resultObj;
+		s = napi_create_object(env, &resultObj);
+		if(s != napi_ok) {
+			aligned_free(ctx->recovery);
+			ctx->recovery = NULL;
+			napi_value errVal;
+			napi_value msgVal;
+			napi_create_string_utf8(env, "Failed to create result object", NAPI_AUTO_LENGTH, &msgVal);
+			napi_create_error(env, NULL, msgVal, &errVal);
+			cbArgs[0] = errVal;
+			napi_get_null(env, &cbArgs[1]);
+		} else {
+			napi_value recoveryBytesVal;
+			napi_create_uint32(env, (uint32_t)(ctx->recoveryBytes & 0xFFFFFFFF), &recoveryBytesVal);
+			napi_set_named_property(env, resultObj, "recoveryBytes", recoveryBytesVal);
+
+			napi_value throughputVal;
+			napi_create_double(env, ctx->throughputMBps, &throughputVal);
+			napi_set_named_property(env, resultObj, "throughputMBps", throughputVal);
+
+			napi_value durationVal;
+			napi_create_double(env, ctx->durationMs, &durationVal);
+			napi_set_named_property(env, resultObj, "durationMs", durationVal);
+
+			/* A2-rev: hand the recovery buffer to JS (external buffer,
+			 * GC-finalized). Ownership (and freeing) belongs to the external
+			 * buffer from here on — on failure, free it and the legacy path
+			 * remains authoritative. */
+			napi_value recoveryBufferVal;
+			s = napi_create_external_buffer(env, ctx->recoveryBytes, ctx->recovery, Par3csRecoveryFinalizer, NULL, &recoveryBufferVal);
+			if(s != napi_ok) {
+				aligned_free(ctx->recovery);
+			} else {
+				napi_set_named_property(env, resultObj, "recoveryBuffer", recoveryBufferVal);
+			}
+			ctx->recovery = NULL; /* owned by the external buffer (or freed) */
+
+			napi_get_null(env, &cbArgs[0]);
+			cbArgs[1] = resultObj;
+		}
+	}
+
+	napi_value callback;
+	if(napi_get_reference_value(env, ctx->callbackRef, &callback) == napi_ok) {
+		napi_value cbReturn;
+		napi_call_function(env, callback, callback, 2, cbArgs, &cbReturn);
+	}
+	napi_delete_reference(env, ctx->callbackRef);
+	napi_delete_async_work(env, ctx->work);
+	std::free(ctx);
 }
 
 static napi_status par3cs_get_uint64(napi_env env, napi_value val, uint64_t* result);
@@ -134,7 +385,6 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 		napi_throw_range_error(env, NULL, "blockSize must be positive and a multiple of 8");
 		return NULL;
 	}
-	size_t blockSize64 = (size_t)(blockSize / 8);
 
 	uint64_t firstInput = 0;
 	napi_value firstInputVal;
@@ -172,207 +422,43 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	int fd = ::open(sourcePath, O_RDONLY
-#ifndef O_BINARY
-	               /* POSIX: binary is the default */
-#else
-	               | O_BINARY
-#endif
-	);
-	if(fd < 0) {
-		int err = errno;
-		char msg[256];
-		std::snprintf(msg, sizeof(msg), "open failed for sourcePath: errno=%d (%s)", err, std::strerror(err));
-		const char* nodeCode = "EIO";
-		switch(err) {
-			case ENOENT:  nodeCode = "ENOENT";  break;
-			case EACCES:  nodeCode = "EACCES";  break;
-			case EISDIR:  nodeCode = "EISDIR";  break;
-			case EFBIG:   nodeCode = "EFBIG";   break;
-			case ENOMEM:  nodeCode = "ENOMEM";  break;
-			case ENAMETOOLONG: nodeCode = "ENAMETOOLONG"; break;
-			default: break;
-		}
-		napi_throw_error(env, nodeCode, msg);
+	Par3csWork* ctx = (Par3csWork*)std::malloc(sizeof(Par3csWork));
+	if(ctx == NULL) {
+		napi_throw_error(env, NULL, "malloc failed for par3_create_streaming context");
+		return NULL;
+	}
+	std::memset(ctx, 0, sizeof(*ctx));
+	std::snprintf(ctx->sourcePath, sizeof(ctx->sourcePath), "%s", sourcePath);
+	ctx->numRecovery = numRecovery;
+	ctx->blockSize = blockSize;
+	ctx->firstInput = firstInput;
+	ctx->firstRecovery = firstRecovery;
+	ctx->numThreads = numThreads;
+
+	if(napi_create_reference(env, args[2], 1, &ctx->callbackRef) != napi_ok) {
+		std::free(ctx);
+		napi_throw_error(env, NULL, "Failed to create callback reference");
 		return NULL;
 	}
 
-	struct stat st;
-	if(::fstat(fd, &st) != 0) {
-		int err = errno;
-		::close(fd);
-		char msg[256];
-		std::snprintf(msg, sizeof(msg), "fstat failed: errno=%d (%s)", err, std::strerror(err));
-		napi_throw_error(env, NULL, msg);
+	napi_value workName;
+	napi_create_string_utf8(env, "par3_create_streaming", NAPI_AUTO_LENGTH, &workName);
+	if(napi_create_async_work(env, NULL, workName, Par3csExecute, Par3csComplete, ctx, &ctx->work) != napi_ok) {
+		napi_delete_reference(env, ctx->callbackRef);
+		std::free(ctx);
+		napi_throw_error(env, NULL, "Failed to create async work");
 		return NULL;
 	}
 
-	if(st.st_size <= 0) {
-		::close(fd);
-		napi_throw_range_error(env, NULL, "sourcePath is empty");
+	if(napi_queue_async_work(env, ctx->work) != napi_ok) {
+		napi_delete_reference(env, ctx->callbackRef);
+		napi_delete_async_work(env, ctx->work);
+		std::free(ctx);
+		napi_throw_error(env, NULL, "Failed to queue async work");
 		return NULL;
 	}
 
-	if(((int64_t)st.st_size) % blockSize != 0) {
-		::close(fd);
-		char msg[256];
-		std::snprintf(msg, sizeof(msg),
-			"sourcePath size (%lld) is not a multiple of blockSize (%lld)",
-			(long long)st.st_size, (long long)blockSize);
-		napi_throw_range_error(env, NULL, msg);
-		return NULL;
-	}
-	size_t numInputs = (size_t)(st.st_size / blockSize);
-
-	const char* useMmapEnv = std::getenv("PAR3_GF64_USE_MMAP");
-	bool useMmap = (useMmapEnv != NULL && useMmapEnv[0] != '\0' && useMmapEnv[0] != '0');
-#if !PARPAR_STREAMING_USE_MMAP
-	// mmap() not available on this platform (e.g. Windows). Force read-path.
-	useMmap = false;
-#endif
-
-	const uint8_t* mappedPtr = NULL;
-	uint8_t* readBuffer = NULL;
-	bool mmapActive = false;
-
-	if(useMmap) {
-#if PARPAR_STREAMING_USE_MMAP
-		void* p = ::mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-		if(p == MAP_FAILED) {
-			int err = errno;
-			::close(fd);
-			char msg[256];
-			std::snprintf(msg, sizeof(msg), "mmap failed: errno=%d (%s)", err, std::strerror(err));
-			napi_throw_error(env, NULL, msg);
-			return NULL;
-		}
-		mappedPtr = (const uint8_t*)p;
-		mmapActive = true;
-#endif
-	} else {
-		size_t totalBytes = (size_t)st.st_size;
-		readBuffer = (uint8_t*)aligned_alloc(64, (totalBytes + 63) & ~((size_t)63));
-		if(readBuffer == NULL) {
-			::close(fd);
-			napi_throw_error(env, NULL, "aligned_alloc failed for source buffer");
-			return NULL;
-		}
-		size_t off = 0;
-		while(off < totalBytes) {
-			ssize_t n = ::read(fd, readBuffer + off, totalBytes - off);
-			if(n < 0) {
-				if(errno == EINTR) continue;
-				int err = errno;
-				aligned_free(readBuffer);
-				::close(fd);
-				char msg[256];
-				std::snprintf(msg, sizeof(msg), "read failed: errno=%d (%s)", err, std::strerror(err));
-				napi_throw_error(env, NULL, msg);
-				return NULL;
-			}
-			if(n == 0) {
-				aligned_free(readBuffer);
-				::close(fd);
-				napi_throw_error(env, NULL, "unexpected EOF while reading sourcePath");
-				return NULL;
-			}
-			off += (size_t)n;
-		}
-		mappedPtr = readBuffer;
-	}
-
-	const uint8_t* inputsBytes = mappedPtr;
-	size_t recoveryBytes = (size_t)numRecovery * (size_t)blockSize;
-	uint8_t* recovery = (uint8_t*)aligned_alloc(64, (recoveryBytes + 63) & ~((size_t)63));
-	if(recovery == NULL) {
-#if PARPAR_STREAMING_USE_MMAP
-		if(mmapActive) ::munmap((void*)mappedPtr, (size_t)st.st_size);
-#endif
-		if(readBuffer) aligned_free(readBuffer);
-		::close(fd);
-		napi_throw_error(env, NULL, "aligned_alloc failed for recovery buffer");
-		return NULL;
-	}
-	std::memset(recovery, 0, recoveryBytes);
-
-	gf64_init_dispatch();
-	auto t0 = std::chrono::steady_clock::now();
-	GF64Controller::ComputeRecoveryBlocksFull(
-		(const gf64_t*)inputsBytes, numInputs,
-		(gf64_t*)recovery, (size_t)numRecovery,
-		blockSize64,
-		firstInput, firstRecovery,
-		(int)numThreads
-	);
-	auto t1 = std::chrono::steady_clock::now();
-
-	double durationMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
-	double throughputMBps = 0.0;
-	if(durationMs > 0.0) {
-		throughputMBps = ((double)recoveryBytes / 1048576.0) / (durationMs / 1000.0);
-	}
-
-	if(mmapActive) {
-#if PARPAR_STREAMING_USE_MMAP
-		::munmap((void*)mappedPtr, (size_t)st.st_size);
-#endif
-	}
-	if(readBuffer) {
-		aligned_free(readBuffer);
-	}
-	::close(fd);
-
-	napi_value resultObj;
-	status = napi_create_object(env, &resultObj);
-	if(status != napi_ok) {
-		/* pre-handoff error: the recovery buffer is still ours (external
-		 * ownership starts at napi_create_external_buffer) — free it. */
-		aligned_free(recovery);
-		napi_throw_error(env, NULL, "Failed to create result object");
-		return NULL;
-	}
-
-	napi_value recoveryBytesVal;
-	napi_create_uint32(env, (uint32_t)(recoveryBytes & 0xFFFFFFFF), &recoveryBytesVal);
-	napi_set_named_property(env, resultObj, "recoveryBytes", recoveryBytesVal);
-
-	napi_value throughputVal;
-	napi_create_double(env, throughputMBps, &throughputVal);
-	napi_set_named_property(env, resultObj, "throughputMBps", throughputVal);
-
-	napi_value durationVal;
-	napi_create_double(env, durationMs, &durationVal);
-	napi_set_named_property(env, resultObj, "durationMs", durationVal);
-
-	/* A2-rev: hand the recovery buffer to JS (external buffer, GC-finalized)
-	 * so the opt-in streaming path can feed _finalizeRecoveryBlocks directly
-	 * instead of being telemetry-only. On failure, fall back to the
-	 * telemetry-only result (legacy path remains authoritative). */
-	{
-		napi_value recoveryBufferVal;
-		status = napi_create_external_buffer(env, recoveryBytes, recovery, Par3csRecoveryFinalizer, NULL, &recoveryBufferVal);
-		if(status != napi_ok) {
-			/* create failed — the buffer is still ours; the legacy path remains
-			 * authoritative and will not touch this memory. */
-			aligned_free(recovery);
-		} else {
-			/* ownership (and freeing) belongs to the external buffer from here
-			 * on — property attach is best-effort and must NOT free (the
-			 * finalizer would double-free). */
-			napi_set_named_property(env, resultObj, "recoveryBuffer", recoveryBufferVal);
-		}
-	}
-
-	napi_value cbArgs[2];
-	napi_get_null(env, &cbArgs[0]);
-	cbArgs[1] = resultObj;
-	napi_value cbReturn;
-	status = napi_call_function(env, args[2], args[2], 2, cbArgs, &cbReturn);
-	if(status != napi_ok) {
-		return NULL;
-	}
-
-	return NULL;
+	return NULL; /* undefined — the result arrives via the callback */
 }
 
 static napi_status par3cs_get_uint64(napi_env env, napi_value val, uint64_t* result) {

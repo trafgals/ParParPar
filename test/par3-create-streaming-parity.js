@@ -46,8 +46,9 @@ var fails = 0;
 
 // ---------------------------------------------------------------------------
 // Leg 1: binding contract — streaming recovery buffer == legacy compute
+// (async call: the asserts run inside the callback)
 // ---------------------------------------------------------------------------
-function leg1(tempDir) {
+function leg1(tempDir, cb) {
 	var inFile = path.join(tempDir, 'leg1.bin');
 	makeInput(inFile);
 
@@ -63,11 +64,14 @@ function leg1(tempDir) {
 	addon.compute_recovery_full(inputs, legacy, totalInputBlocks, RECOVERY, BLOCK, firstInput, firstRecovery, 0);
 
 	// Streaming call (mmap disabled so the read path is uniform; save and
-	// restore any pre-existing value so the env is not leaked)
+	// restore any pre-existing value so the env is not leaked — restored in
+	// the async callback, after the worker thread has read it)
 	var prevMmapEnv = process.env.PAR3_GF64_USE_MMAP;
 	delete process.env.PAR3_GF64_USE_MMAP;
-	var streamResult = null;
-	var streamErr = null;
+	var restoreEnv = function() {
+		if (prevMmapEnv === undefined) delete process.env.PAR3_GF64_USE_MMAP;
+		else process.env.PAR3_GF64_USE_MMAP = prevMmapEnv;
+	};
 	try {
 		addon.par3_create_streaming(inFile, {
 			recoverySlices: RECOVERY,
@@ -76,19 +80,23 @@ function leg1(tempDir) {
 			firstRecovery: firstRecovery,
 			numThreads: 0
 		}, function(err, res) {
-			streamErr = err;
-			streamResult = res;
+			restoreEnv();
+			try {
+				assert(err === null, 'streaming call failed: ' + (err && err.message));
+				assert(res && res.recoveryBuffer, 'streaming result lacks recoveryBuffer');
+				assert.strictEqual(res.recoveryBuffer.length, RECOVERY * BLOCK, 'recoveryBuffer size mismatch');
+				assert(res.recoveryBuffer.equals(legacy), 'streaming recovery != legacy compute (byte-identical contract)');
+				console.log('leg1 ok: streaming recoveryBuffer == legacy compute_recovery_full (' + (RECOVERY * BLOCK) + ' bytes)');
+				cb();
+			} catch (e) {
+				cb(e);
+			}
 		});
-	} finally {
-		// Restore the mmap env even if the call throws (the call is synchronous)
-		if (prevMmapEnv === undefined) delete process.env.PAR3_GF64_USE_MMAP;
-		else process.env.PAR3_GF64_USE_MMAP = prevMmapEnv;
+	} catch (e) {
+		// sync throw (bad args) — restore + fail
+		restoreEnv();
+		cb(e);
 	}
-	assert(streamErr === null, 'streaming call failed: ' + (streamErr && streamErr.message));
-	assert(streamResult && streamResult.recoveryBuffer, 'streaming result lacks recoveryBuffer');
-	assert.strictEqual(streamResult.recoveryBuffer.length, RECOVERY * BLOCK, 'recoveryBuffer size mismatch');
-	assert(streamResult.recoveryBuffer.equals(legacy), 'streaming recovery != legacy compute (byte-identical contract)');
-	console.log('leg1 ok: streaming recoveryBuffer == legacy compute_recovery_full (' + (RECOVERY * BLOCK) + ' bytes)');
 }
 
 // ---------------------------------------------------------------------------
@@ -306,13 +314,12 @@ function leg4(tempDir, cb) {
 }
 
 var tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'par3-stream-parity-'));
-try {
-	leg1(tempDir);
-} catch (e) {
-	fails++;
-	console.error('LEG1 FAIL: ' + e.message);
-}
-leg2(tempDir, function(err) {
+leg1(tempDir, function(err1) {
+	if (err1) {
+		fails++;
+		console.error('LEG1 FAIL: ' + err1.message);
+	}
+	leg2(tempDir, function(err) {
 	if (err) {
 		fails++;
 		console.error('LEG2 FAIL: ' + err.message);
@@ -336,4 +343,5 @@ leg2(tempDir, function(err) {
 			process.exit(0);
 		});
 	});
+});
 });
