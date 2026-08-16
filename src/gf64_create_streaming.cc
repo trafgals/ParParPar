@@ -77,6 +77,9 @@ struct Par3csWork {
 	int32_t numThreads;
 	napi_async_work work;
 	napi_ref callbackRef;
+	/* mmap choice passed from JS (the process-global env gate races across
+	 * concurrent async calls) — cubic review on #82 P2 */
+	bool useMmap;
 	/* outputs (written by execute, read by complete) */
 	bool ok;
 	char errorCode[32];
@@ -137,12 +140,18 @@ static void Par3csExecute(napi_env env, void* data) {
 	size_t totalBytes = (size_t)st.st_size;
 	size_t numInputs = (size_t)((totalBytes + (size_t)ctx->blockSize - 1) / (size_t)ctx->blockSize);
 	size_t blockSize64 = (size_t)(ctx->blockSize / 8);
+	/* Zero-pad the tail to a block multiple, matching the legacy JS path
+	 * (fullInputs is zero-filled then copied): a short source must reach
+	 * the kernel with zeros, never with uninitialized bytes past the read
+	 * (cubic review on #82 P0). The mmap path is only usable when no
+	 * padding is needed. */
+	size_t paddedBytes = numInputs * (size_t)ctx->blockSize;
+	bool needsPad = (paddedBytes != totalBytes);
 	uint8_t* mappedPtr = NULL;
 	bool mmapActive = false;
 
 #if PARPAR_STREAMING_USE_MMAP
-	const char* useMmapEnv = std::getenv("PAR3_GF64_USE_MMAP");
-	if(useMmapEnv != NULL && useMmapEnv[0] == '1') {
+	if(ctx->useMmap && !needsPad) {
 		void* mm = ::mmap(NULL, totalBytes, PROT_READ, MAP_PRIVATE, fd, 0);
 		if(mm != MAP_FAILED) {
 			mappedPtr = (uint8_t*)mm;
@@ -152,12 +161,14 @@ static void Par3csExecute(napi_env env, void* data) {
 #endif
 	uint8_t* readBuffer = NULL;
 	if(mappedPtr == NULL) {
-		readBuffer = (uint8_t*)aligned_alloc(64, (totalBytes + 63) & ~((size_t)63));
+		size_t bufBytes = (paddedBytes + 63) & ~((size_t)63);
+		readBuffer = (uint8_t*)aligned_alloc(64, bufBytes);
 		if(readBuffer == NULL) {
 			::close(fd);
 			std::snprintf(ctx->errorMsg, sizeof(ctx->errorMsg), "aligned_alloc failed for source buffer");
 			return;
 		}
+		std::memset(readBuffer, 0, bufBytes); /* zero tail (and whole) */
 		size_t off = 0;
 		while(off < totalBytes) {
 			ssize_t n = ::read(fd, readBuffer + off, totalBytes - off);
@@ -422,6 +433,15 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 		}
 	}
 
+	bool useMmap = false;
+	napi_value useMmapVal;
+	if(napi_get_named_property(env, args[1], "useMmap", &useMmapVal) == napi_ok) {
+		napi_valuetype mt;
+		if(napi_typeof(env, useMmapVal, &mt) == napi_ok && mt == napi_boolean) {
+			napi_get_value_bool(env, useMmapVal, &useMmap);
+		}
+	}
+
 	Par3csWork* ctx = (Par3csWork*)std::malloc(sizeof(Par3csWork));
 	if(ctx == NULL) {
 		napi_throw_error(env, NULL, "malloc failed for par3_create_streaming context");
@@ -434,6 +454,7 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 	ctx->firstInput = firstInput;
 	ctx->firstRecovery = firstRecovery;
 	ctx->numThreads = numThreads;
+	ctx->useMmap = useMmap;
 
 	if(napi_create_reference(env, args[2], 1, &ctx->callbackRef) != napi_ok) {
 		std::free(ctx);

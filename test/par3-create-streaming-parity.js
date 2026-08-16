@@ -313,6 +313,73 @@ function leg4(tempDir, cb) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Leg 5: short-file parity — a source shorter than one block must produce
+// the same (zero-padded) recovery in both paths (cubic review on #82 P0:
+// the legacy allocUnsafe tail made legacy short-file creates
+// nondeterministic; the streaming path zero-pads natively).
+// ---------------------------------------------------------------------------
+function leg5(tempDir, cb) {
+	var inFile = path.join(tempDir, 'leg5.bin');
+	var data = Buffer.alloc(1000);
+	for (var i = 0; i < 1000; i++) data[i] = (i * 7 + 3) & 0xFF;
+	fs.writeFileSync(inFile, data);
+
+	var run = function(tag, extraEnv, cb2) {
+		Object.keys(extraEnv).forEach(function(k) {
+			if (extraEnv[k] === null) delete process.env[k];
+			else process.env[k] = extraEnv[k];
+		});
+		var outBase = path.join(tempDir, 'out_leg5_' + tag);
+		var gen = new par3.PAR3Gen([{ name: inFile, size: 1000 }], 4096, {
+			outputBase: outBase,
+			recoverySlices: 4,
+			blockSize: 4096
+		});
+		gen.run(function() {}, function(err) {
+			try { gen.close(); } catch (e) {}
+			Object.keys(extraEnv).forEach(function(k) {
+				if (extraEnv[k] === null) { /* already deleted */ }
+				else delete process.env[k];
+			});
+			cb2(err, outBase);
+		});
+	};
+
+	run('d', {}, function(err1, b1) {
+		if (err1) return cb(new Error('leg5 default create failed: ' + err1.message));
+		run('s', { PAR3_GF64_FAST_CREATE: '1' }, function(err2, b2) {
+			if (err2) return cb(new Error('leg5 streaming create failed: ' + err2.message));
+			var a = fs.readFileSync(b1 + '.par3');
+			var b = fs.readFileSync(b2 + '.par3');
+			var maskArchive = function(buf) {
+				var out = Buffer.from(buf);
+				var off = 0;
+				while (off + 48 <= out.length) {
+					if (out.slice(off, off + 8).toString('latin1') !== 'PAR3\u0000PKT') break;
+					var len = Number(out.readBigUInt64LE(off + 24));
+					out.fill(0, off + 8, off + 24);
+					if (out.slice(off + 40, off + 48).toString('latin1') === 'PAR FIL\u0000') {
+						var nl = out.readUInt16LE(off + 48);
+						out.fill(0, off + 52 + nl, off + 52 + nl + 16);
+					}
+					if (out.slice(off + 40, off + 48).toString('latin1') === 'PAR ROO\u0000') out.fill(0, off + len - 16, off + len);
+					off += len;
+				}
+				return out;
+			};
+			try {
+				assert(maskArchive(a).equals(maskArchive(b)),
+					'short-file archives differ (zero-pad parity broken)');
+				console.log('leg5 ok: 1000-byte source produces identical archives in both paths (zero-padded recovery)');
+				cb();
+			} catch (e) {
+				cb(e);
+			}
+		});
+	});
+}
+
 var tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'par3-stream-parity-'));
 leg1(tempDir, function(err1) {
 	if (err1) {
@@ -320,28 +387,34 @@ leg1(tempDir, function(err1) {
 		console.error('LEG1 FAIL: ' + err1.message);
 	}
 	leg2(tempDir, function(err) {
-	if (err) {
-		fails++;
-		console.error('LEG2 FAIL: ' + err.message);
-	}
-	leg3(tempDir, function(err3) {
-		if (err3) {
+		if (err) {
 			fails++;
-			console.error('LEG3 FAIL: ' + err3.message);
+			console.error('LEG2 FAIL: ' + err.message);
 		}
-		leg4(tempDir, function(err4) {
-			if (err4) {
+		leg3(tempDir, function(err3) {
+			if (err3) {
 				fails++;
-				console.error('LEG4 FAIL: ' + err4.message);
+				console.error('LEG3 FAIL: ' + err3.message);
 			}
-			try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
-			if (fails > 0) {
-				console.error('STREAMING_PARITY_FAIL ' + fails);
-				process.exit(1);
-			}
-			console.log('STREAMING_PARITY_PASS');
-			process.exit(0);
+			leg4(tempDir, function(err4) {
+				if (err4) {
+					fails++;
+					console.error('LEG4 FAIL: ' + err4.message);
+				}
+				leg5(tempDir, function(err5) {
+					if (err5) {
+						fails++;
+						console.error('LEG5 FAIL: ' + err5.message);
+					}
+					try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
+					if (fails > 0) {
+						console.error('STREAMING_PARITY_FAIL ' + fails);
+						process.exit(1);
+					}
+					console.log('STREAMING_PARITY_PASS');
+					process.exit(0);
+				});
+			});
 		});
 	});
-});
 });
