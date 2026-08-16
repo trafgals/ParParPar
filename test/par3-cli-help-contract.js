@@ -41,4 +41,11 @@ assert(output.indexOf('--memory-limit <size>') !== -1, 'help must document --mem
 assert(output.indexOf('--slice-size') === -1, 'help must not contain non-existent --slice-size');
 
 console.log('  PASS: bin/par3.js --help contract matches documented options (default: 1MB, -m gf-method, --memory-limit)');
-console.log('ALL TESTS PASSED (cubic review 7cd436ab-4b5d-4b56-b650-20c4cfe44258)');
+
+// 3. Check JS API contract: require('./lib/par3gen') exports create and repair
+var par3gen = require('../lib/par3gen.js');
+assert.strictEqual(typeof par3gen.create, 'function', 'par3gen must export create');
+assert.strictEqual(typeof par3gen.repair, 'function', 'par3gen must export repair');
+console.log('  PASS: require("./lib/par3gen") exports create and repair functions');
+
+console.log('ALL TESTS PASSED (cubic review 7cd436ab-4b5d-4b56-b650-20c4cfe44258 / be1cb78c-140c-4f0b-b4e5-24abc4cd3dd6)');

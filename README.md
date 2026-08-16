@@ -131,7 +131,7 @@ node bin/par3.js repair myarchive.par3
 You can easily integrate ParParPar into Node.js applications:
 
 ```javascript
-const par3 = require('./lib/par3gen'); // Or require('parparpar/lib/par3gen')
+const par3 = require('./lib/par3gen');
 
 // Create a PAR3 archive
 par3.create(['file1.bin', 'file2.bin'], 'myarchive', {
