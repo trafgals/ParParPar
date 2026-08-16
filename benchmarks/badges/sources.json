@@ -14,9 +14,9 @@
     {
       "id": "par3-1g-32k-zen4",
       "label": "PAR3 1GB/32k (Zen4)",
-      "message": "pending",
-      "color": "lightgrey",
-      "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8, Fenger kernel"
+      "message": "1.65 MB/s",
+      "color": "yellow",
+      "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8, Fenger kernel; 10.1 min. ~370x behind PAR2 at the same shape — the interp track"
     },
     {
       "id": "par3-1g-131072-zen4",

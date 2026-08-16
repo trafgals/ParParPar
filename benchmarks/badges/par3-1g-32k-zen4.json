@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
   "label": "PAR3 1GB/32k (Zen4)",
-  "message": "pending",
-  "color": "lightgrey",
-  "labelColor": "555"
+  "message": "1.65 MB/s",
+  "color": "yellow"
 }
