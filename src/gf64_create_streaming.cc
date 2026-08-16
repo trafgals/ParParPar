@@ -348,11 +348,15 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 	{
 		napi_value recoveryBufferVal;
 		status = napi_create_external_buffer(env, recoveryBytes, recovery, Par3csRecoveryFinalizer, NULL, &recoveryBufferVal);
-		if(status == napi_ok) {
-			status = napi_set_named_property(env, resultObj, "recoveryBuffer", recoveryBufferVal);
-		}
 		if(status != napi_ok) {
+			/* create failed — the buffer is still ours; the legacy path remains
+			 * authoritative and will not touch this memory. */
 			aligned_free(recovery);
+		} else {
+			/* ownership (and freeing) belongs to the external buffer from here
+			 * on — property attach is best-effort and must NOT free (the
+			 * finalizer would double-free). */
+			napi_set_named_property(env, resultObj, "recoveryBuffer", recoveryBufferVal);
 		}
 	}
 
