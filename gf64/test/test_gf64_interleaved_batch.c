@@ -172,24 +172,24 @@ rt_done: ;
 		static const size_t rns[] = {8, 16, 32, 64, 128, 256, 512, 1024};
 		for (size_t idx = 0; idx < sizeof(rns) / sizeof(rns[0]); idx++) {
 		size_t rn = rns[idx];
-		static gf64_t buf[8][2048];
+		static gf64_t buf[8 * 2048];
 		static gf64_t lane[8][2048];
 		static gf64_t scratch[32 * 2048];
 		static gf64_t sc[8 * 2048];
 		const size_t W = 8;
 		for (size_t i = 0; i < rn; i++)
-			for (size_t k = 0; k < W; k++) buf[0][i * W + k] = rnd64();
+			for (size_t k = 0; k < W; k++) buf[i * W + k] = rnd64();
 		for (size_t k = 0; k < W; k++)
-			for (size_t i = 0; i < rn; i++) lane[k][i] = buf[0][i * W + k];
-		gf64_addfft64_fwd_batch_avx512(buf[0], rn, scratch, 32 * 2048);
+			for (size_t i = 0; i < rn; i++) lane[k][i] = buf[i * W + k];
+		gf64_addfft64_fwd_batch_avx512(buf, rn, scratch, 32 * 2048);
 		for (size_t k = 0; k < W; k++)
 			gf64_addfft64_fwd_recursive_scratch(lane[k], rn, sc, 8 * 2048);
 		for (size_t k = 0; k < W; k++)
 			for (size_t i = 0; i < rn; i++)
-				if (buf[0][i * W + k] != lane[k][i]) {
+				if (buf[i * W + k] != lane[k][i]) {
 					fprintf(stderr, "FULLFWD n=%zu MISMATCH k=%zu i=%zu scalar=%016llx batch=%016llx\n",
 					        rn, k, i, (unsigned long long)lane[k][i],
-					        (unsigned long long)buf[0][i * W + k]);
+					        (unsigned long long)buf[i * W + k]);
 					fails++;
 					goto fullfwd_done;
 				}
@@ -205,24 +205,24 @@ fullfwd_done: ;
 		static const size_t rns[] = {8, 16, 32, 64, 128, 256};
 		for (size_t idx = 0; idx < sizeof(rns) / sizeof(rns[0]); idx++) {
 		size_t rn = rns[idx];
-		static gf64_t buf[8][2048];
+		static gf64_t buf[8 * 2048];
 		static gf64_t lane[8][2048];
 		static gf64_t scratch[32 * 2048];
 		static gf64_t sc[8 * 2048];
 		const size_t W = 8;
 		for (size_t i = 0; i < rn; i++)
-			for (size_t k = 0; k < W; k++) buf[0][i * W + k] = rnd64();
+			for (size_t k = 0; k < W; k++) buf[i * W + k] = rnd64();
 		for (size_t k = 0; k < W; k++)
-			for (size_t i = 0; i < rn; i++) lane[k][i] = buf[0][i * W + k];
-		gf64_addfft64_inv_batch_avx512(buf[0], rn, scratch, 32 * 2048);
+			for (size_t i = 0; i < rn; i++) lane[k][i] = buf[i * W + k];
+		gf64_addfft64_inv_batch_avx512(buf, rn, scratch, 32 * 2048);
 		for (size_t k = 0; k < W; k++)
 			gf64_addfft64_inv_recursive_scratch(lane[k], rn, sc, 8 * 2048);
 		for (size_t k = 0; k < W; k++)
 			for (size_t i = 0; i < rn; i++)
-				if (buf[0][i * W + k] != lane[k][i]) {
+				if (buf[i * W + k] != lane[k][i]) {
 					fprintf(stderr, "FULLINV n=%zu MISMATCH k=%zu i=%zu scalar=%016llx batch=%016llx\n",
 					        rn, k, i, (unsigned long long)lane[k][i],
-					        (unsigned long long)buf[0][i * W + k]);
+					        (unsigned long long)buf[i * W + k]);
 					fails++;
 					goto fullinv_done;
 				}
@@ -236,20 +236,20 @@ fullinv_done: ;
 		static const size_t nns[] = {2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
 		for (size_t idx = 0; idx < sizeof(nns) / sizeof(nns[0]); idx++) {
 		size_t nn = nns[idx];
-		static gf64_t a[2048], buf[8][2048];
+		static gf64_t a[2048], buf[8 * 2048];
 		static gf64_t scratch[32 * 2048];
 		static gf64_t sc[8 * 2048];
 		for (size_t i = 0; i < nn; i++) a[i] = rnd64();
 		for (size_t k = 0; k < 8; k++)
-			for (size_t i = 0; i < nn; i++) buf[0][i * 8 + k] = 0;
-		for (size_t i = 0; i < nn; i++) buf[0][i * 8] = a[i];
-		gf64_addfft64_fwd_batch_avx512(buf[0], nn, scratch, 32 * 2048);
+			for (size_t i = 0; i < nn; i++) buf[i * 8 + k] = 0;
+		for (size_t i = 0; i < nn; i++) buf[i * 8] = a[i];
+		gf64_addfft64_fwd_batch_avx512(buf, nn, scratch, 32 * 2048);
 		gf64_addfft64_fwd_recursive_scratch(a, nn, sc, 8 * 2048);
 		for (size_t i = 0; i < nn; i++)
-			if (buf[0][i * 8] != a[i]) {
+			if (buf[i * 8] != a[i]) {
 				fprintf(stderr, "FWD-ISO n=%zu MISMATCH i=%zu scalar=%016llx batch=%016llx\n",
 				        nn, i, (unsigned long long)a[i],
-				        (unsigned long long)buf[0][i * 8]);
+				        (unsigned long long)buf[i * 8]);
 				fails++;
 				goto fwd_done;
 			}

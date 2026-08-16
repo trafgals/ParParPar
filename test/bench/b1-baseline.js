@@ -10,7 +10,7 @@ var os = require('os');
 var SIZE = 1024 * 1024 * 1024;
 var BLOCK = 1024 * 1024;
 var tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parpar-b1base-'));
-var par3genPath = require.resolve('../lib/par3gen.js');
+var par3genPath = require.resolve('../../lib/par3gen.js');
 
 function makeFile() {
   var f = path.join(tempDir, 'in.bin');
@@ -46,7 +46,7 @@ function runOnce(tag, opts, cb) {
   var f = makeFile();
   var base = path.join(tempDir, 'out_' + tag.replace(/[^a-z0-9]/gi, '_'));
   var t0 = Date.now();
-  par3.create([f], base, { outputBase: base, recoverySlices: 8, blockSize: BLOCK, numThreads: opts.PAR3_NUMTHREADS ? parseInt(opts.PAR3_NUMTHREADS, 10) : undefined }, function(err) {
+  par3.create([f], base, { recoverySlices: 8, blockSize: BLOCK, numThreads: opts.PAR3_NUMTHREADS ? parseInt(opts.PAR3_NUMTHREADS, 10) : undefined }, function(err) {
     var dt = (Date.now() - t0) / 1000;
     var mb = SIZE / (1024 * 1024);
     console.log(tag + ': ' + dt.toFixed(1) + ' s (' + (mb / dt).toFixed(1) + ' MB/s)' + (err ? ' ERR ' + err.message : ''));
