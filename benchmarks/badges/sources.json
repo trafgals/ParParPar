@@ -1,36 +1,50 @@
 {
   "repo": "trafgals/ParParPar",
   "branch": "feat/ci-benchmark-badge",
-  "host": "Zen4 7800X3D, native Windows, MSVC addon, AVX-512 auto (kernel benches: WSL2 forced AVX-512)",
-  "date": "2026-08-15",
+  "host": "Zen4 7800X3D, native Windows, MSVC addon, AVX-512 auto",
+  "date": "2026-08-16",
   "badges": [
     {
-      "id": "create-1g-1m",
-      "label": "PAR3 create 1 GiB / 1 MiB",
-      "message": "54.4 MB/s",
+      "id": "par2-1g-32k-zen4",
+      "label": "PAR2 1GB/32k (Zen4)",
+      "message": "613 MB/s",
       "color": "brightgreen",
-      "detail": "native Windows, R=8, K=8 default; 18.8 s. Pre B1-1.4 interleave: 29.6 s / 34.6 MB/s (1.57x e2e)"
+      "detail": "PAR2 create, 1 GiB / 32768 slices (32 KiB), R=8; native Windows. PAR2's GFNI+AVX-512 is the speed reference for the PAR3 rows"
     },
     {
-      "id": "interp-speedup",
-      "label": "interp speedup (B1-1.4 interleave)",
-      "message": "1.55x",
-      "color": "brightgreen",
-      "detail": "N=1024 R=8 B=131072: interp 152.86s -> 98.54s; l0 (n=1024) 2.01x"
+      "id": "par3-1g-32k-zen4",
+      "label": "PAR3 1GB/32k (Zen4)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8, Fenger kernel"
     },
     {
-      "id": "tree-build-a1",
-      "label": "tree build @ N=131072 (A1)",
-      "message": "5.3x",
-      "color": "brightgreen",
-      "detail": "pre-A1 118.96s -> post-A1 22.65s (WSL2, forced AVX-512); 5.3-5.4x across N=4096..131072"
+      "id": "par3-1g-131072-zen4",
+      "label": "PAR3 1GB/131072 (Zen4)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Fenger kernel"
     },
     {
-      "id": "mpe-a1",
-      "label": "MPE @ N=131072 (A1)",
-      "message": "1.7x",
-      "color": "green",
-      "detail": "pre-A1 72.73s -> post-A1 42.27s (WSL2, forced AVX-512)"
+      "id": "par3-1g-262144-zen4",
+      "label": "PAR3 1GB/262144 (Zen4)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Fenger kernel"
+    },
+    {
+      "id": "par3-10g-131072-zen4",
+      "label": "PAR3 10GB/131072 (Zen4)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 10 GiB / 131072 slices (80 KiB blocks), R=8, Fenger kernel"
+    },
+    {
+      "id": "par3-10g-262144-zen4",
+      "label": "PAR3 10GB/262144 (Zen4)",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8, Fenger kernel"
     }
   ]
 }
