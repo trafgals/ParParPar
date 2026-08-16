@@ -11,10 +11,10 @@ A fork of [animetosho/ParPar](https://github.com/animetosho/ParPar) that adds PA
 
 *CI runner column (regenerated on every master push — shared runner, expect noise; reference-host numbers above):*
 
-[![create 1 GiB / 1 MiB (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2Fci-create-1g-1m.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
-[![tree build @ N=131072 (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2Fci-tree-131072.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
-[![MPE @ N=131072 (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2Fci-mpe-131072.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
-[![interp @ N=131072 (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2Fci-interp-131072.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
+[![create 1 GiB / 1 MiB (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Ftrafgals%2Fde34e89a8dda313fba9565f56ba7767b%2Fraw%2Fci-create-1g-1m.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
+[![tree build @ N=131072 (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Ftrafgals%2Fde34e89a8dda313fba9565f56ba7767b%2Fraw%2Fci-tree-131072.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
+[![MPE @ N=131072 (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Ftrafgals%2Fde34e89a8dda313fba9565f56ba7767b%2Fraw%2Fci-mpe-131072.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
+[![interp @ N=131072 (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Ftrafgals%2Fde34e89a8dda313fba9565f56ba7767b%2Fraw%2Fci-interp-131072.json&style=flat-square)](https://github.com/trafgals/ParParPar#throughput)
 
 - **PAR3 create, verify, and repair** — upstream has none of the three for PAR3
 - **GF(2^64) Cauchy-matrix recovery** with no 65 537 input-block-per-slice cap

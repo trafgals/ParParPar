@@ -1,18 +1,17 @@
 name: ci-benchmark-badge
 
 # Measure benchmark numbers on the CI runner and refresh the CI-column
-# shields.io badges (benchmarks/badges/ci-*.json on the
-# feat/ci-benchmark-badge branch). Runs on every master push and on
-# manual dispatch. The Zen4 reference-host badges (sources.json) are
-# hand-recorded and untouched by this job.
+# shields.io badges. Badge JSONs live in a public gist (updated via the
+# Gists API with the BADGE_GIST_TOKEN fine-grained PAT — a repo-scoped
+# workflow token cannot push in a fork, and the gist keeps any
+# repo-write credential out of CI). The Zen4 reference-host badges
+# (sources.json on the feat/ci-benchmark-badge branch) are hand-recorded
+# and untouched by this job.
 
 on:
   push:
     branches: [master]
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 concurrency:
   group: ci-benchmark-badge
@@ -76,18 +75,27 @@ jobs:
         working-directory: repo
         run: node scripts/update-benchmark-badges.js
 
-      - name: Push badge data to feat/ci-benchmark-badge
+      - name: Update CI badge gist
+        working-directory: repo
+        env:
+          GIST_TOKEN: ${{ secrets.BADGE_GIST_TOKEN }}
+          GIST_ID: de34e89a8dda313fba9565f56ba7767b
         run: |
-          git clone --depth 1 --branch feat/ci-benchmark-badge \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/trafgals/ParParPar.git" badge-branch
-          cp repo/benchmarks/badges/*.json badge-branch/benchmarks/badges/
-          cd badge-branch
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "no badge changes"
-          else
-            git commit -m "ci(benchmark-badge): refresh CI-runner badge data on master change"
-            git push origin feat/ci-benchmark-badge
-          fi
+          set -o pipefail
+          # One object per file merged into a single gist update ('*' is the
+          # recursive object merge — '+' would collapse files to the last);
+          # shields.io serves the /raw/ (latest-revision) URLs from the README.
+          BODY=$(
+            for f in benchmarks/badges/ci-*.json benchmarks/badges/sources-ci.json; do
+              jq -n --arg name "$(basename "$f")" --rawfile c "$f" \
+                '{files: {($name): {content: $c}}}'
+            done | jq -s 'reduce .[] as $o ({}; . * $o)'
+          )
+          # -d @file (not -d "$BODY") so the JSON's quotes/escapes survive
+          # shell→curl argument passing on every platform.
+          printf '%s' "$BODY" > /tmp/gist-body.json
+          curl -sf -X PATCH "https://api.github.com/gists/${GIST_ID}" \
+            -H "Authorization: Bearer ${GIST_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -d @/tmp/gist-body.json -o /tmp/gist-resp.json
+          jq -r '"gist updated: " + .html_url' /tmp/gist-resp.json
