@@ -20,6 +20,7 @@ var os = require('os');
 
 var addon = require('../build/Release/parpar_gf64.node');
 var par3 = require('../lib/par3gen.js');
+var gf64js = require('../lib/gf64_js.js');
 
 var GF64_MASK = 0xFFFFFFFFFFFFFFFFn;
 var GF64_POLY = 0x1000000000000001Bn;
@@ -159,6 +160,47 @@ function leg1() {
 	console.log('leg1 ok: A matrix, RHS coefficients, repaired blocks bit-identical (N=' + N + ' n=' + n + ')');
 }
 
+// ---------------------------------------------------------------------------
+// Leg 3: coupled_muladd parity — native, JS fallback, manual reference
+// ---------------------------------------------------------------------------
+function leg3() {
+	var blockSize = 512, numWords = blockSize / 8;
+	var G = 5;
+	var encoder = new addon.Gf64Encoder(0);
+	var in_blocks = [];
+	for (var g = 0; g < G; g++) {
+		var b = Buffer.alloc(blockSize);
+		for (var i = 0; i < blockSize; i++) b[i] = Math.floor(Math.random() * 256);
+		in_blocks.push(b);
+	}
+	var coeffs = [];
+	var coeffBuf = Buffer.alloc(G * 8);
+	for (var g2 = 0; g2 < G; g2++) {
+		var c = rnd64();
+		coeffs.push(c);
+		coeffBuf.writeBigUInt64LE(c, g2 * 8);
+	}
+	var outNat = Buffer.alloc(blockSize);
+	var outJs = Buffer.alloc(blockSize);
+	var outRef = Buffer.alloc(blockSize);
+	for (var i2 = 0; i2 < blockSize; i2++) {
+		var v = Math.floor(Math.random() * 256);
+		outNat[i2] = outJs[i2] = outRef[i2] = v;
+	}
+	encoder.coupled_muladd_arr(outNat, in_blocks, coeffBuf, numWords, G);
+	gf64js.coupled_muladd_arr(outJs, in_blocks, coeffBuf, numWords, G);
+	for (var w = 0; w < numWords; w++) {
+		var acc = 0n;
+		for (var g3 = 0; g3 < G; g3++) {
+			acc ^= gf64js.gf64_mul(in_blocks[g3].readBigUInt64LE(w * 8), coeffs[g3]);
+		}
+		outRef.writeBigUInt64LE(outRef.readBigUInt64LE(w * 8) ^ acc, w * 8);
+	}
+	assert(outNat.equals(outJs), 'coupled: native != JS');
+	assert(outNat.equals(outRef), 'coupled: native != manual reference');
+	console.log('leg3 ok: coupled_muladd native == JS == manual (G=' + G + ')');
+}
+
 var PAR3_MAGIC = Buffer.from('PAR3\0PKT');
 var PAR3_PKT_HDR_SIZE = 48;
 
@@ -293,9 +335,10 @@ var fails = 0;
 try {
 	leg0();
 	leg1();
+	leg3();
 } catch (e) {
 	fails++;
-	console.error('LEG0/1 FAIL: ' + e.message);
+	console.error('LEG0/1/3 FAIL: ' + e.message);
 }
 leg2(function(err) {
 	if (err) {
