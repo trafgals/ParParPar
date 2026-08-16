@@ -201,6 +201,37 @@ function leg3() {
 	console.log('leg3 ok: coupled_muladd native == JS == manual (G=' + G + ')');
 }
 
+// ---------------------------------------------------------------------------
+// Leg 4: coupled backend selector (cubic review 208da585 P2) — native
+// Gf64Encoder caps G at 65536; above that the uncapped JS fallback must be
+// used (the legacy loop had no cap either); PAR3_REPAIR_COUPLED_RHS=0 must
+// yield null (legacy loop).
+// ---------------------------------------------------------------------------
+function leg4() {
+	var sel = par3.selectCoupledMuladd;
+	assert(sel && typeof sel === 'function', 'selectCoupledMuladd not exported');
+
+	var fSmall = sel(addon, 100, gf64js);
+	assert(fSmall !== null && typeof fSmall === 'function', 'G<=65536 should pick a coupled backend');
+	assert(fSmall !== gf64js.coupled_muladd_arr, 'G<=65536 should pick the native backend (not the JS fallback)');
+
+	var fCap = sel(addon, 65536, gf64js);
+	assert(fCap !== null && fCap !== gf64js.coupled_muladd_arr, 'G==65536 boundary should still pick native');
+
+	var fHuge = sel(addon, 65537, gf64js);
+	assert(fHuge === gf64js.coupled_muladd_arr, 'G>65536 must fall back to the uncapped JS backend');
+
+	// env=0 forces the legacy loop
+	var prev = process.env.PAR3_REPAIR_COUPLED_RHS;
+	process.env.PAR3_REPAIR_COUPLED_RHS = '0';
+	var fOff = sel(addon, 100, gf64js);
+	if (prev === undefined) delete process.env.PAR3_REPAIR_COUPLED_RHS;
+	else process.env.PAR3_REPAIR_COUPLED_RHS = prev;
+	assert(fOff === null, 'PAR3_REPAIR_COUPLED_RHS=0 must force the legacy loop');
+
+	console.log('leg4 ok: coupled backend selector (native <= 65536 incl. boundary, JS above, env=0 legacy)');
+}
+
 var PAR3_MAGIC = Buffer.from('PAR3\0PKT');
 var PAR3_PKT_HDR_SIZE = 48;
 
@@ -336,9 +367,10 @@ try {
 	leg0();
 	leg1();
 	leg3();
+	leg4();
 } catch (e) {
 	fails++;
-	console.error('LEG0/1/3 FAIL: ' + e.message);
+	console.error('LEG0/1/3/4 FAIL: ' + e.message);
 }
 leg2(function(err) {
 	if (err) {
