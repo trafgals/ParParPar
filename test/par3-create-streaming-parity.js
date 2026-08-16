@@ -239,9 +239,11 @@ function leg3(tempDir, cb) {
 			});
 		});
 	} catch (e) {
-		// sync throw from run() — restore the patched global + env
+		// sync throw from run() — restore the patched global + env and
+		// close the generator (mirroring the completion path)
 		fs.statSync = origStat;
 		delete process.env.PAR3_GF64_FAST_CREATE;
+		try { gen.close(); } catch (e2) {}
 		cb(e);
 	}
 }
@@ -294,9 +296,11 @@ function leg4(tempDir, cb) {
 			});
 		});
 	} catch (e) {
-		// sync throw from run() — restore the patched global + env
+		// sync throw from run() — restore the patched global + env and
+		// close the generator (mirroring the completion path)
 		fs.readSync = origRead;
 		delete process.env.PAR3_GF64_FAST_CREATE;
+		try { gen.close(); } catch (e2) {}
 		cb(e);
 	}
 }
