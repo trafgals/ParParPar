@@ -899,6 +899,287 @@ static void butterfly_inv_avx512(gf64_t *f, int n, int n_table, gf64_t a,
     }
 }
 
+/* ===== Interleaved batch FFT =====
+ *
+ * Coefficient-major layout: arr[i*W + k] holds word k's i-th coefficient,
+ * W = GF64_HQC_BATCH_LANES = 8. One 64-byte group = one zmm's worth of
+ * lanes — the K words are transformed TOGETHER, each SIMD op covering all
+ * 8 words at one index. K_eff < 8 pads to W with zeros (transforms are
+ * linear, pad lanes stay zero). Bit-exact per lane to the scalar FFT.
+ */
+#define GF64_HQC_BATCH_LANES 8
+
+static void hqc_cvt_div_blk_batch(gf64_t *poly, int si_h, int si_l, int polylen) {
+	int deg_diff = si_h - si_l;
+	for (int i = polylen - 1; i >= si_h; i--) {
+		gf64_t *dst = poly + (i - deg_diff) * GF64_HQC_BATCH_LANES;
+		const gf64_t *src = poly + i * GF64_HQC_BATCH_LANES;
+		for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) dst[k] ^= src[k];
+	}
+}
+
+static void hqc_cvt_idiv_blk_batch(gf64_t *poly, int si_h, int si_l, int polylen) {
+	int deg_diff = si_h - si_l;
+	for (int i = si_h; i < polylen; i++) {
+		gf64_t *dst = poly + (i - deg_diff) * GF64_HQC_BATCH_LANES;
+		const gf64_t *src = poly + i * GF64_HQC_BATCH_LANES;
+		for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) dst[k] ^= src[k];
+	}
+}
+
+static void hqc_cvt_rep_in_si_batch(gf64_t *data, int datalen, int logsize_blk,
+									int polyloglen_blk, int si) {
+	for (int i = polyloglen_blk - 1; i >= si; i--) {
+		int polylen = 1 << (i + logsize_blk + 1);
+		int si_h = 1 << (i + logsize_blk);
+		int si_l = 1 << (i + logsize_blk - si);
+		for (int j = 0; j < datalen; j += polylen) {
+			/* j is a COEFFICIENT index; the batch layout is
+			* coefficient-major, so the group offset is j * LANES. */
+			hqc_cvt_div_blk_batch(data + j * GF64_HQC_BATCH_LANES,
+								si_h, si_l, polylen);
+		}
+	}
+}
+
+static void hqc_cvt_irep_in_si_batch(gf64_t *data, int datalen, int logsize_blk,
+									int polyloglen_blk, int si) {
+	for (int i = si; i < polyloglen_blk; i++) {
+		int polylen = 1 << (i + logsize_blk + 1);
+		int si_h = 1 << (i + logsize_blk);
+		int si_l = 1 << (i + logsize_blk - si);
+		for (int j = 0; j < datalen; j += polylen) {
+			hqc_cvt_idiv_blk_batch(data + j * GF64_HQC_BATCH_LANES,
+								si_h, si_l, polylen);
+		}
+	}
+}
+
+static void hqc_cvt_batch(gf64_t *data, int datalen, int logsize_blk, int polyloglen_blk) {
+	if (polyloglen_blk <= 1) return;
+	int si = hqc_cvt_choose_si(polyloglen_blk);
+	hqc_cvt_rep_in_si_batch(data, datalen, logsize_blk, polyloglen_blk, si);
+	hqc_cvt_batch(data, datalen, logsize_blk, si);
+	hqc_cvt_batch(data, datalen, logsize_blk + si, polyloglen_blk - si);
+}
+
+static void hqc_icvt_batch(gf64_t *data, int datalen, int logsize_blk, int polyloglen_blk) {
+	if (polyloglen_blk <= 1) return;
+	int si = hqc_cvt_choose_si(polyloglen_blk);
+	hqc_icvt_batch(data, datalen, logsize_blk, si);
+	hqc_icvt_batch(data, datalen, logsize_blk + si, polyloglen_blk - si);
+	hqc_cvt_irep_in_si_batch(data, datalen, logsize_blk, polyloglen_blk, si);
+}
+
+static void basisCvt_batch_avx512(gf64_t *g, const gf64_t *f, int n, gf64_t *tmp) {
+	if (n <= 1) {
+		if (n == 1) {
+			for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) g[k] = f[k];
+		}
+		return;
+	}
+	memcpy(tmp, f, (size_t)n * GF64_HQC_BATCH_LANES * sizeof(gf64_t));
+	int log_n = 0;
+	while ((1 << log_n) < n) log_n++;
+	hqc_cvt_batch(tmp, n, 0, log_n);
+	memcpy(g, tmp, (size_t)n * GF64_HQC_BATCH_LANES * sizeof(gf64_t));
+}
+
+static void ibasisCvt_batch_avx512(gf64_t *c, const gf64_t *g, int n, gf64_t *tmp) {
+	if (n <= 1) {
+		if (n == 1) {
+			for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) c[k] = g[k];
+		}
+		return;
+	}
+	memcpy(tmp, g, (size_t)n * GF64_HQC_BATCH_LANES * sizeof(gf64_t));
+	int log_n = 0;
+	while ((1 << log_n) < n) log_n++;
+	hqc_icvt_batch(tmp, n, 0, log_n);
+	memcpy(c, tmp, (size_t)n * GF64_HQC_BATCH_LANES * sizeof(gf64_t));
+}
+
+GF64_HQC_TARGET_AVX512_PCLMUL
+static void butterfly_fwd_batch_avx512(gf64_t *f, int n, int n_table, gf64_t a,
+									const gf64_t *v_table, int logn) {
+	if (n == 2) {
+		gf64_t fl[GF64_HQC_BATCH_LANES], fh[GF64_HQC_BATCH_LANES];
+		gf64_t prod[GF64_HQC_BATCH_LANES], sa[GF64_HQC_BATCH_LANES];
+		for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) {
+			fl[k] = f[k];
+			fh[k] = f[GF64_HQC_BATCH_LANES + k];
+			sa[k] = a;
+		}
+		gf64_mul_avx512(prod, fh, sa, GF64_HQC_BATCH_LANES);
+		for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) {
+			f[k] = fl[k] ^ prod[k];
+			f[GF64_HQC_BATCH_LANES + k] = fl[k] ^ prod[k] ^ fh[k];
+		}
+		return;
+	}
+	int half = n / 2;
+	gf64_t s_a = si_eval(logn - 1, a, v_table, n_table);
+	{
+		gf64_t fl[GF64_HQC_BATCH_LANES], fh[GF64_HQC_BATCH_LANES];
+		gf64_t prod[GF64_HQC_BATCH_LANES], sa[GF64_HQC_BATCH_LANES];
+		for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) sa[k] = s_a;
+		for (int j = 0; j < half; j++) {
+			const gf64_t *flp = f + j * GF64_HQC_BATCH_LANES;
+			const gf64_t *fhp = f + (j + half) * GF64_HQC_BATCH_LANES;
+			for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) {
+				fl[k] = flp[k];
+				fh[k] = fhp[k];
+			}
+			gf64_mul_avx512(prod, fh, sa, GF64_HQC_BATCH_LANES);
+			for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) {
+				f[j * GF64_HQC_BATCH_LANES + k] = fl[k] ^ prod[k];
+				f[(j + half) * GF64_HQC_BATCH_LANES + k] = fl[k] ^ prod[k] ^ fh[k];
+			}
+		}
+	}
+	butterfly_fwd_batch_avx512(f, half, n_table, a, v_table, logn - 1);
+	butterfly_fwd_batch_avx512(f + half * GF64_HQC_BATCH_LANES, half, n_table,
+							a ^ v_table[1 << (logn - 1)], v_table, logn - 1);
+}
+
+GF64_HQC_TARGET_AVX512_PCLMUL
+static void butterfly_inv_batch_avx512(gf64_t *f, int n, int n_table, gf64_t a,
+									const gf64_t *v_table, int logn) {
+	if (n == 2) {
+		gf64_t fl[GF64_HQC_BATCH_LANES], fh[GF64_HQC_BATCH_LANES];
+		gf64_t prod[GF64_HQC_BATCH_LANES], sa[GF64_HQC_BATCH_LANES];
+		for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) {
+			fh[k] = f[k] ^ f[GF64_HQC_BATCH_LANES + k];
+			fl[k] = f[k];
+			sa[k] = a;
+		}
+		gf64_mul_avx512(prod, fh, sa, GF64_HQC_BATCH_LANES);
+		for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) {
+			f[k] = fl[k] ^ prod[k];
+			f[GF64_HQC_BATCH_LANES + k] = fh[k];
+		}
+		return;
+	}
+	int half = n / 2;
+	butterfly_inv_batch_avx512(f, half, n_table, a, v_table, logn - 1);
+	butterfly_inv_batch_avx512(f + half * GF64_HQC_BATCH_LANES, half, n_table,
+							a ^ v_table[1 << (logn - 1)], v_table, logn - 1);
+	gf64_t s_a = si_eval(logn - 1, a, v_table, n_table);
+	{
+		gf64_t fl[GF64_HQC_BATCH_LANES], fh[GF64_HQC_BATCH_LANES];
+		gf64_t prod[GF64_HQC_BATCH_LANES], sa[GF64_HQC_BATCH_LANES];
+		for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) sa[k] = s_a;
+		for (int j = 0; j < half; j++) {
+			const gf64_t *flp = f + j * GF64_HQC_BATCH_LANES;
+			const gf64_t *fhp = f + (j + half) * GF64_HQC_BATCH_LANES;
+			for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) {
+				fl[k] = flp[k];
+				fh[k] = flp[k] ^ fhp[k];
+			}
+			gf64_mul_avx512(prod, fh, sa, GF64_HQC_BATCH_LANES);
+			for (int k = 0; k < GF64_HQC_BATCH_LANES; k++) {
+				f[j * GF64_HQC_BATCH_LANES + k] = fl[k] ^ prod[k];
+				f[(j + half) * GF64_HQC_BATCH_LANES + k] = fh[k];
+			}
+		}
+	}
+}
+
+/* Public entries — in-place on the coefficient-major buffer. */
+void gf64_addfft64_fwd_batch_avx512(gf64_t *arr, size_t n,
+									gf64_t *scratch, size_t scratch_words) {
+	if (n <= 1) return;
+	int n_int = (int)n;
+	int logn = 0; while ((1 << logn) < n_int) logn++;
+	assert(scratch_words >= 2 * GF64_HQC_BATCH_LANES * n);
+
+	gf64_t *g = scratch;
+	gf64_t *cvt_tmp = scratch + GF64_HQC_BATCH_LANES * n;
+	basisCvt_batch_avx512(g, arr, n_int, cvt_tmp);
+	memcpy(arr, g, GF64_HQC_BATCH_LANES * n * sizeof(gf64_t));
+
+	gf64_t *v_table = get_or_build_v_table(n_int);
+	gf64_t a = GF64_CANTOR_BASIS[logn - 1];
+	butterfly_fwd_batch_avx512(arr, n_int, n_int, a, v_table, logn);
+}
+
+void gf64_addfft64_inv_batch_avx512(gf64_t *arr, size_t n,
+									gf64_t *scratch, size_t scratch_words) {
+	if (n <= 1) return;
+	int n_int = (int)n;
+	int logn = 0; while ((1 << logn) < n_int) logn++;
+	assert(scratch_words >= 2 * GF64_HQC_BATCH_LANES * n);
+
+	gf64_t *v_table = get_or_build_v_table(n_int);
+	gf64_t a = GF64_CANTOR_BASIS[logn - 1];
+	butterfly_inv_batch_avx512(arr, n_int, n_int, a, v_table, logn);
+
+	gf64_t *c = scratch;
+	gf64_t *cvt_tmp = scratch + GF64_HQC_BATCH_LANES * n;
+	ibasisCvt_batch_avx512(c, arr, n_int, cvt_tmp);
+	memcpy(arr, c, GF64_HQC_BATCH_LANES * n * sizeof(gf64_t));
+}
+
+/* Batch-shared mul via the interleaved transform (K <= 8; pads to 8). */
+void gf64_addfft64_poly_mul_batch_shared_interleaved_avx512(
+	gf64_t *const *outs, size_t K,
+	const gf64_t *shared, size_t len_shared,
+	const gf64_t *f, size_t len_f,
+	size_t out_len,
+	gf64_t *scratch, size_t scratch_words)
+{
+	if (K == 0 || out_len == 0) return;
+	if (len_shared == 0 || len_f == 0) {
+		for (size_t k = 0; k < K; k++) {
+			memset(outs[k], 0, out_len * sizeof(gf64_t));
+		}
+		return;
+	}
+	size_t full_len = len_shared + len_f - 1;
+	if (full_len < out_len) full_len = out_len;
+	size_t n = 1;
+	while (n < full_len) n <<= 1;
+	assert(n <= GF64_HQC_MAX_LM_N);
+	const size_t W = GF64_HQC_BATCH_LANES;
+	assert(scratch_words >= 4 * W * n);
+
+	/* Scratch layout: [pt: Wn | pf: Wn | inner: 2Wn] = 4Wn. */
+	gf64_t *pt    = scratch;
+	gf64_t *pf    = scratch + W * n;
+	gf64_t *inner = scratch + 2 * W * n;
+
+	/* Hoist the shared transform into a contiguous temp (inner[0..2n)),
+	* then replicate into the interleaved pt. */
+	gf64_t *pt0 = inner;
+	memcpy(pt0, shared, len_shared * sizeof(gf64_t));
+	memset(pt0 + len_shared, 0, (n - len_shared) * sizeof(gf64_t));
+	gf64_addfft64_fwd_recursive_scratch_avx512(pt0, n, inner + n, 2 * n);
+	for (size_t i = 0; i < n; i++)
+		for (size_t k = 0; k < W; k++) pt[i * W + k] = pt0[i];
+
+	/* Transpose-in: word k -> lane k; pad lanes stay zero. */
+	memset(pf, 0, W * n * sizeof(gf64_t));
+	for (size_t k = 0; k < K; k++) {
+		const gf64_t *fk = f + k * len_f;
+		size_t copy_n = (len_f < n) ? len_f : n;
+		for (size_t i = 0; i < copy_n; i++) pf[i * W + k] = fk[i];
+	}
+
+	gf64_addfft64_fwd_batch_avx512(pf, n, inner, 2 * W * n);
+	for (size_t i = 0; i < n; i++)
+		gf64_mul_avx512(pf + i * W, pf + i * W, pt + i * W, W);
+	gf64_addfft64_inv_batch_avx512(pf, n, inner, 2 * W * n);
+
+	/* De-transpose out. */
+	size_t copy_n = (full_len < out_len) ? full_len : out_len;
+	for (size_t k = 0; k < K; k++) {
+		for (size_t i = 0; i < copy_n; i++) outs[k][i] = pf[i * W + k];
+		if (copy_n < out_len) {
+			memset(outs[k] + copy_n, 0, (out_len - copy_n) * sizeof(gf64_t));
+		}
+	}
+}
+
 /* ----- Public API -----
  *
  * The HQC FFT is exposed via a `_scratch` suffix on every entry point. The

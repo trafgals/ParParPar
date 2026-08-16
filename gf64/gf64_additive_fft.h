@@ -226,6 +226,22 @@ void gf64_addfft64_poly_mul_batch_shared_avx512(
 	size_t out_len,
 	gf64_t *scratch, size_t scratch_words
 );
+/* Interleaved batch FFT: coefficient-major layout arr[i*8 + k] = word k's
+ * i-th coefficient; all K <= 8 words are transformed together (one zmm per
+ * coefficient index). Bit-exact per lane to the scalar FFT. Scratch for
+ * fwd/inv: 2*8*n words. Scratch for the batch-shared mul: 4*8*n words
+ * (pt: 8n | pf: 8n | inner: 16n). Requires AVX-512F + VPCLMULQDQ. */
+void gf64_addfft64_fwd_batch_avx512(gf64_t *arr, size_t n,
+	gf64_t *scratch, size_t scratch_words);
+void gf64_addfft64_inv_batch_avx512(gf64_t *arr, size_t n,
+	gf64_t *scratch, size_t scratch_words);
+void gf64_addfft64_poly_mul_batch_shared_interleaved_avx512(
+	gf64_t *const *outs, size_t K,
+	const gf64_t *shared, size_t len_shared,
+	const gf64_t *f, size_t len_f,
+	size_t out_len,
+	gf64_t *scratch, size_t scratch_words
+);
 
 /* ----- AVX-512 (PCLMULQDQ) accelerated recursive path -----
  *
