@@ -20,7 +20,10 @@
     "url": "git+https://github.com/animetosho/parpar.git"
   },
   "main": "lib/parpar.js",
-  "bin": "bin/parpar.js",
+  "bin": {
+    "parpar": "bin/parpar.js",
+    "par3": "bin/par3.js"
+  },
   "engines": {
     "node": ">=0.10"
   },

@@ -51,18 +51,18 @@ ParParPar delivers high-throughput $\text{GF}(2^{64})$ Cauchy-matrix recovery an
 
 ## Installation
 
-### Via npm
-
-```bash
-npm install -g @animetosho/parpar
-```
-
 ### From Source
 
 ```bash
 git clone https://github.com/trafgals/ParParPar.git
 cd ParParPar
 npm install
+```
+
+To install the `par3` and `parpar` CLI commands globally:
+
+```bash
+npm link
 ```
 
 ---
@@ -85,7 +85,7 @@ Create with a percentage of recovery data:
 node bin/par3.js create --output myarchive --recovery-slices 10% /path/to/files/
 ```
 
-Customize block size and slice distribution:
+Customize block size:
 
 ```bash
 node bin/par3.js create --output backup --recovery-slices 5% --block-size 64K data.tar
@@ -111,12 +111,16 @@ node bin/par3.js repair myarchive.par3
 
 | Option | Description |
 | :--- | :--- |
-| `-o, --output <file>` | Base name for generated PAR3 archive files |
+| `-o, --output <file>` | Base filename for generated PAR3 archive files |
 | `-r, --recovery-slices <N>` | Number of recovery slices to create (integer or percentage e.g., `10%`) |
-| `-s, --slice-size <bytes>` | Size of each slice in bytes (or suffix `K`, `M`, `G`) |
-| `-b, --block-size <bytes>` | Matrix computation block size (default: 4 KiB) |
-| `-m, --memory <bytes>` | Maximum memory limit for buffers and caching |
+| `-b, --block-size <size>` | Matrix computation block size (default: `1MB`) |
+| `-m, --gf-method <method>` | GF arithmetic method (`auto`, `scalar`, `ssse3`, `avx2`, `avx512`) |
+| `-t, --threads <N>` | Number of worker threads |
+| `--memory-limit <size>` | Memory limit for chunking |
+| `-R, --recurse` | Recurse into directories |
 | `-v, --verbose` | Verbose output during processing |
+| `-q, --quiet` | Quiet output |
+| `--json` | Emit structured JSON output |
 
 *For complete options and syntax, see [help.txt](help.txt) or [help-full.txt](help-full.txt).*
 
