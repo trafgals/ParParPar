@@ -68,19 +68,22 @@ function leg1(tempDir) {
 	delete process.env.PAR3_GF64_USE_MMAP;
 	var streamResult = null;
 	var streamErr = null;
-	addon.par3_create_streaming(inFile, {
-		recoverySlices: RECOVERY,
-		blockSize: BLOCK,
-		firstInput: firstInput,
-		firstRecovery: firstRecovery,
-		numThreads: 0
-	}, function(err, res) {
-		streamErr = err;
-		streamResult = res;
-	});
-	// Restore the mmap env (the call is synchronous)
-	if (prevMmapEnv === undefined) delete process.env.PAR3_GF64_USE_MMAP;
-	else process.env.PAR3_GF64_USE_MMAP = prevMmapEnv;
+	try {
+		addon.par3_create_streaming(inFile, {
+			recoverySlices: RECOVERY,
+			blockSize: BLOCK,
+			firstInput: firstInput,
+			firstRecovery: firstRecovery,
+			numThreads: 0
+		}, function(err, res) {
+			streamErr = err;
+			streamResult = res;
+		});
+	} finally {
+		// Restore the mmap env even if the call throws (the call is synchronous)
+		if (prevMmapEnv === undefined) delete process.env.PAR3_GF64_USE_MMAP;
+		else process.env.PAR3_GF64_USE_MMAP = prevMmapEnv;
+	}
 	assert(streamErr === null, 'streaming call failed: ' + (streamErr && streamErr.message));
 	assert(streamResult && streamResult.recoveryBuffer, 'streaming result lacks recoveryBuffer');
 	assert.strictEqual(streamResult.recoveryBuffer.length, RECOVERY * BLOCK, 'recoveryBuffer size mismatch');
