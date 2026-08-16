@@ -325,6 +325,9 @@ napi_value par3_create_streaming_NAPI(napi_env env, napi_callback_info info) {
 	napi_value resultObj;
 	status = napi_create_object(env, &resultObj);
 	if(status != napi_ok) {
+		/* pre-handoff error: the recovery buffer is still ours (external
+		 * ownership starts at napi_create_external_buffer) — free it. */
+		aligned_free(recovery);
 		napi_throw_error(env, NULL, "Failed to create result object");
 		return NULL;
 	}

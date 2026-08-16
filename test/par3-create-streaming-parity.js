@@ -62,20 +62,28 @@ function leg1(tempDir) {
 	var legacy = Buffer.alloc(RECOVERY * BLOCK);
 	addon.compute_recovery_full(inputs, legacy, totalInputBlocks, RECOVERY, BLOCK, firstInput, firstRecovery, 0);
 
-	// Streaming call (mmap disabled so the read path is uniform)
+	// Streaming call (mmap disabled so the read path is uniform; save and
+	// restore any pre-existing value so the env is not leaked)
+	var prevMmapEnv = process.env.PAR3_GF64_USE_MMAP;
 	delete process.env.PAR3_GF64_USE_MMAP;
 	var streamResult = null;
 	var streamErr = null;
-	addon.par3_create_streaming(inFile, {
-		recoverySlices: RECOVERY,
-		blockSize: BLOCK,
-		firstInput: firstInput,
-		firstRecovery: firstRecovery,
-		numThreads: 0
-	}, function(err, res) {
-		streamErr = err;
-		streamResult = res;
-	});
+	try {
+		addon.par3_create_streaming(inFile, {
+			recoverySlices: RECOVERY,
+			blockSize: BLOCK,
+			firstInput: firstInput,
+			firstRecovery: firstRecovery,
+			numThreads: 0
+		}, function(err, res) {
+			streamErr = err;
+			streamResult = res;
+		});
+	} finally {
+		// Restore the mmap env even if the call throws (the call is synchronous)
+		if (prevMmapEnv === undefined) delete process.env.PAR3_GF64_USE_MMAP;
+		else process.env.PAR3_GF64_USE_MMAP = prevMmapEnv;
+	}
 	assert(streamErr === null, 'streaming call failed: ' + (streamErr && streamErr.message));
 	assert(streamResult && streamResult.recoveryBuffer, 'streaming result lacks recoveryBuffer');
 	assert.strictEqual(streamResult.recoveryBuffer.length, RECOVERY * BLOCK, 'recoveryBuffer size mismatch');
