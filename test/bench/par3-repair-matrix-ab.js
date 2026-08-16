@@ -5,29 +5,12 @@
 // After: one native build_coefficient_matrix(N_total, n, ...) call.
 // This measures exactly the replaced work (no RHS mul/XOR loop).
 "use strict";
+var assert = require('assert');
 var addon = require('../../build/Release/parpar_gf64.node');
-
-var GF64_MASK = 0xFFFFFFFFFFFFFFFFn;
-var GF64_POLY = 0x1000000000000001Bn;
-function invert64(val) {
-	val = val & GF64_MASK;
-	if (val === 0n) return 0n;
-	if (val === 1n) return 1n;
-	var u = val, v = GF64_POLY, x1 = 1n, x2 = 0n;
-	while (u !== 1n && u !== 0n) {
-		while ((u & 1n) === 0n) {
-			u >>= 1n;
-			if ((x1 & 1n) !== 0n) x1 = ((x1 ^ GF64_POLY) >> 1n) & GF64_MASK;
-			else x1 >>= 1n;
-		}
-		if (u === 1n) continue;
-		while ((v & 1n) === 0n) v >>= 1n;
-		if (u < v) { var t = u; u = v; v = t; t = x1; x1 = x2; x2 = t; }
-		u ^= v;
-		x1 ^= x2;
-	}
-	return x1 & GF64_MASK;
-}
+// Reuse the shipped JS implementation (the repair fallback's own library) so
+// the JS leg measures the real code instead of a drifting copy.
+var gf64js = require('../../lib/gf64_js.js');
+var invert64 = gf64js.invert64;
 
 var N = 10000, n = 1000;              // 1G/10K repair geometry (10% missing)
 var firstInput = 0x1000, firstRecovery = 0x100000;
@@ -59,4 +42,6 @@ for (var i = 0; i < total; i++) sink2 ^= M.readBigUInt64LE(i * 8);
 console.log('JS  invert64 x ' + total + ': ' + tJs + ' ms  (' + (total / tJs / 1000).toFixed(1) + ' M/s)');
 console.log('native matrix  (' + n + 'x' + N + '): ' + tNat + ' ms  (' + (total / tNat / 1000).toFixed(1) + ' M/s)');
 console.log('speedup: ' + (tJs / Math.max(tNat, 1)).toFixed(1) + 'x');
-console.log('sink check (identical): ' + (sink === sink2));
+// The bit-identical claim is the bench's whole point — assert it.
+assert.strictEqual(sink, sink2, 'native matrix and JS invert64 diverged');
+console.log('sink check (identical): true');

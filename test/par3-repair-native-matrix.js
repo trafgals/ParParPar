@@ -59,6 +59,26 @@ function rnd64() {
 }
 
 // ---------------------------------------------------------------------------
+// Leg 0: gate unit — boundary at the cap, one past, overlap, degenerate
+// ---------------------------------------------------------------------------
+function leg0() {
+	var cap = 32 * 1024 * 1024;
+	// boundary: exactly at the cap is allowed (input [0x1000, 0x11000),
+	// recovery [0x20000, ...) — disjoint)
+	assert.strictEqual(par3.repairNativeMatrixAllowed(65536, 512, 0x1000, 0x20000, cap), true, 'at-cap should be allowed');
+	// one past the cap is denied (n x total = 65536*513 > cap)
+	assert.strictEqual(par3.repairNativeMatrixAllowed(65536, 513, 0x1000, 0x20000, cap), false, 'past-cap should be denied');
+	// overlapping ranges are denied (JS fallback keeps historical semantics)
+	assert.strictEqual(par3.repairNativeMatrixAllowed(64, 8, 0x1000, 0x1000, cap), false, 'overlap should be denied');
+	// disjoint ranges allowed
+	assert.strictEqual(par3.repairNativeMatrixAllowed(64, 8, 0x1000, 0x10000, cap), true, 'disjoint should be allowed');
+	// degenerate sizes denied
+	assert.strictEqual(par3.repairNativeMatrixAllowed(0, 8, 0x1000, 0x10000, cap), false, 'zero inputs denied');
+	assert.strictEqual(par3.repairNativeMatrixAllowed(64, 0, 0x1000, 0x10000, cap), false, 'zero missing denied');
+	console.log('leg0 ok: gate boundary/overlap/degenerate cases');
+}
+
+// ---------------------------------------------------------------------------
 // Leg 1: coefficient parity (A matrix + RHS) at the repair geometry
 // ---------------------------------------------------------------------------
 function leg1() {
@@ -139,6 +159,42 @@ function leg1() {
 	console.log('leg1 ok: A matrix, RHS coefficients, repaired blocks bit-identical (N=' + N + ' n=' + n + ')');
 }
 
+var PAR3_MAGIC = Buffer.from('PAR3\0PKT');
+var PAR3_PKT_HDR_SIZE = 48;
+
+// Zero whole DATA packets (header + body) so the magic signature is
+// destroyed and the streaming parser skips them — the repair then treats
+// those blocks as genuinely missing and exercises its repair path
+// (cf. e2e-par3-repair.js:95-105; zeroing input-file bytes is NOT enough).
+function damageArchiveDataPackets(par3File, wantBlocks) {
+	var fd = fs.openSync(par3File, 'r+');
+	var stat = fs.fstatSync(fd);
+	var offset = 0;
+	var damaged = [];
+	while (offset < stat.size && damaged.length < wantBlocks.length) {
+		var header = Buffer.alloc(PAR3_PKT_HDR_SIZE);
+		fs.readSync(fd, header, 0, PAR3_PKT_HDR_SIZE, offset);
+		if (!header.slice(0, 8).equals(PAR3_MAGIC)) { offset += 8; continue; }
+		var totalLen = Number(header.readBigUInt64LE(24));
+		if (totalLen < PAR3_PKT_HDR_SIZE || offset + totalLen > stat.size + 8) break;
+		var typeStr = header.slice(40, 48).toString('ascii');
+		if (typeStr === 'PAR DAT\0') {
+			var bodyOffset = offset + PAR3_PKT_HDR_SIZE;
+			var idxBuf = Buffer.alloc(8);
+			fs.readSync(fd, idxBuf, 0, 8, bodyOffset);
+			var blockIndex = Number(idxBuf.readBigUInt64LE(0));
+			if (wantBlocks.indexOf(blockIndex) !== -1) {
+				fs.writeSync(fd, Buffer.alloc(totalLen), 0, totalLen, offset);
+				damaged.push(blockIndex);
+			}
+		}
+		offset += totalLen;
+	}
+	fs.fsyncSync(fd);
+	fs.closeSync(fd);
+	return damaged;
+}
+
 // ---------------------------------------------------------------------------
 // Leg 2: end-to-end par3gen.repair — default (native matrix) vs forced JS
 // ---------------------------------------------------------------------------
@@ -170,14 +226,11 @@ function leg2(cb) {
 	}, function(err) {
 		if (err) { cleanup(); return cb(new Error('create failed: ' + err.message)); }
 
-		// Corrupt two blocks (zero them)
-		var corrupted = path.join(tempDir, 'corrupt.bin');
-		fs.copyFileSync(inFile, corrupted);
-		var cfd = fs.openSync(corrupted, 'r+');
-		var zero = Buffer.alloc(blockSize);
-		fs.writeSync(cfd, zero, 0, blockSize, 2 * blockSize);   // block 2
-		fs.writeSync(cfd, zero, 0, blockSize, 5 * blockSize);   // block 5
-		fs.closeSync(cfd);
+		// Damage the archive: destroy the DATA packets for blocks 2 and 5 so
+		// the repair sees them as genuinely missing (zeroing input bytes is
+		// not enough — the repair only treats absent packets as missing).
+		var damaged = damageArchiveDataPackets(base + '.par3', [2, 5]);
+		if (damaged.length !== 2) { cleanup(); return cb(new Error('damageArchive: expected 2 DATA packets damaged, got ' + damaged.length)); }
 
 		// Expected full input (deterministic LCG, pre-corruption)
 		var expected = Buffer.alloc(fileSize);
@@ -193,8 +246,9 @@ function leg2(cb) {
 			Object.keys(env).forEach(function(k) { process.env[k] = env[k]; });
 			var outDir = path.join(tempDir, 'rep_' + tag);
 			fs.mkdirSync(outDir);
-			// The repair's data/output dir must hold the (corrupted) input file
-			fs.copyFileSync(corrupted, path.join(outDir, 'in.bin'));
+			// The repair's data/output dir holds the PRISTINE input file — the
+			// missing blocks come from the damaged archive packets.
+			fs.copyFileSync(inFile, path.join(outDir, 'in.bin'));
 			par3.repair(base + '.par3', outDir, { verbose: 0 }, function(err2, result) {
 				Object.keys(env).forEach(function(k) { delete process.env[k]; });
 				if (err2) return cb2(new Error('repair failed: ' + err2.message));
@@ -209,6 +263,11 @@ function leg2(cb) {
 				try {
 					assert.strictEqual(r1.repaired, true, 'native repair did not repair');
 					assert.strictEqual(r2.repaired, true, 'js repair did not repair');
+					// The default leg must have engaged the native matrix path and
+					// the forced leg must have used the JS fallback — otherwise the
+					// byte-identical assertion is JS-vs-JS and proves nothing.
+					assert.strictEqual(r1.usedNativeMatrix, true, 'default repair did not use the native matrix');
+					assert.strictEqual(r2.usedNativeMatrix, false, 'forced-JS repair used the native matrix');
 					var f1 = fs.readFileSync(path.join(d1, 'block_0.dat'));
 					var f2 = fs.readFileSync(path.join(d2, 'block_0.dat'));
 					assert(f1.equals(f2), 'block_0.dat differs between native-matrix and JS-matrix repair');
@@ -232,10 +291,11 @@ function leg2(cb) {
 // ---------------------------------------------------------------------------
 var fails = 0;
 try {
+	leg0();
 	leg1();
 } catch (e) {
 	fails++;
-	console.error('LEG1 FAIL: ' + e.message);
+	console.error('LEG0/1 FAIL: ' + e.message);
 }
 leg2(function(err) {
 	if (err) {
