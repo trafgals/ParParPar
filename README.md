@@ -23,17 +23,18 @@ A fork of [animetosho/ParPar](https://github.com/animetosho/ParPar) that adds PA
 
 ## Throughput
 
-Numbers below are measured on the project's workhorse recipe: **1 GiB / 10% recovery / 4 threads / tmpfs / `taskset -c 0-3`** on Zen4 / WSL2 (Ubuntu 22.04). The end-to-end ceiling on this host is ~30 MB/s — the JS layer's NAPI + `worker_threads` overhead, not the C++ kernel. A standalone C++-only bench (`test/bench/par3-native-bench`) confirms the kernel itself is hardware-bound at **~1097 MB/s on AVX-2**.
+Numbers below are measured on the project's workhorse recipe: **1 GiB / 1 MiB blocks / R=8 / native Windows, Zen4 7800X3D, MSVC addon, AVX-512 auto, 3-run median** (protocol: `BENCHMARKING.md`, shapes: `test/bench/`). The 1 MiB-block class is **kernel-bound** (kernel ≈ 84% of wall post-B1-1.4); the 10K-slice class is **JS-pipeline-bound** (NAPI + `worker_threads` — the B1 streaming take-over targets ≥ 90 MB/s there).
 
 | Workload | Throughput | Notes |
 |---|---:|---|
-| PAR3 create, 1 GiB (default env) | ~30 MB/s | mmap + streaming NAPI + Buffer pool + LRU pool + `worker_threads` hash + 16 MiB → 256 MiB AVX-512 threshold + wider SIMD K=2 + parallel Cauchy + software prefetch |
-| PAR3 create, 1 GiB (`PAR3_GF64_USE_AVX512=1`) | ~30 MB/s | Operator escape hatch for reliable AVX-512 dispatch on WSL2/Hyper-V hosts.[^1] |
-| PAR3 create, 1 GiB / 1M slices (warmup) | **71.51 MB/s** | The 1 GiB / 1M-slice workload with warmup; 10K-slice workloads are JS-pipeline-bound. |
-| PAR3 create, 1 GiB / 1000 slices (native Windows, AVX-512 auto) | **102 MB/s** | MSVC-built `parpar_gf64.node` on Zen4 7800X3D. AVX-512 detected via CPUID+XCR0+`_xgetbv` (MSVC intrinsics, no SIGILL probe). |
-| PAR3 create, 1 GiB / 10K slices (native Windows) | 28.3 MB/s | Matches the WSL forced-AVX-512 ceiling — JS-pipeline is the bound, not the kernel. |
-| PAR3 repair, 1 GiB / 5% loss (native Windows) | 58.5 MB/s | Higher than create because the recovery path uses pre-computed coefficients. |
-| PAR2 reference, 1 GiB / 1000 slices create (native Windows) | **622 MB/s** | PAR3 GF(2^64) Cauchy-matrix overhead is the dominant cost vs PAR2's GFNI+AVX-512. |
+| PAR3 create, 1 GiB / 1 MiB blocks (native Windows) | **66.1 MB/s** (15.5 s, 3-run median) | Post-B1-1.4 interleave (#72): e2e 29.6 → 15.5 s (1.91×); kernel 27.55 → 13.06 s (2.11×) |
+| PAR3 create, 1 GiB / 1000 slices (native Windows) | **98.7 MB/s** | Post-#57 parallel Barycentric (restored the 102.5 historical ceiling); JS-pipeline class |
+| PAR3 create, 1 GiB / 10K slices (native Windows) | 27.3 MB/s | JS-pipeline-bound (NAPI + worker_threads), not kernel — B1 target ≥ 90 |
+| PAR3 repair, 32 MiB / 256 blocks / 8 missing (native Windows) | 120 ms | Post-B2 native matrix (#73/#74) + coupled RHS (#75/#76): 5.7× vs the legacy loop, byte-identical |
+| PAR3 repair coefficient build, 1G/10K geometry (n=1000 × N=10000) | **820×** | JS BigInt invert64 ×10M: 122.6 s → native `build_coefficient_matrix`: 161 ms |
+| PAR2 reference, 1 GiB / 1000 slices create (native Windows) | **622 MB/s** | PAR3 GF(2^64) Cauchy-matrix overhead is the dominant cost vs PAR2's GFNI+AVX-512 |
+
+Bench-shape rules (C2): power-of-2 slice counts only; the 10G/100k shape is deprecated (its block sizes are not powers of 2 — the engine requires pow2); the acceptance workload is the **magic shape** (16 GiB @ 4 KiB → N = 2²², R = 2¹⁹ — zero padding, Fenger direct). Every dispatch/gate change ships contract tests (#56 pattern, `AGENTS.md`).
 
 PAR3 GF(2^64) trades a larger Galois field for a higher recovery-block cap and unbounded input size. The create path has been verified end-to-end on a 4.3 GiB archive; the kernel-parity test below proves bit-exact correctness on every ISA.
 

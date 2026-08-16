@@ -1052,3 +1052,28 @@ spawn-pipe one did in §10.3.
 Sections §1–§3 and §5 remain the canonical way to measure throughput.
 This section is the data, not the protocol. The same protocol applies
 to native-Windows rebuilds — see §10.4.
+
+## 11. Bench shapes (C2, 2026-08-16)
+
+- **Power-of-2 slice counts only.** `sliceSize = ceil(size/slices)` and
+  `N = ceil(actualSize/blockSize)` — non-pow2 slice counts make the Fenger
+  gate unreachable and the numbers incomparable.
+- **10G/100k is deprecated.** 10 GiB / 100k slices → 100 KiB blocks is not
+  a power of 2 (the engine requires pow2 blockSize); 10 GiB = 5·2³¹ can
+  never give a power-of-2 N.
+- **Acceptance workload: the magic shape** — 16 GiB @ 4 KiB blocks →
+  N = 2²², R = 2¹⁹ (12.5%): zero padding, Fenger direct, the shape #59's
+  gates are defined on.
+- **Current reference numbers** (native Windows, Zen4 7800X3D, Node 20.19,
+  MSVC/AVX-512, 3-run median):
+  - 1G/1M create: **15.5 s / 66.1 MB/s** (`test/bench/b1-baseline.js`)
+  - 1G/10K create: **27.3 MB/s** — JS-pipeline-bound; the B1 streaming
+    take-over gate is ≥ 90 MB/s here
+  - repair coefficient build (1G/10K geometry): native matrix **161 ms**
+    vs JS BigInt invert64 ×10M **122.6 s** (`test/bench/par3-repair-matrix-ab.js`)
+  - repair RHS (32 MiB/256 blocks/8 missing): coupled **119 ms** vs legacy
+    **680 ms** (`test/bench/par3-repair-rhs-ab.js`)
+- **Rule:** every dispatch/gate change ships its contract test (#56
+  pattern, `AGENTS.md`); benchmarks that can't produce real work are not
+  benchmarks (the repair-bench script's pristine-source trap — the repair
+  must see genuinely missing blocks, cf. `e2e-par3-repair.js:95-105`).
