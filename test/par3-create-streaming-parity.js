@@ -190,6 +190,121 @@ function leg2(tempDir, cb) {
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Leg 3: TOCTOU invalidation — a source whose stat changes between the
+// streaming read and the JS data read must NOT be used (cubic review
+// 5443592 P2 on #80). Simulated deterministically: the post-read
+// fs.statSync returns a shifted mtime, forcing the guard's mismatch.
+// ---------------------------------------------------------------------------
+function leg3(tempDir, cb) {
+	var inFile = path.join(tempDir, 'leg3.bin');
+	makeInput(inFile);
+	var outBase = path.join(tempDir, 'out_leg3');
+	var gen = new par3.PAR3Gen([{ name: inFile, size: fs.statSync(inFile).size }], BLOCK, {
+		outputBase: outBase,
+		recoverySlices: RECOVERY,
+		blockSize: BLOCK
+	});
+	process.env.PAR3_GF64_FAST_CREATE = '1';
+	var origStat = fs.statSync;
+	var statCalls = 0;
+	// The create flow stats the file: (1) pre-streaming streamStat,
+	// (2) post-read postStat. Fake the 2nd so the guard sees a change.
+	fs.statSync = function(p) {
+		var s = origStat(p);
+		if (p === inFile && ++statCalls === 2) {
+			s = Object.assign({}, s, { mtimeMs: s.mtimeMs + 5000 });
+		}
+		return s;
+	};
+	var usedStreaming = null;
+	try {
+		gen.run(function(ev, data) {
+			if (ev === 'complete') usedStreaming = data.usedStreamingRecovery;
+		}, function(err) {
+			fs.statSync = origStat;
+			delete process.env.PAR3_GF64_FAST_CREATE;
+			try { gen.close(); } catch (e) {}
+			if (err) return cb(new Error('leg3 create failed: ' + err.message));
+			par3.verify(outBase + '.par3', function(verr, vres) {
+				if (verr) return cb(new Error('leg3 verify failed: ' + verr.message));
+				try {
+					assert.strictEqual(usedStreaming, false, 'changed source must invalidate the streaming recovery');
+					assert(vres.verified, 'leg3 archive must verify clean (legacy compute took over)');
+					console.log('leg3 ok: mid-flight source change invalidates the streaming recovery, archive verifies clean');
+					cb();
+				} catch (e) {
+					cb(e);
+				}
+			});
+		});
+	} catch (e) {
+		// sync throw from run() — restore the patched global + env and
+		// close the generator (mirroring the completion path)
+		fs.statSync = origStat;
+		delete process.env.PAR3_GF64_FAST_CREATE;
+		try { gen.close(); } catch (e2) {}
+		cb(e);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Leg 4: bulk-read failure — the per-block fallback path must invalidate
+// the streaming recovery outright (cubic review 5443592 P2 on #80).
+// Forced deterministically: the bulk readSync throws once, sending the
+// create down the fallback path.
+// ---------------------------------------------------------------------------
+function leg4(tempDir, cb) {
+	var inFile = path.join(tempDir, 'leg4.bin');
+	makeInput(inFile);
+	var outBase = path.join(tempDir, 'out_leg4');
+	var gen = new par3.PAR3Gen([{ name: inFile, size: fs.statSync(inFile).size }], BLOCK, {
+		outputBase: outBase,
+		recoverySlices: RECOVERY,
+		blockSize: BLOCK
+	});
+	process.env.PAR3_GF64_FAST_CREATE = '1';
+	var origRead = fs.readSync;
+	var threw = false;
+	fs.readSync = function(fd, buf, off, len, pos) {
+		if (!threw && len > 1024 * 1024) {
+			threw = true;
+			throw new Error('simulated bulk-read failure');
+		}
+		return origRead.apply(this, arguments);
+	};
+	var usedStreaming = null;
+	try {
+		gen.run(function(ev, data) {
+			if (ev === 'complete') usedStreaming = data.usedStreamingRecovery;
+		}, function(err) {
+			fs.readSync = origRead;
+			delete process.env.PAR3_GF64_FAST_CREATE;
+			try { gen.close(); } catch (e) {}
+			if (err) return cb(new Error('leg4 create failed: ' + err.message));
+			par3.verify(outBase + '.par3', function(verr, vres) {
+				if (verr) return cb(new Error('leg4 verify failed: ' + verr.message));
+				try {
+					assert(threw, 'the simulated bulk-read failure must have engaged');
+					assert.strictEqual(usedStreaming, false, 'bulk-read failure must invalidate the streaming recovery');
+					assert(vres.verified, 'leg4 archive must verify clean (fallback path)');
+					console.log('leg4 ok: bulk-read failure falls back and invalidates the streaming recovery, archive verifies clean');
+					cb();
+				} catch (e) {
+					cb(e);
+				}
+			});
+		});
+	} catch (e) {
+		// sync throw from run() — restore the patched global + env and
+		// close the generator (mirroring the completion path)
+		fs.readSync = origRead;
+		delete process.env.PAR3_GF64_FAST_CREATE;
+		try { gen.close(); } catch (e2) {}
+		cb(e);
+	}
+}
+
 var tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'par3-stream-parity-'));
 try {
 	leg1(tempDir);
@@ -202,11 +317,23 @@ leg2(tempDir, function(err) {
 		fails++;
 		console.error('LEG2 FAIL: ' + err.message);
 	}
-	try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
-	if (fails > 0) {
-		console.error('STREAMING_PARITY_FAIL ' + fails);
-		process.exit(1);
-	}
-	console.log('STREAMING_PARITY_PASS');
-	process.exit(0);
+	leg3(tempDir, function(err3) {
+		if (err3) {
+			fails++;
+			console.error('LEG3 FAIL: ' + err3.message);
+		}
+		leg4(tempDir, function(err4) {
+			if (err4) {
+				fails++;
+				console.error('LEG4 FAIL: ' + err4.message);
+			}
+			try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
+			if (fails > 0) {
+				console.error('STREAMING_PARITY_FAIL ' + fails);
+				process.exit(1);
+			}
+			console.log('STREAMING_PARITY_PASS');
+			process.exit(0);
+		});
+	});
 });
