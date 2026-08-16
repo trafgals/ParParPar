@@ -51,7 +51,7 @@ function emit(repo, base, b) {
   }
   var ep = {
     schemaVersion: 1,
-    label: b.label,
+    label: '',
     message: b.message,
     color: b.color || 'brightgreen'
   };
@@ -59,7 +59,7 @@ function emit(repo, base, b) {
   fs.writeFileSync(file, JSON.stringify(ep, null, 2) + '\n');
   var url = base + b.id + '.json';
   var shields = 'https://img.shields.io/endpoint?url=' + encodeURIComponent(url) +
-                '&style=flat-square';
+                '&style=flat-square&label=';
   md += '[![' + b.label + '](' + shields + ')](https://github.com/' +
         repo + '#throughput)\n';
   console.log('wrote ' + file);
