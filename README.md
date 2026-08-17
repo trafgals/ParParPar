@@ -73,7 +73,7 @@ ParParPar provides an intuitive command-line interface for creating, verifying, 
 
 ### 1. Create PAR3 Archive
 
-Create a PAR3 archive with 10 recovery slices:
+Create a PAR3 archive with 8 recovery slices (pow2):
 
 ```bash
 node bin/par3.js create --output myarchive --recovery-slices 8 file1.mkv file2.iso  # explicit count: must be a power of 2

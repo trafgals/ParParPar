@@ -10,9 +10,10 @@ var CI_SIZE = 100 * 1024 * 1024;
 var LOCAL_SIZE = 10000 * 1024 * 1024;
 var BLOCK_SIZE = 1024 * 1024;
 // Pow2 contract (issue #59 C2): PAR3's fast path requires a power-of-2
-// recovery count. SLICE_COUNT was 10 (non-pow2 → would now throw the new
-// constructor check); 16 is the next pow2 with the same ~10% coverage.
-var SLICE_COUNT = 16;
+// recovery count. Derive SLICE_COUNT from the data size so --local mode (10000
+// blocks) has enough recovery to repair what it damages (cubic review on #87:
+// 16 was too few for 10000*0.1 = 1000 damaged packets).
+var SLICE_COUNT = 1024; // >= MAX_DELETE_RATIO * (dataSize / blockSize)
 var DELETE_RATIO = 0.1;
 
 var PAR3_MAGIC = Buffer.from('PAR3\0PKT');
