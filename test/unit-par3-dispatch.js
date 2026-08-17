@@ -148,7 +148,7 @@ function runBug1(tempDir) {
       var data = crypto.randomBytes(1024 * 1024 * 6);
       fs.writeFileSync(testFile, data);
 
-      par3.create([testFile], outputBase, { outputBase: outputBase, recoverySlices: 3 }, function(err) {
+      par3.create([testFile], outputBase, { outputBase: outputBase, recoverySlices: 4 }, function(err) {
         if (err) {
           observedError = new Error('Setup: par3.create failed: ' + err.message);
           return done();
@@ -261,7 +261,7 @@ function runBug2(tempDir) {
       var data = crypto.randomBytes(1024 * 1024 * 2);
       fs.writeFileSync(testFile, data);
 
-      par3Native.create([testFile], nativeBase, { outputBase: nativeBase, recoverySlices: 3 }, function(err) {
+      par3Native.create([testFile], nativeBase, { outputBase: nativeBase, recoverySlices: 4 }, function(err) {
         if (err) {
           observedError = new Error('Setup: native par3.create failed: ' + err.message);
           return done();
@@ -279,7 +279,7 @@ function runBug2(tempDir) {
         delete require.cache[par3genPath];
         var par3Js = require('../lib/par3gen.js');
 
-        par3Js.create([testFile], jsBase, { outputBase: jsBase, recoverySlices: 3 }, function(err2) {
+        par3Js.create([testFile], jsBase, { outputBase: jsBase, recoverySlices: 4 }, function(err2) {
           if (prevEnv === undefined) delete process.env.PAR3_USE_JS_KERNEL;
           else process.env.PAR3_USE_JS_KERNEL = prevEnv;
 

@@ -81,7 +81,7 @@ if (require.main === module) {
 	var recovered = 0;
 	var tCreate0 = Date.now();
 	par32.create([src], outBase, {
-		recoverySlices: 1000,
+		recoverySlices: 1024,
 		blockSize: 4096
 	}, function(err) {
 		phases[lastName] = (phases[lastName] || 0) + (Date.now() - phaseStart);

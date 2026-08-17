@@ -63,7 +63,7 @@ function run() {
     // 2) Create a PAR3 archive with 3 recovery slices
     par3.create([testFile], outputBase, {
       outputBase: outputBase,
-      recoverySlices: 3
+      recoverySlices: 4
     }, function(err) {
       if (err) {
         console.error('par3.create failed:', err.message);
