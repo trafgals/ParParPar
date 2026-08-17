@@ -54,11 +54,18 @@
       "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8, Fenger kernel. 40 KiB is non-pow2 (rejected by #87); pending — would need shape change (e.g. 16 GiB / 64 KiB) to run"
     },
     {
+      "id": "par3-4g-65536-zen4",
+      "label": "",
+      "message": "28MB/s",
+      "color": "yellow",
+      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Fenger kernel; native Windows. Largest pow2 shape that fits V8's 4 GiB single-Buffer limit (16 GiB / 262144 / 64 KiB overflows). 1 warmup + 1 measured: 26.88 / 27.63 MB/s (152.4 / 148.2 s) — stable, +56% over 1G/262k (the input pool now fits the whole workload in one allocation, no chunking overhead)"
+    },
+    {
       "id": "par3-16g-262144-zen4",
       "label": "",
       "message": "pending",
       "color": "lightgrey",
-      "detail": "PAR3 create, 16 GiB / 262144 slices (64 KiB blocks), R=8, Fenger kernel; native Windows. 'Magic shape' (zero padding, Fenger direct, no Barycentric fallback). Wall time on Zen4 ~15-20 min based on 17 MB/s extrapolation from 1G/131k. Replaces the unrunnable 10G/131k/80KiB row (post-#87 pow2 enforcement)."
+      "detail": "PAR3 create, 16 GiB / 262144 slices (64 KiB blocks), R=8, Fenger kernel. ARCHITECTURAL LIMIT: V8 caps single-Buffer at 4 GiB and the Fenger single-call path tries Buffer.alloc(totalInputBlocks * blockSize) = 16 GiB (lib/par3gen.js:1766). See issue #91 for the chunked-Buffer fix. Until then, the 4G/65536 row above is the largest measurement we can produce."
     }
   ]
 }
