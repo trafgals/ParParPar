@@ -60,10 +60,10 @@ function run() {
     fs.writeFileSync(testFile, data);
     var originalHash = hashBuffer(data);
 
-    // 2) Create a PAR3 archive with 3 recovery slices
+    // 2) Create a PAR3 archive with 4 recovery slices (pow2; cubic review on #87)
     par3.create([testFile], outputBase, {
       outputBase: outputBase,
-      recoverySlices: 3
+      recoverySlices: 4
     }, function(err) {
       if (err) {
         console.error('par3.create failed:', err.message);

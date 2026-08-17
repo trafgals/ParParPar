@@ -174,7 +174,7 @@ function runRepairScenario(tempDir) {
     var originalData = crypto.randomBytes(1024 * 1024 * 2); // 2 blocks
 
     fs.writeFileSync(testFile, originalData);
-    par3.create([testFile], outputBase, { outputBase: outputBase, recoverySlices: 3 }, function(err) {
+    par3.create([testFile], outputBase, { outputBase: outputBase, recoverySlices: 4 }, function(err) {
       if (err) { rmrf(tempDir); return resolve(new Error('setup create failed: ' + err.message)); }
       try {
         rewriteCauTo24(par3File);
