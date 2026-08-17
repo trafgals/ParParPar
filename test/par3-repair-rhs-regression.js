@@ -269,15 +269,19 @@ function testEndToEndRepairParity() {
 // spuriously on scalar/SSSE3 runners or loaded shared CI, so the limit is
 // tiered by the ACTIVE dispatch method (addon.gf64_info(0).name). Every tier
 // stays far below the ~600ms/step regressed path this gate targets.
+// An unknown/missing gf64_info name falls back to the loosest (SCALAR) tier
+// and WARNs loudly instead of silently skipping (cubic review a596bf81 P3).
 function perfGateLimitMs(methodName) {
 	switch (methodName) {
 		case 'AVX512': return 50.0;
 		case 'AVX2': return 100.0;
 		case 'SSSE3': return 250.0;
 		case 'SCALAR': return 400.0;
-		default: return -1; // unknown method -> skip the gate
+		default: return -1; // unknown method -> WARN + SCALAR-tier fallback in caller
 	}
 }
+
+var SCALAR_MS = 400.0; // loosest tier: also the fallback for unknown dispatch
 
 function testPerformanceGate() {
 	console.log('--- Test 4: Issue #90 Performance Assertion ---');
@@ -286,12 +290,15 @@ function testPerformanceGate() {
 	try {
 		methodName = addon.gf64_info(0).name;
 	} catch (e) {
-		/* no gf64_info export -> skip below */
+		/* no gf64_info export -> fall back to SCALAR tier + WARN below */
 	}
 	var limitMs = perfGateLimitMs(methodName);
 	if (limitMs < 0) {
-		console.log('SKIP: performance gate requires a known native dispatch method (got ' + methodName + ')');
-		return;
+		// Unknown/unmeasurable dispatch must not convert the gate into a silent
+		// pass: WARN loudly (stderr) and still enforce the loosest tier so a
+		// catastrophic regression can never bypass the gate unnoticed.
+		console.error('WARN: unknown native dispatch method "' + methodName + '" — perf gate falls back to the SCALAR tier (' + SCALAR_MS + ' ms)');
+		limitMs = SCALAR_MS;
 	}
 	var G = 248, K = 8, len = 512; // 4 KiB blocks
 	var byteLen = len * 8;
@@ -325,6 +332,36 @@ function testPerformanceGate() {
 	// Regression threshold: pre-fix was ~5000 ms for one full repair. One step was ~600ms.
 	// Fixed version runs in under 5 ms on AVX-512!
 	assert.ok(perIterMs < limitMs, 'Performance regression detected: per-iter time ' + perIterMs + ' ms exceeds ' + limitMs + ' ms gate for method ' + methodName);
+
+	// Coupled-path gate (cubic review a596bf81 P2): the 2D gate above does not
+	// cover Issue #90's actual regression path. The coupled RHS kernel
+	// (coupled_muladd_arr) is still used for small, capped, and
+	// PAR3_REPAIR_COUPLED_RHS-forced repairs, so time one full K=8 repair step
+	// through it (one call per equation) and assert the same tiered limit.
+	if (typeof encoder.coupled_muladd_arr !== 'function') {
+		console.error('WARN: native coupled_muladd_arr not exported — coupled-path perf gate skipped');
+	} else {
+		var coeffCoupled = Buffer.allocUnsafe(G * 8);
+		coeffCoupled.fill(0x7F);
+		var outCoupled = Buffer.alloc(byteLen);
+		// Warm up (first-touch page faults, branch predictor, DVFS ramp)
+		for (var wc = 0; wc < 20; wc++) {
+			for (var ec = 0; ec < K; ec++) {
+				encoder.coupled_muladd_arr(outCoupled, inBuffers, coeffCoupled, len, G);
+			}
+		}
+		var cStart = process.hrtime.bigint();
+		for (var itc = 0; itc < iterations; itc++) {
+			for (var ec2 = 0; ec2 < K; ec2++) {
+				encoder.coupled_muladd_arr(outCoupled, inBuffers, coeffCoupled, len, G);
+			}
+		}
+		var cEnd = process.hrtime.bigint();
+		var cElapsedMs = Number(cEnd - cStart) / 1e6;
+		var cPerIterMs = cElapsedMs / iterations;
+		console.log('Issue #90 Coupled Muladd (G=248, K=8, 4KB, method=' + methodName + '): ' + cPerIterMs.toFixed(3) + ' ms per repair step (total 50 iters: ' + cElapsedMs.toFixed(2) + ' ms)');
+		assert.ok(cPerIterMs < limitMs, 'Coupled-path performance regression: per-step time ' + cPerIterMs + ' ms exceeds ' + limitMs + ' ms gate for method ' + methodName);
+	}
 	console.log('PASS: Performance verified well within speed gate.');
 }
 
