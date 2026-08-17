@@ -47,18 +47,18 @@
       "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Fenger kernel; native Windows. ~34x behind PAR2 at the matching slice-count row. Median of 3 measured runs + 1 warmup, stdev 0.72 (4%)"
     },
     {
-      "id": "par3-10g-131072-zen4",
-      "label": "",
-      "message": "pending",
-      "color": "lightgrey",
-      "detail": "PAR3 create, 10 GiB / 131072 slices (80 KiB blocks), R=8, Fenger kernel. Wall time ~6 h on Zen4 (see BENCHMARKING.md §4) — not refreshed in this measurement cycle"
-    },
-    {
       "id": "par3-10g-262144-zen4",
       "label": "",
       "message": "pending",
       "color": "lightgrey",
-      "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8, Fenger kernel. Wall time ~15 h on Zen4 — not refreshed in this measurement cycle"
+      "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8, Fenger kernel. 40 KiB is non-pow2 (rejected by #87); pending — would need shape change (e.g. 16 GiB / 64 KiB) to run"
+    },
+    {
+      "id": "par3-16g-262144-zen4",
+      "label": "",
+      "message": "pending",
+      "color": "lightgrey",
+      "detail": "PAR3 create, 16 GiB / 262144 slices (64 KiB blocks), R=8, Fenger kernel; native Windows. 'Magic shape' (zero padding, Fenger direct, no Barycentric fallback). Wall time on Zen4 ~15-20 min based on 17 MB/s extrapolation from 1G/131k. Replaces the unrunnable 10G/131k/80KiB row (post-#87 pow2 enforcement)."
     }
   ]
 }
