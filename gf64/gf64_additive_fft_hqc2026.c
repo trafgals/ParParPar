@@ -165,12 +165,22 @@ static void poly_mul_trunc(int n, const gf64_t *a, const gf64_t *b, gf64_t *out)
  * with the wrong bound silently returns 0, demoting the butterfly to a
  * trivial fold at deeper levels — which is precisely the n>=8 failure
  * pattern observed in test_gf64_additive_fft_hqc2026.c. */
+/* Forward decls: the vindex registry (defined below, with the v_table
+ * caches) is used by compute_index_for. */
+static int hqc_vindex_lookup(const gf64_t *v_table, gf64_t a);
+static void hqc_vindex_drop(const gf64_t *v_table);
+static int hqc_vindex_build(const gf64_t *v_table, int n);
+
 static int compute_index_for(gf64_t a, const gf64_t *v_table, int n_table) {
-    if (a == 0) return 0;
-    for (int j = 1; j < n_table; j++) {
-        if (v_table[j] == a) return j;
-    }
-    return -1;
+	if (a == 0) return 0;
+	/* Fast path: the vindex hash (bit-exact — the v_table values are
+	 * unique). Falls back to the linear scan when no index exists. */
+	int fast = hqc_vindex_lookup(v_table, a);
+	if (fast != -2) return fast;
+	for (int j = 1; j < n_table; j++) {
+		if (v_table[j] == a) return j;
+	}
+	return -1;
 }
 static gf64_t si_eval(int i, gf64_t a, const gf64_t *v_table, int n_table) {
     if (a == 0) return 0;
@@ -219,6 +229,70 @@ typedef struct {
 } hqc_vtable_cache_t;
 #define HQC_VTABLE_CACHE_SLOTS 16
 static hqc_vtable_cache_t hqc_vtable_cache[HQC_VTABLE_CACHE_SLOTS];
+
+/* vindex: value→index hash for a v_table. The Cantor W_m(j) values are
+ * unique, so a hash lookup is bit-exact to the linear scan it replaces.
+ * The scan ran once PER BUTTERFLY NODE (si_eval → compute_index_for),
+ * i.e. O(n) per node and O(n²) per transform — the interp combine's
+ * dominant cost at every measured geometry (the ~2-4% IPC wall). */
+typedef struct {
+	const gf64_t *v_table;
+	int *tab;      /* open addressing, size 1<<log2size; -1 = empty */
+	int log2size;
+	int mask;
+} hqc_vindex_t;
+#define HQC_VINDEX_SLOTS (HQC_VTABLE_CACHE_SLOTS + HQC_CACHE_SLOTS)
+static hqc_vindex_t hqc_vindex[HQC_VINDEX_SLOTS];
+static int hqc_vindex_count = 0;
+
+/* Drop (and free) the index entries for a v_table about to be freed. */
+static void hqc_vindex_drop(const gf64_t *v_table) {
+	for (int s = 0; s < hqc_vindex_count; s++) {
+		if (hqc_vindex[s].v_table != v_table) continue;
+		free(hqc_vindex[s].tab);
+		hqc_vindex[s] = hqc_vindex[hqc_vindex_count - 1];
+		hqc_vindex_count--;
+		s--;
+	}
+}
+
+static int hqc_vindex_build(const gf64_t *v_table, int n) {
+	if (hqc_vindex_count >= HQC_VINDEX_SLOTS) return -1;
+	int log2size = 1;
+	while ((1 << log2size) < 2 * n) log2size++;
+	if (log2size > 30) return -1;
+	const int size = 1 << log2size;
+	int *tab = (int *)malloc((size_t)size * sizeof(int));
+	if (tab == NULL) return -1;
+	for (int i = 0; i < size; i++) tab[i] = -1;
+	for (int j = 1; j < n; j++) {
+		const gf64_t a = v_table[j];
+		if (a == 0) continue; /* index 0 is the zero sentinel */
+		size_t h = (size_t)((uint64_t)(a * 0x9E3779B97F4A7C15ULL) >> (64 - log2size));
+		while (tab[h] != -1) h = (h + 1) & (size - 1);
+		tab[h] = j;
+	}
+	hqc_vindex_t *v = &hqc_vindex[hqc_vindex_count++];
+	v->v_table = v_table; v->tab = tab;
+	v->log2size = log2size; v->mask = size - 1;
+	return hqc_vindex_count - 1;
+}
+
+/* Returns the index, or -1 (absent), or -2 (no index for this table). */
+static int hqc_vindex_lookup(const gf64_t *v_table, gf64_t a) {
+	for (int s = 0; s < hqc_vindex_count; s++) {
+		if (hqc_vindex[s].v_table != v_table) continue;
+		if (a == 0) return 0;
+		const hqc_vindex_t *v = &hqc_vindex[s];
+		size_t h = (size_t)((uint64_t)(a * 0x9E3779B97F4A7C15ULL) >> (64 - v->log2size));
+		while (v->tab[h] != -1) {
+			if (v_table[v->tab[h]] == a) return v->tab[h];
+			h = (h + 1) & v->mask;
+		}
+		return -1;
+	}
+	return -2;
+}
 static gf64_t *get_or_build_v_table(int n) {
     for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
         if (hqc_vtable_cache[s].initialized && hqc_vtable_cache[s].n == n)
@@ -230,11 +304,12 @@ static gf64_t *get_or_build_v_table(int n) {
     }
     if (slot < 0) slot = 0;
     hqc_vtable_cache_t *c = &hqc_vtable_cache[slot];
-    if (c->initialized) { free(c->v_table); c->initialized = 0; }
+    if (c->initialized) { hqc_vindex_drop(c->v_table); free(c->v_table); c->initialized = 0; }
     c->n = n;
     c->v_table = (gf64_t *)calloc((size_t)n, sizeof(gf64_t));
     if (c->v_table == NULL) abort();
     for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
+    hqc_vindex_build(c->v_table, n);
     c->initialized = 1;
     return c->v_table;
 }
@@ -276,8 +351,9 @@ static hqc_basis_cache_t *get_or_build_basis_cache(int n) {
     if (slot < 0) slot = 0;
     hqc_basis_cache_t *c = &hqc_cache[slot];
     if (c->initialized) {
-        free(c->M); free(c->M_inv); free(c->v_table);
-        c->initialized = 0;
+    	hqc_vindex_drop(c->v_table);
+    	free(c->M); free(c->M_inv); free(c->v_table);
+    	c->initialized = 0;
     }
 
     c->n = n;
@@ -287,6 +363,7 @@ static hqc_basis_cache_t *get_or_build_basis_cache(int n) {
     if (c->M == NULL || c->M_inv == NULL || c->v_table == NULL) abort();
 
     for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
+    hqc_vindex_build(c->v_table, n);
 
     /* Allocate one-shot scratch for the cache build. build_X_basis needs
      * 3n (cur, s_poly, new_cur) plus 2n for compute_sj's internal region. */
@@ -322,6 +399,7 @@ static hqc_basis_cache_t *get_or_build_basis_cache(int n) {
             if (aug[r * aug_size + col] != 0) { pivot = r; break; }
         }
         if (pivot < 0) {
+            hqc_vindex_drop(c->v_table);
             free(aug); free(c->M); free(c->M_inv); free(c->v_table);
             c->initialized = 0;
             return NULL;
