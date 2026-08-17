@@ -35,9 +35,9 @@
     {
       "id": "par3-1g-131072-zen4",
       "label": "",
-      "message": "12MB/s",
+      "message": "17MB/s",
       "color": "yellow",
-      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Fenger kernel; native Windows. ~52x behind PAR2 at the matching slice-count row. Median of 3 measured runs + 1 warmup, stdev 5.87 (51%, run 3 outlier)"
+      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Fenger kernel; native Windows. ~36x behind PAR2 at the matching slice-count row. Median of 5 measured runs + 1 warmup, stdev 1.58 (9%). Initial 3-run probe (11.6 MB/s) was a thermal artifact from back-to-back with a hotter prior workload — re-measured after 30 s cooldown."
     },
     {
       "id": "par3-1g-262144-zen4",
