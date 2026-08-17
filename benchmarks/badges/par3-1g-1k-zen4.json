@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "label": "PAR3 1GB/1k (Zen4)",
-  "message": "62 MB/s",
+  "label": "",
+  "message": "62MB/s",
   "color": "brightgreen",
   "labelColor": "555"
 }

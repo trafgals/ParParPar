@@ -25,10 +25,12 @@ if (!Array.isArray(src.badges) || src.badges.length === 0) {
 
 let md = '';
 for (const b of src.badges) {
-  if (!b.id || !b.label || !b.message) {
+  if (!b.id || !b.message) {
     console.error('sources.json: badge missing id/label/message: ' + JSON.stringify(b));
     process.exit(1);
   }
+  // label is optional — empty label renders as "message only" in shields.io
+  if (typeof b.label !== 'string') b.label = '';
   const ep = {
     schemaVersion: 1,
     label: b.label,

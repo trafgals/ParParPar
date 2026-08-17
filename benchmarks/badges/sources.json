@@ -6,56 +6,56 @@
   "badges": [
     {
       "id": "par2-1g-1k-zen4",
-      "label": "PAR2 1GB/1k (Zen4)",
-      "message": "620 MB/s",
+      "label": "",
+      "message": "620MB/s",
       "color": "brightgreen",
       "detail": "PAR2 create, 1 GiB / 1024 slices (1 MiB), R=8; native Windows. GFNI+AVX-512 reference; pow2 slice count for direct PAR3 comparison. Median of 8 back-to-back runs, stdev 6.6 (1.1%)"
     },
     {
       "id": "par3-1g-1k-zen4",
-      "label": "PAR3 1GB/1k (Zen4)",
-      "message": "62 MB/s",
+      "label": "",
+      "message": "62MB/s",
       "color": "brightgreen",
       "detail": "PAR3 create, 1 GiB / 1024 slices (1 MiB), R=8, Fenger kernel (pow2 slices + pow2 recovery, post-#87); native Windows. Median of 5 runs, stdev 1.18 (1.9%)"
     },
     {
       "id": "par2-1g-32k-zen4",
-      "label": "PAR2 1GB/32k (Zen4)",
-      "message": "618 MB/s",
+      "label": "",
+      "message": "618MB/s",
       "color": "brightgreen",
       "detail": "PAR2 create, 1 GiB / 32768 slices (32 KiB), R=8; native Windows. PAR2's GFNI+AVX-512 is the speed reference for the PAR3 rows. Median of 5 back-to-back runs, stdev 9.65 (1.6%)"
     },
     {
       "id": "par3-1g-32k-zen4",
-      "label": "PAR3 1GB/32k (Zen4)",
-      "message": "26 MB/s",
+      "label": "",
+      "message": "26MB/s",
       "color": "yellow",
       "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8, Fenger kernel; native Windows. ~24x behind PAR2 at the same shape. Median of 3 measured runs + 1 warmup-discarded, stdev 2.63 (10%)"
     },
     {
       "id": "par3-1g-131072-zen4",
-      "label": "PAR3 1GB/131072 (Zen4)",
-      "message": "12 MB/s",
+      "label": "",
+      "message": "12MB/s",
       "color": "yellow",
       "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Fenger kernel; native Windows. ~52x behind PAR2 at the matching slice-count row. Median of 3 measured runs + 1 warmup, stdev 5.87 (51%, run 3 outlier)"
     },
     {
       "id": "par3-1g-262144-zen4",
-      "label": "PAR3 1GB/262144 (Zen4)",
-      "message": "18 MB/s",
+      "label": "",
+      "message": "18MB/s",
       "color": "yellow",
       "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Fenger kernel; native Windows. ~34x behind PAR2 at the matching slice-count row. Median of 3 measured runs + 1 warmup, stdev 0.72 (4%)"
     },
     {
       "id": "par3-10g-131072-zen4",
-      "label": "PAR3 10GB/131072 (Zen4)",
+      "label": "",
       "message": "pending",
       "color": "lightgrey",
       "detail": "PAR3 create, 10 GiB / 131072 slices (80 KiB blocks), R=8, Fenger kernel. Wall time ~6 h on Zen4 (see BENCHMARKING.md §4) — not refreshed in this measurement cycle"
     },
     {
       "id": "par3-10g-262144-zen4",
-      "label": "PAR3 10GB/262144 (Zen4)",
+      "label": "",
       "message": "pending",
       "color": "lightgrey",
       "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8, Fenger kernel. Wall time ~15 h on Zen4 — not refreshed in this measurement cycle"
