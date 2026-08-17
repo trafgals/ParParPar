@@ -58,8 +58,13 @@ void gf64_region_fused_output_muladd_scalar_arr(
     const gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT coeff_block_starts,
     size_t len,
     size_t K) {
-	for (size_t k = 0; k < K; k++) {
-		gf64_region_muladd_scalar_arr(outs[k], in, coeff_block_starts[k], len, 1);
+	/* Fused: each element of the shared `in` is read ONCE and applied to
+	 * all K outputs, keeping input traffic at len not K*len. */
+	for (size_t i = 0; i < len; i++) {
+		gf64_t in_w = in[i];
+		for (size_t k = 0; k < K; k++) {
+			outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)*coeff_block_starts[k]);
+		}
 	}
 }
 
@@ -72,9 +77,15 @@ void gf64_region_2d_muladd_scalar_arr(
     const gf64_t *HEDLEY_RESTRICT coeff_block_2d,
     size_t K_stride,
     size_t len) {
+	/* Fused 2D: for each input block g, stream its elements ONCE and update
+	 * all K outputs from each loaded element, so input traffic is G*len not
+	 * G*K*len. */
 	for (size_t g = 0; g < G; g++) {
-		for (size_t k = 0; k < K; k++) {
-			gf64_region_muladd_scalar_arr(outs[k], in_blocks[g], coeff_block_2d + k * K_stride + g, len, 1);
+		for (size_t i = 0; i < len; i++) {
+			gf64_t in_w = in_blocks[g][i];
+			for (size_t k = 0; k < K; k++) {
+				outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)coeff_block_2d[k * K_stride + g]);
+			}
 		}
 	}
 }

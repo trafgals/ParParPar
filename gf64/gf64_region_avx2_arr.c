@@ -499,8 +499,42 @@ void gf64_region_fused_output_muladd_avx2_arr(
 	const gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT coeff_block_starts,
 	size_t len,
 	size_t K) {
-	for (size_t k = 0; k < K; k++) {
-		gf64_region_muladd_avx2_arr(outs[k], in, coeff_block_starts[k], len, 1);
+	/* Fused: each 4-element chunk of the shared `in` is loaded ONCE and
+	 * applied to all K outputs, keeping input traffic at len not K*len. */
+	size_t i = 0;
+	size_t blocks = len / 4;
+	for (size_t b = 0; b < blocks; b++) {
+		__m256i in01 = _mm256_setr_epi64x((int64_t)in[i + 0], 0, (int64_t)in[i + 1], 0);
+		__m256i in23 = _mm256_setr_epi64x((int64_t)in[i + 2], 0, (int64_t)in[i + 3], 0);
+
+		for (size_t k = 0; k < K; k++) {
+			__m256i coeff_bc = _mm256_set1_epi64x((int64_t)*coeff_block_starts[k]);
+
+			__m256i prod01 = _mm256_clmulepi64_epi128(in01, coeff_bc, 0x00);
+			__m256i lo_vec, hi_vec;
+			gf64_split_prod_ymm(prod01, &lo_vec, &hi_vec);
+			__m256i red01 = gf64_reduce_ymm(lo_vec, hi_vec);
+			__m128i prev01 = _mm_loadu_si128((const __m128i *)(outs[k] + i + 0));
+			_mm_storeu_si128((__m128i *)(outs[k] + i + 0),
+			                 _mm_xor_si128(prev01, _mm256_castsi256_si128(red01)));
+
+			__m256i prod23 = _mm256_clmulepi64_epi128(in23, coeff_bc, 0x00);
+			gf64_split_prod_ymm(prod23, &lo_vec, &hi_vec);
+			__m256i red23 = gf64_reduce_ymm(lo_vec, hi_vec);
+			__m128i prev23 = _mm_loadu_si128((const __m128i *)(outs[k] + i + 2));
+			_mm_storeu_si128((__m128i *)(outs[k] + i + 2),
+			                 _mm_xor_si128(prev23, _mm256_castsi256_si128(red23)));
+		}
+
+		i += 4;
+	}
+
+	while (i < len) {
+		gf64_t in_w = in[i];
+		for (size_t k = 0; k < K; k++) {
+			outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)*coeff_block_starts[k]);
+		}
+		i++;
 	}
 }
 
@@ -522,9 +556,44 @@ void gf64_region_2d_muladd_avx2_arr(
 	const gf64_t *HEDLEY_RESTRICT coeff_block_2d,
 	size_t K_stride,
 	size_t len) {
+	/* Fused 2D: for each input block g, stream its elements ONCE (4 per
+	 * iteration) and update all K outputs from each loaded vector, so input
+	 * traffic is G*len not G*K*len. */
 	for (size_t g = 0; g < G; g++) {
-		for (size_t k = 0; k < K; k++) {
-			gf64_region_muladd_avx2_arr(outs[k], in_blocks[g], coeff_block_2d + k * K_stride + g, len, 1);
+		size_t i = 0;
+		size_t blocks = len / 4;
+		for (size_t b = 0; b < blocks; b++) {
+			__m256i in01 = _mm256_setr_epi64x((int64_t)in_blocks[g][i + 0], 0, (int64_t)in_blocks[g][i + 1], 0);
+			__m256i in23 = _mm256_setr_epi64x((int64_t)in_blocks[g][i + 2], 0, (int64_t)in_blocks[g][i + 3], 0);
+
+			for (size_t k = 0; k < K; k++) {
+				__m256i coeff_bc = _mm256_set1_epi64x((int64_t)coeff_block_2d[k * K_stride + g]);
+
+				__m256i prod01 = _mm256_clmulepi64_epi128(in01, coeff_bc, 0x00);
+				__m256i lo_vec, hi_vec;
+				gf64_split_prod_ymm(prod01, &lo_vec, &hi_vec);
+				__m256i red01 = gf64_reduce_ymm(lo_vec, hi_vec);
+				__m128i prev01 = _mm_loadu_si128((const __m128i *)(outs[k] + i + 0));
+				_mm_storeu_si128((__m128i *)(outs[k] + i + 0),
+				                 _mm_xor_si128(prev01, _mm256_castsi256_si128(red01)));
+
+				__m256i prod23 = _mm256_clmulepi64_epi128(in23, coeff_bc, 0x00);
+				gf64_split_prod_ymm(prod23, &lo_vec, &hi_vec);
+				__m256i red23 = gf64_reduce_ymm(lo_vec, hi_vec);
+				__m128i prev23 = _mm_loadu_si128((const __m128i *)(outs[k] + i + 2));
+				_mm_storeu_si128((__m128i *)(outs[k] + i + 2),
+				                 _mm_xor_si128(prev23, _mm256_castsi256_si128(red23)));
+			}
+
+			i += 4;
+		}
+
+		while (i < len) {
+			gf64_t in_w = in_blocks[g][i];
+			for (size_t k = 0; k < K; k++) {
+				outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)coeff_block_2d[k * K_stride + g]);
+			}
+			i++;
 		}
 	}
 }

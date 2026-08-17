@@ -266,8 +266,28 @@ void gf64_region_fused_output_muladd_ssse3_arr(
 	size_t len,
 	size_t K)
 {
-	for (size_t k = 0; k < K; k++) {
-		gf64_region_muladd_ssse3_arr(outs[k], in, coeff_block_starts[k], len, 1);
+	/* Fused: each 2-element chunk of the shared `in` is loaded ONCE and
+	 * applied to all K outputs, keeping input traffic at len not K*len. */
+	size_t i = 0;
+	size_t blocks = len / 2;
+	for (size_t b = 0; b < blocks; b++) {
+		uint64_t in0 = in[i + 0];
+		uint64_t in1 = in[i + 1];
+		for (size_t k = 0; k < K; k++) {
+			uint64_t r0, r1;
+			gf64_clmul_reduce_64x64_packed(in0, in1, (gf64_t)*coeff_block_starts[k], &r0, &r1);
+			outs[k][i + 0] ^= r0;
+			outs[k][i + 1] ^= r1;
+		}
+		i += 2;
+	}
+
+	while (i < len) {
+		gf64_t in_w = in[i];
+		for (size_t k = 0; k < K; k++) {
+			outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)*coeff_block_starts[k]);
+		}
+		i++;
 	}
 }
 
@@ -291,9 +311,30 @@ void gf64_region_2d_muladd_ssse3_arr(
 	size_t K_stride,
 	size_t len)
 {
+	/* Fused 2D: for each input block g, stream its elements ONCE (2 per
+	 * iteration) and update all K outputs from each loaded pair, so input
+	 * traffic is G*len not G*K*len. */
 	for (size_t g = 0; g < G; g++) {
-		for (size_t k = 0; k < K; k++) {
-			gf64_region_muladd_ssse3_arr(outs[k], in_blocks[g], coeff_block_2d + k * K_stride + g, len, 1);
+		size_t i = 0;
+		size_t blocks = len / 2;
+		for (size_t b = 0; b < blocks; b++) {
+			uint64_t in0 = in_blocks[g][i + 0];
+			uint64_t in1 = in_blocks[g][i + 1];
+			for (size_t k = 0; k < K; k++) {
+				uint64_t r0, r1;
+				gf64_clmul_reduce_64x64_packed(in0, in1, (gf64_t)coeff_block_2d[k * K_stride + g], &r0, &r1);
+				outs[k][i + 0] ^= r0;
+				outs[k][i + 1] ^= r1;
+			}
+			i += 2;
+		}
+
+		while (i < len) {
+			gf64_t in_w = in_blocks[g][i];
+			for (size_t k = 0; k < K; k++) {
+				outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)coeff_block_2d[k * K_stride + g]);
+			}
+			i++;
 		}
 	}
 }

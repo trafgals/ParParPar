@@ -518,8 +518,38 @@ void gf64_region_fused_output_muladd_avx512_arr(
 	const gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT coeff_block_starts,
 	size_t len,
 	size_t K) {
-	for (size_t k = 0; k < K; k++) {
-		gf64_region_muladd_avx512_arr(outs[k], in, coeff_block_starts[k], len, 1);
+	/* Fused: each 4-element chunk of the shared `in` is loaded ONCE and
+	 * applied to all K outputs, keeping input traffic at len not K*len. */
+	size_t i = 0;
+	size_t blocks = len / 4;
+	for (size_t b = 0; b < blocks; b++) {
+		/* Interleave with zeros (0, in[i+3], 0, in[i+2], 0, in[i+1], 0, in[i+0])
+		 * so each 128-bit half is [in_j, 0]: VPCLMULQDQ with imm 0x00 multiplies
+		 * the LOW 64-bit lane of each half, which must hold in_j. A consecutive
+		 * load would put in[i+1]/in[i+3] in the odd lanes and select the wrong
+		 * elements. Same layout as gf64_region_mul_avx512_arr. */
+		__m512i in_vec = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
+		                                  0, (int64_t)in[i + 1], 0, (int64_t)in[i + 0]);
+		for (size_t k = 0; k < K; k++) {
+			__m512i coeff_bc = _mm512_set1_epi64((int64_t)*coeff_block_starts[k]);
+			__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_bc, 0x00);
+			__m512i lo_v, hi_v;
+			gf64_split_prod_512(prod, &lo_v, &hi_v);
+			__m512i red = gf64_reduce_512(lo_v, hi_v);
+			__m512i prev = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[k] + i);
+			_mm512_mask_storeu_epi64(outs[k] + i, (__mmask8)0x0F,
+			                        _mm512_xor_si512(prev, red));
+		}
+		i += 4;
+	}
+
+	/* Tail (0..3 elements) -- scalar epilog with sum-over-k semantics. */
+	while (i < len) {
+		gf64_t in_w = in[i];
+		for (size_t k = 0; k < K; k++) {
+			outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)*coeff_block_starts[k]);
+		}
+		i++;
 	}
 }
 
@@ -541,9 +571,37 @@ void gf64_region_2d_muladd_avx512_arr(
 	const gf64_t *HEDLEY_RESTRICT coeff_block_2d,
 	size_t K_stride,
 	size_t len) {
+	/* Fused 2D: for each input block g, stream its elements ONCE (4 per
+	 * iteration) and update all K outputs from each loaded vector, so input
+	 * traffic is G*len not G*K*len. */
 	for (size_t g = 0; g < G; g++) {
-		for (size_t k = 0; k < K; k++) {
-			gf64_region_muladd_avx512_arr(outs[k], in_blocks[g], coeff_block_2d + k * K_stride + g, len, 1);
+		size_t i = 0;
+		size_t blocks = len / 4;
+		for (size_t b = 0; b < blocks; b++) {
+			/* See fused_output_muladd: interleave with zeros so each 128-bit
+			 * half is [in_j, 0] and the imm-0x00 VPCLMULQDQ selects in_j. */
+			__m512i in_vec = _mm512_set_epi64(0, (int64_t)in_blocks[g][i + 3], 0, (int64_t)in_blocks[g][i + 2],
+			                                  0, (int64_t)in_blocks[g][i + 1], 0, (int64_t)in_blocks[g][i + 0]);
+			for (size_t k = 0; k < K; k++) {
+				__m512i coeff_bc = _mm512_set1_epi64((int64_t)coeff_block_2d[k * K_stride + g]);
+				__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_bc, 0x00);
+				__m512i lo_v, hi_v;
+				gf64_split_prod_512(prod, &lo_v, &hi_v);
+				__m512i red = gf64_reduce_512(lo_v, hi_v);
+				__m512i prev = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[k] + i);
+				_mm512_mask_storeu_epi64(outs[k] + i, (__mmask8)0x0F,
+				                        _mm512_xor_si512(prev, red));
+			}
+			i += 4;
+		}
+
+		/* Tail (0..3 elements) -- scalar epilog with sum-over-k semantics. */
+		while (i < len) {
+			gf64_t in_w = in_blocks[g][i];
+			for (size_t k = 0; k < K; k++) {
+				outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)coeff_block_2d[k * K_stride + g]);
+			}
+			i++;
 		}
 	}
 }
