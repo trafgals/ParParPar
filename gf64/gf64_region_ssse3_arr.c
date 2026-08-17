@@ -252,29 +252,8 @@ void gf64_region_coupled_muladd_ssse3_arr(
 	size_t len,
 	size_t G)
 {
-	size_t blocks = len / 2;
-	size_t i = 0;
-
-	for (size_t b = 0; b < blocks; b++) {
-		uint64_t acc0 = 0, acc1 = 0;
-		for (size_t g = 0; g < G; g++) {
-			uint64_t r0, r1;
-			gf64_clmul_reduce_64x64_packed(in_blocks[g][2*b + 0], in_blocks[g][2*b + 1], coeff_blocks[g], &r0, &r1);
-			acc0 ^= r0;
-			acc1 ^= r1;
-		}
-		out[2*b + 0] ^= acc0;
-		out[2*b + 1] ^= acc1;
-		i += 2;
-	}
-
-	/* Tail (1 element) */
-	if (i < len) {
-		uint64_t acc = 0;
-		for (size_t g = 0; g < G; g++) {
-			acc ^= gf64_mul_reference(in_blocks[g][i], coeff_blocks[g]);
-		}
-		out[i] ^= acc;
+	for (size_t g = 0; g < G; g++) {
+		gf64_region_muladd_ssse3_arr(out, in_blocks[g], &coeff_blocks[g], len, 1);
 	}
 }
 
@@ -287,24 +266,8 @@ void gf64_region_fused_output_muladd_ssse3_arr(
 	size_t len,
 	size_t K)
 {
-	size_t blocks = len / 2;
-	size_t i = 0;
-
-	for (size_t b = 0; b < blocks; b++) {
-		for (size_t k = 0; k < K; k++) {
-			uint64_t r0, r1;
-			gf64_clmul_reduce_64x64_packed(in[i + 0], in[i + 1], (uint64_t)*coeff_block_starts[k], &r0, &r1);
-			outs[k][i + 0] ^= r0;
-			outs[k][i + 1] ^= r1;
-		}
-		i += 2;
-	}
-
-	/* Tail (1 element) */
-	if (i < len) {
-		for (size_t k = 0; k < K; k++) {
-			outs[k][i] ^= gf64_mul_reference(in[i], (gf64_t)*coeff_block_starts[k]);
-		}
+	for (size_t k = 0; k < K; k++) {
+		gf64_region_muladd_ssse3_arr(outs[k], in, coeff_block_starts[k], len, 1);
 	}
 }
 
@@ -328,34 +291,9 @@ void gf64_region_2d_muladd_ssse3_arr(
 	size_t K_stride,
 	size_t len)
 {
-	size_t blocks = len / 2;
-	size_t i = 0;
-
-	for (size_t b = 0; b < blocks; b++) {
-		for (size_t g = 0; g < G; g++) {
-			/* D2: prefetch the NEXT input block's current W-lane
-			 * into L1 (T0 hint) before the SIMD loads below. The
-			 * prefetch is bounded by g+1 < G to avoid reading past
-			 * the in_blocks[] pointer array on the last iteration. */
-			if (g + 1 < G) {
-				_mm_prefetch((const char *)&in_blocks[g + 1][i], _MM_HINT_T0);
-			}
-			for (size_t k = 0; k < K; k++) {
-				uint64_t r0, r1;
-				gf64_clmul_reduce_64x64_packed(in_blocks[g][2*b + 0], in_blocks[g][2*b + 1], *(coeff_block_2d + k*K_stride + g), &r0, &r1);
-				outs[k][2*b + 0] ^= r0;
-				outs[k][2*b + 1] ^= r1;
-			}
-		}
-		i += 2;
-	}
-
-	/* Tail (1 element) */
-	if (i < len) {
-		for (size_t g = 0; g < G; g++) {
-			for (size_t k = 0; k < K; k++) {
-				outs[k][i] ^= gf64_mul_reference(in_blocks[g][i], *(coeff_block_2d + k*K_stride + g));
-			}
+	for (size_t g = 0; g < G; g++) {
+		for (size_t k = 0; k < K; k++) {
+			gf64_region_muladd_ssse3_arr(outs[k], in_blocks[g], coeff_block_2d + k * K_stride + g, len, 1);
 		}
 	}
 }

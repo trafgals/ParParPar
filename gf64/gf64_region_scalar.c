@@ -46,12 +46,8 @@ void gf64_region_coupled_muladd_scalar_arr(
     const gf64_t *HEDLEY_RESTRICT coeff_blocks,
     size_t len,
     size_t G) {
-	for (size_t w = 0; w < len; w++) {
-		gf64_t acc = 0;
-		for (size_t g = 0; g < G; g++) {
-			acc ^= gf64_mul_reference(in_blocks[g][w], coeff_blocks[g]);
-		}
-		out[w] ^= acc;
+	for (size_t g = 0; g < G; g++) {
+		gf64_region_muladd_scalar_arr(out, in_blocks[g], &coeff_blocks[g], len, 1);
 	}
 }
 
@@ -62,11 +58,8 @@ void gf64_region_fused_output_muladd_scalar_arr(
     const gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT coeff_block_starts,
     size_t len,
     size_t K) {
-	for (size_t w = 0; w < len; w++) {
-		gf64_t in_w = in[w];
-		for (size_t k = 0; k < K; k++) {
-			outs[k][w] ^= gf64_mul_reference(in_w, *coeff_block_starts[k]);
-		}
+	for (size_t k = 0; k < K; k++) {
+		gf64_region_muladd_scalar_arr(outs[k], in, coeff_block_starts[k], len, 1);
 	}
 }
 
@@ -79,22 +72,9 @@ void gf64_region_2d_muladd_scalar_arr(
     const gf64_t *HEDLEY_RESTRICT coeff_block_2d,
     size_t K_stride,
     size_t len) {
-	for (size_t w = 0; w < len; w++) {
-		for (size_t g = 0; g < G; g++) {
-			/* D2: prefetch the NEXT input block's current W-element
-			 * into L1 (T0 hint) before the scalar read below. The
-			 * prefetch is bounded by g+1 < G to avoid reading past
-			 * the in_blocks[] pointer array on the last iteration.
-			 * Note: _mm_prefetch is an SSE1 intrinsic available under
-			 * -msse (built-in on every x86_64 host); no ISA upgrade is
-			 * required for this scalar reference. */
-			if (g + 1 < G) {
-				_mm_prefetch((const char *)&in_blocks[g + 1][w], _MM_HINT_T0);
-			}
-			gf64_t in_w = in_blocks[g][w];
-			for (size_t k = 0; k < K; k++) {
-				outs[k][w] ^= gf64_mul_reference(in_w, *(coeff_block_2d + k*K_stride + g));
-			}
+	for (size_t g = 0; g < G; g++) {
+		for (size_t k = 0; k < K; k++) {
+			gf64_region_muladd_scalar_arr(outs[k], in_blocks[g], coeff_block_2d + k * K_stride + g, len, 1);
 		}
 	}
 }
