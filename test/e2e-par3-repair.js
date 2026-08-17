@@ -10,9 +10,12 @@ var CI_SIZE = 100 * 1024 * 1024;
 var LOCAL_SIZE = 10000 * 1024 * 1024;
 var BLOCK_SIZE = 1024 * 1024;
 // Pow2 contract (issue #59 C2): PAR3's fast path requires a power-of-2
-// recovery count. SLICE_COUNT was 10 (non-pow2 → would now throw the new
-// constructor check); 16 is the next pow2 with the same ~10% coverage.
-var SLICE_COUNT = 16;
+// recovery count. Derive SLICE_COUNT from the actual input data size
+// (CI_SIZE / LOCAL_SIZE, with BLOCK_SIZE = 1 MiB) so the archive has
+// enough recovery to repair what it damages (cubic review on #87 P2:
+// 16 was too few for 10000*0.1 = 1000 damaged packets, but a fixed
+// 1024 broke the small CI case where sliceCount=100 produces N=128
+// after padding < R=1024, making the recovery math degenerate).
 var DELETE_RATIO = 0.1;
 
 var PAR3_MAGIC = Buffer.from('PAR3\0PKT');
@@ -131,7 +134,14 @@ function run() {
 	var fileSize = isLocal ? LOCAL_SIZE : CI_SIZE;
 	var sliceSize = BLOCK_SIZE;
 	var actualDataSlices = Math.ceil(fileSize / BLOCK_SIZE);
-	var slicesToDelete = Math.floor(actualDataSlices * 0.1);
+	// Pow2 recovery count covering DELETE_RATIO damage with margin.
+	// e.g. 100 slices (CI) -> 32; 10000 slices (--local) -> 2048.
+	var SLICE_COUNT_RAW = Math.ceil(actualDataSlices * DELETE_RATIO * 2);
+	var SLICE_COUNT = (SLICE_COUNT_RAW <= 1) ? 1 : 1 << (32 - Math.clz32(SLICE_COUNT_RAW - 1));
+	// Use DELETE_RATIO (not the hardcoded 0.1) so the damage and the
+	// recovery count stay in sync if the ratio is ever raised (cubic
+	// review on #88 P3).
+	var slicesToDelete = Math.floor(actualDataSlices * DELETE_RATIO);
 	
 	var tempDir = helpers.getTempDir();
 	var testFile = path.join(tempDir, 'test.bin');
