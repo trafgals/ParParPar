@@ -237,7 +237,6 @@ static hqc_vtable_cache_t hqc_vtable_cache[HQC_VTABLE_CACHE_SLOTS];
  * dominant cost at every measured geometry (the ~2-4% IPC wall). */
 typedef struct {
 	const gf64_t *v_table;
-	int n;
 	int *tab;      /* open addressing, size 1<<log2size; -1 = empty */
 	int log2size;
 	int mask;
@@ -274,7 +273,7 @@ static int hqc_vindex_build(const gf64_t *v_table, int n) {
 		tab[h] = j;
 	}
 	hqc_vindex_t *v = &hqc_vindex[hqc_vindex_count++];
-	v->v_table = v_table; v->n = n; v->tab = tab;
+	v->v_table = v_table; v->tab = tab;
 	v->log2size = log2size; v->mask = size - 1;
 	return hqc_vindex_count - 1;
 }
@@ -400,6 +399,7 @@ static hqc_basis_cache_t *get_or_build_basis_cache(int n) {
             if (aug[r * aug_size + col] != 0) { pivot = r; break; }
         }
         if (pivot < 0) {
+            hqc_vindex_drop(c->v_table);
             free(aug); free(c->M); free(c->M_inv); free(c->v_table);
             c->initialized = 0;
             return NULL;
