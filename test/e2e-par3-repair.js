@@ -138,7 +138,10 @@ function run() {
 	// e.g. 100 slices (CI) -> 32; 10000 slices (--local) -> 2048.
 	var SLICE_COUNT_RAW = Math.ceil(actualDataSlices * DELETE_RATIO * 2);
 	var SLICE_COUNT = (SLICE_COUNT_RAW <= 1) ? 1 : 1 << (32 - Math.clz32(SLICE_COUNT_RAW - 1));
-	var slicesToDelete = Math.floor(actualDataSlices * 0.1);
+	// Use DELETE_RATIO (not the hardcoded 0.1) so the damage and the
+	// recovery count stay in sync if the ratio is ever raised (cubic
+	// review on #88 P3).
+	var slicesToDelete = Math.floor(actualDataSlices * DELETE_RATIO);
 	
 	var tempDir = helpers.getTempDir();
 	var testFile = path.join(tempDir, 'test.bin');
