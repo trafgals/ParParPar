@@ -271,20 +271,24 @@ function testEndToEndRepairParity() {
 // stays far below the ~600ms/step regressed path this gate targets.
 // An unknown/missing gf64_info name falls back to the loosest (SCALAR) tier
 // and WARNs loudly instead of silently skipping (cubic review a596bf81 P3).
+// SCALAR_MS is declared BEFORE perfGateLimitMs so the named-SCALAR tier and
+// the unknown-method fallback share ONE deadline (cubic review 0d4712b3 P3).
+var SCALAR_MS = 400.0; // loosest tier: also the fallback for unknown dispatch
 function perfGateLimitMs(methodName) {
 	switch (methodName) {
 		case 'AVX512': return 50.0;
 		case 'AVX2': return 100.0;
 		case 'SSSE3': return 250.0;
-		case 'SCALAR': return 400.0;
+		case 'SCALAR': return SCALAR_MS;
 		default: return -1; // unknown method -> WARN + SCALAR-tier fallback in caller
 	}
 }
 
-var SCALAR_MS = 400.0; // loosest tier: also the fallback for unknown dispatch
-
 function testPerformanceGate() {
 	console.log('--- Test 4: Issue #90 Performance Assertion ---');
+	// Contract pin (cubic review 0d4712b3 P3): named-SCALAR tier and unknown-method
+	// fallback must share ONE deadline, else the tiers can silently diverge.
+	assert.strictEqual(perfGateLimitMs('SCALAR'), SCALAR_MS, 'named-SCALAR tier and unknown-method fallback must share one deadline (cubic review 0d4712b3 P3)');
 	var encoder = new addon.Gf64Encoder(0);
 	var methodName = 'UNKNOWN';
 	try {
