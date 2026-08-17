@@ -64,3 +64,8 @@ gf64/test/bench_*
 
 # PAR3_PROFILE=1 dump
 .par3-profile-dump.txt
+
+# Local Zen4 bench re-run output (test/bench/par3-create-bench.js driver scripts)
+# — one dated folder per run; see bench-reports/zen4-rerun-2026-08-18/README.md
+# for the protocol that produced the 2026-08-18 README numbers.
+/bench-reports/

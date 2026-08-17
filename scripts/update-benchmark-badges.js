@@ -45,16 +45,19 @@ if (!Array.isArray(srcCi.badges) || srcCi.badges.length === 0) {
 
 var md = '';
 function emit(repo, base, b) {
-  if (!b.id || !b.label || !b.message) {
-    console.error('badge missing id/label/message: ' + JSON.stringify(b));
+  if (!b.id || !b.message) {
+    console.error('badge missing id/message: ' + JSON.stringify(b));
     process.exit(1);
   }
+  // label is optional — empty label renders as "message only" in shields.io
+  if (typeof b.label !== 'string') b.label = '';
   var ep = {
     schemaVersion: 1,
     label: b.label,
     message: b.message,
     color: b.color || 'brightgreen'
   };
+  if (b.detail) ep.labelColor = '555';
   var file = path.join(BADGES_DIR, b.id + '.json');
   fs.writeFileSync(file, JSON.stringify(ep, null, 2) + '\n');
   var url = base + b.id + '.json';
