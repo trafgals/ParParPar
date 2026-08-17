@@ -58,7 +58,7 @@
       "label": "",
       "message": "27MB/s",
       "color": "yellow",
-      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Fenger kernel; native Windows. Largest pow2 shape that fits V8's 4 GiB single-Buffer limit (16 GiB / 262144 / 64 KiB overflows). Re-measured 2026-08-18: 26.47 / 25.91 / 26.83 MB/s over 3 measured runs (stdev 0.46, 1.7%) — flat vs 28 MB/s baseline. Note: requires `PAR3_GF64_INPUT_POOL_SIZE=4294963200` (4 GiB - 64 KiB) to bypass the +64 KiB input-pool headroom collision at this shape (lib/par3gen.js:375 — poolSize = totalSize + 64 KiB overflows V8's 4 GiB - 1 cap by 130944 B); see bench-reports/zen4-rerun-2026-08-18/"
+      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Fenger kernel; native Windows. Largest pow2 shape that fits V8's 4 GiB single-Buffer limit (16 GiB / 262144 / 64 KiB overflows). Re-measured 2026-08-18: 26.47 / 25.91 / 26.83 MB/s over 3 measured runs (stdev 0.46, 1.7%) — flat vs 28 MB/s baseline. Note: requires `PAR3_GF64_INPUT_POOL_SIZE=4294963200` (4 GiB - 4 KiB) to bypass the +64 KiB input-pool headroom collision at this shape (lib/par3gen.js:375 — poolSize = totalSize + 64 KiB overflows V8's 4 GiB - 1 cap by 130944 B); see bench-reports/zen4-rerun-2026-08-18/"
     },
     {
       "id": "par3-16g-262144-zen4",

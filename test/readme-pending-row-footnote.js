@@ -22,9 +22,10 @@
 var fs = require('fs');
 var path = require('path');
 var https = require('https');
+var shared = require('./readme-badges-shared');
 
 var README_PATH = path.join(__dirname, '..', 'README.md');
-var BADGE_BRANCH_RAW = 'https://raw.githubusercontent.com/trafgals/ParParPar/feat/ci-benchmark-badge/';
+var BADGE_BRANCH_RAW = shared.BADGE_BRANCH_RAW;
 
 var readme = fs.readFileSync(README_PATH, 'utf8');
 
@@ -54,8 +55,9 @@ for (var i = 0; i < lines.length; i++) {
 // Extract the Zen4 badge ID from a row's Zen4 cell. The cell looks like
 // `[![label](shields-url)](anchor)` where the shields URL contains the
 // raw.githubusercontent.com path. We match the URL-encoded form to get
-// the JSON filename stem.
-var zen4IdRe = /raw\.githubusercontent\.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2F([a-z0-9-]+)\.json/i;
+// the JSON filename stem. (The pattern is shared with test/readme-badge-urls.js
+// via test/readme-badges-shared.js.)
+var zen4IdRe = new RegExp(shared.ZEN4_BADGE_ID_RE.source, 'i');
 
 function splitRow(line) {
   var trimmed = line.replace(/^\| /, '').replace(/ \|$/, '');
@@ -145,8 +147,14 @@ function fetchJson(url) {
   var footnote = footnoteMatch[0];
 
   // Look at the specifically-named pending rows we expect to find.
-  var has16GiB = pendingRows.some(function(p) { return /16 GiB/i.test(p.workload); });
-  var has10GiB_262k = pendingRows.some(function(p) { return /10 GiB.*262k/i.test(p.workload) || /10 GiB.*262144/i.test(p.workload); });
+  // The Workload cell is the natural-language description (e.g.
+  // "10 GiB Create ($R=8$)") and does NOT contain the slice count;
+  // match on the badge id (e.g. par3-10g-262144-zen4) so the rule
+  // actually fires — matching on workload alone made this always
+  // false and silently disabled the very contract this PR fixes
+  // (cubic review 95db4ba2 P2 on PR #95).
+  var has16GiB = pendingRows.some(function(p) { return /16g-262144/.test(p.badgeId); });
+  var has10GiB_262k = pendingRows.some(function(p) { return /10g-262144/.test(p.badgeId); });
 
   // The footnote's 16 GiB mention must point at V8 Buffer cap / #91.
   // We look 200 chars after the first "16 GiB" to give the parenthetical

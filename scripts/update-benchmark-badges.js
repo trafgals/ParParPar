@@ -57,7 +57,6 @@ function emit(repo, base, b) {
     message: b.message,
     color: b.color || 'brightgreen'
   };
-  if (b.detail) ep.labelColor = '555';
   var file = path.join(BADGES_DIR, b.id + '.json');
   fs.writeFileSync(file, JSON.stringify(ep, null, 2) + '\n');
   var url = base + b.id + '.json';
