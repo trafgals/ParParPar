@@ -498,46 +498,8 @@ void gf64_region_coupled_muladd_avx512_arr(
 	const gf64_t *HEDLEY_RESTRICT coeff_blocks,
 	size_t len,
 	size_t G) {
-	size_t i = 0;
-
-	/* Process 4 elements per iteration (1 ZMM tile, 4 64-bit lanes with
-	 * hi-qwords zero). */
-	size_t blocks = len / 4;
-	__m512i zero = _mm512_setzero_si512();
-	for (size_t b = 0; b < blocks; b++) {
-		__m512i acc_lo = _mm512_setzero_si512();
-		__m512i acc_hi = _mm512_setzero_si512();
-
-		for (size_t g = 0; g < G; g++) {
-			__m512i in_vec = _mm512_set_epi64(
-				0, (int64_t)in_blocks[g][4*b + 3],
-				0, (int64_t)in_blocks[g][4*b + 2],
-				0, (int64_t)in_blocks[g][4*b + 1],
-				0, (int64_t)in_blocks[g][4*b + 0]);
-			__m512i coeff_bc = _mm512_set1_epi64((int64_t)coeff_blocks[g]);
-			__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_bc, 0x00);
-			__m512i lo_v = _mm512_permutex2var_epi64(prod, GF64_IDX_LO, zero);
-			__m512i hi_v = _mm512_permutex2var_epi64(prod, GF64_IDX_HI, zero);
-			acc_lo = _mm512_xor_si512(acc_lo, lo_v);
-			acc_hi = _mm512_xor_si512(acc_hi, hi_v);
-		}
-
-		__m512i result = gf64_reduce_512(acc_lo, acc_hi);
-		__m512i prev = _mm512_maskz_loadu_epi64((__mmask8)0x0F, out + 4*b);
-		_mm512_mask_storeu_epi64(out + 4*b, (__mmask8)0x0F,
-		                        _mm512_xor_si512(prev, result));
-
-		i += 4;
-	}
-
-	/* Tail (0..3 elements) -- scalar epilog with sum-over-g semantics. */
-	while (i < len) {
-		gf64_t acc = 0;
-		for (size_t g = 0; g < G; g++) {
-			acc ^= gf64_mul_reference(in_blocks[g][i], coeff_blocks[g]);
-		}
-		out[i] ^= acc;
-		i++;
+	for (size_t g = 0; g < G; g++) {
+		gf64_region_muladd_avx512_arr(out, in_blocks[g], &coeff_blocks[g], len, 1);
 	}
 }
 
@@ -556,37 +518,32 @@ void gf64_region_fused_output_muladd_avx512_arr(
 	const gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT coeff_block_starts,
 	size_t len,
 	size_t K) {
+	/* Fused: each 4-element chunk of the shared `in` is loaded ONCE and
+	 * applied to all K outputs, keeping input traffic at len not K*len. */
 	size_t i = 0;
-	size_t blocks = len / 8;
-
+	size_t blocks = len / 4;
 	for (size_t b = 0; b < blocks; b++) {
-		__m512i in_lo = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
+		/* Interleave with zeros (0, in[i+3], 0, in[i+2], 0, in[i+1], 0, in[i+0])
+		 * so each 128-bit half is [in_j, 0]: VPCLMULQDQ with imm 0x00 multiplies
+		 * the LOW 64-bit lane of each half, which must hold in_j. A consecutive
+		 * load would put in[i+1]/in[i+3] in the odd lanes and select the wrong
+		 * elements. Same layout as gf64_region_mul_avx512_arr. */
+		__m512i in_vec = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
 		                                  0, (int64_t)in[i + 1], 0, (int64_t)in[i + 0]);
-		__m512i in_hi = _mm512_set_epi64(0, (int64_t)in[i + 7], 0, (int64_t)in[i + 6],
-		                                  0, (int64_t)in[i + 5], 0, (int64_t)in[i + 4]);
-
 		for (size_t k = 0; k < K; k++) {
 			__m512i coeff_bc = _mm512_set1_epi64((int64_t)*coeff_block_starts[k]);
+			__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_bc, 0x00);
 			__m512i lo_v, hi_v;
-
-			__m512i prod_lo = _mm512_clmulepi64_epi128(in_lo, coeff_bc, 0x00);
-			gf64_split_prod_512(prod_lo, &lo_v, &hi_v);
-			__m512i red_lo = gf64_reduce_512(lo_v, hi_v);
-			__m512i prev_lo = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[k] + i);
+			gf64_split_prod_512(prod, &lo_v, &hi_v);
+			__m512i red = gf64_reduce_512(lo_v, hi_v);
+			__m512i prev = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[k] + i);
 			_mm512_mask_storeu_epi64(outs[k] + i, (__mmask8)0x0F,
-			                        _mm512_xor_si512(prev_lo, red_lo));
-
-			__m512i prod_hi = _mm512_clmulepi64_epi128(in_hi, coeff_bc, 0x00);
-			gf64_split_prod_512(prod_hi, &lo_v, &hi_v);
-			__m512i red_hi = gf64_reduce_512(lo_v, hi_v);
-			__m512i prev_hi = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[k] + i + 4);
-			_mm512_mask_storeu_epi64(outs[k] + i + 4, (__mmask8)0x0F,
-			                        _mm512_xor_si512(prev_hi, red_hi));
+			                        _mm512_xor_si512(prev, red));
 		}
-
-		i += 8;
+		i += 4;
 	}
 
+	/* Tail (0..3 elements) -- scalar epilog with sum-over-k semantics. */
 	while (i < len) {
 		gf64_t in_w = in[i];
 		for (size_t k = 0; k < K; k++) {
@@ -614,146 +571,38 @@ void gf64_region_2d_muladd_avx512_arr(
 	const gf64_t *HEDLEY_RESTRICT coeff_block_2d,
 	size_t K_stride,
 	size_t len) {
-	size_t i = 0;
-	size_t blocks = len / 8;
-
-	if (K == 2) {
-		/* K=2 fast path: wider SIMD utilization via ZMM-pair unrolling.
-		 *
-		 * Per (w block, g) iteration, the serial K loop above issues
-		 * 2 K × 2 halves = 4 VPCLMULQDQ, but each VPCLMULQDQ is followed
-		 * by its dependent reduce/XOR-store before the next VPCLMULQDQ
-		 * can be issued — only one is in flight at a time. With K=2
-		 * unrolled, we issue ALL 4 VPCLMULQDQ first (no deps between
-		 * them: different inputs and different coeff broadcasts), then
-		 * 4 reductions, then 4 prev-loads, then 4 XOR+stores. The OOO
-		 * engine can now keep all 4 VPCLMULQDQ + 4 reductions in flight
-		 * simultaneously, doubling the effective SIMD throughput.
-		 *
-		 * Per (w block, g) this path processes 2 K rows × 8 G-columns
-		 * = 16 gf64 elements via 4 ZMMs (2 K × 2 halves). Total per
-		 * w block: 16 × G elements via 4 × G ZMM-computations in
-		 * lockstep.
-		 *
-		 * Bit-exact: uses the SAME polynomial reduction (PCLMULQDQ →
-		 * XOR → fold) as the serial path; the only difference is
-		 * loop ordering. Same XOR-fold as the existing code means
-		 * the per-K-row accumulators are independent — moving them
-		 * to parallel ZMMs does not alter the bit result.
-		 *
-			 * Falls back to the serial K loop for K != 2 (general K
-			 * path below). Falls back to the scalar epilog for the
-			 * tail (len % 8). */
+	/* Fused 2D: for each input block g, stream its elements ONCE (4 per
+	 * iteration) and update all K outputs from each loaded vector, so input
+	 * traffic is G*len not G*K*len. */
+	for (size_t g = 0; g < G; g++) {
+		size_t i = 0;
+		size_t blocks = len / 4;
 		for (size_t b = 0; b < blocks; b++) {
-			for (size_t g = 0; g < G; g++) {
-				/* D2: prefetch the NEXT input block's current W-lane
-				 * into L1 (T0 hint) before the SIMD loads below. The
-				 * prefetch is bounded by g+1 < G to avoid reading past
-				 * the in_blocks[] pointer array on the last iteration. */
-				if (g + 1 < G) {
-					_mm_prefetch((const char *)&in_blocks[g + 1][i], _MM_HINT_T0);
-				}
-				__m512i in_lo = _mm512_set_epi64(
-					0, (int64_t)in_blocks[g][i + 3], 0, (int64_t)in_blocks[g][i + 2],
-					0, (int64_t)in_blocks[g][i + 1], 0, (int64_t)in_blocks[g][i + 0]);
-				__m512i in_hi = _mm512_set_epi64(
-					0, (int64_t)in_blocks[g][i + 7], 0, (int64_t)in_blocks[g][i + 6],
-					0, (int64_t)in_blocks[g][i + 5], 0, (int64_t)in_blocks[g][i + 4]);
-
-				/* Load both K row coefficients for this g in lockstep. */
-				__m512i COEFF_0G = _mm512_set1_epi64(
-					(int64_t)*(coeff_block_2d + 0 * K_stride + g));
-				__m512i COEFF_1G = _mm512_set1_epi64(
-					(int64_t)*(coeff_block_2d + 1 * K_stride + g));
-
-				/* PHASE 1: 4 back-to-back VPCLMULQDQ. All independent
-				 * (different inputs × different coeff broadcasts), so
-				 * the OOO engine keeps them in flight together. */
-				__m512i PROD_LO_0 = _mm512_clmulepi64_epi128(in_lo, COEFF_0G, 0x00);
-				__m512i PROD_HI_0 = _mm512_clmulepi64_epi128(in_hi, COEFF_0G, 0x00);
-				__m512i PROD_LO_1 = _mm512_clmulepi64_epi128(in_lo, COEFF_1G, 0x00);
-				__m512i PROD_HI_1 = _mm512_clmulepi64_epi128(in_hi, COEFF_1G, 0x00);
-
-				/* PHASE 2: 4 prev-loads (XOR-targets). Independent across
-				 * (K row, w-block half). Overlap with reductions below. */
-				__m512i PREV_LO_0 = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[0] + i);
-				__m512i PREV_HI_0 = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[0] + i + 4);
-				__m512i PREV_LO_1 = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[1] + i);
-				__m512i PREV_HI_1 = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[1] + i + 4);
-
-				/* PHASE 3: 4 reductions (split + reduce). */
+			/* See fused_output_muladd: interleave with zeros so each 128-bit
+			 * half is [in_j, 0] and the imm-0x00 VPCLMULQDQ selects in_j. */
+			__m512i in_vec = _mm512_set_epi64(0, (int64_t)in_blocks[g][i + 3], 0, (int64_t)in_blocks[g][i + 2],
+			                                  0, (int64_t)in_blocks[g][i + 1], 0, (int64_t)in_blocks[g][i + 0]);
+			for (size_t k = 0; k < K; k++) {
+				__m512i coeff_bc = _mm512_set1_epi64((int64_t)coeff_block_2d[k * K_stride + g]);
+				__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_bc, 0x00);
 				__m512i lo_v, hi_v;
-				gf64_split_prod_512(PROD_LO_0, &lo_v, &hi_v);
-				__m512i RED_LO_0 = gf64_reduce_512(lo_v, hi_v);
-				gf64_split_prod_512(PROD_HI_0, &lo_v, &hi_v);
-				__m512i RED_HI_0 = gf64_reduce_512(lo_v, hi_v);
-				gf64_split_prod_512(PROD_LO_1, &lo_v, &hi_v);
-				__m512i RED_LO_1 = gf64_reduce_512(lo_v, hi_v);
-				gf64_split_prod_512(PROD_HI_1, &lo_v, &hi_v);
-				__m512i RED_HI_1 = gf64_reduce_512(lo_v, hi_v);
-
-				/* PHASE 4: 4 XOR + masked stores. */
-				_mm512_mask_storeu_epi64(outs[0] + i, (__mmask8)0x0F,
-				                         _mm512_xor_si512(PREV_LO_0, RED_LO_0));
-				_mm512_mask_storeu_epi64(outs[0] + i + 4, (__mmask8)0x0F,
-				                         _mm512_xor_si512(PREV_HI_0, RED_HI_0));
-				_mm512_mask_storeu_epi64(outs[1] + i, (__mmask8)0x0F,
-				                         _mm512_xor_si512(PREV_LO_1, RED_LO_1));
-				_mm512_mask_storeu_epi64(outs[1] + i + 4, (__mmask8)0x0F,
-				                         _mm512_xor_si512(PREV_HI_1, RED_HI_1));
+				gf64_split_prod_512(prod, &lo_v, &hi_v);
+				__m512i red = gf64_reduce_512(lo_v, hi_v);
+				__m512i prev = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[k] + i);
+				_mm512_mask_storeu_epi64(outs[k] + i, (__mmask8)0x0F,
+				                        _mm512_xor_si512(prev, red));
 			}
-			i += 8;
+			i += 4;
 		}
-	} else {
-		/* General-K path: serial K loop. K=1, 4, 8, 16 fall here. */
-		for (size_t b = 0; b < blocks; b++) {
-			for (size_t g = 0; g < G; g++) {
-				/* D2: prefetch the NEXT input block's current W-lane
-				 * into L1 (T0 hint) before the SIMD loads below. The
-				 * prefetch is bounded by g+1 < G to avoid reading past
-				 * the in_blocks[] pointer array on the last iteration. */
-				if (g + 1 < G) {
-					_mm_prefetch((const char *)&in_blocks[g + 1][i], _MM_HINT_T0);
-				}
-				__m512i in_lo = _mm512_set_epi64(
-					0, (int64_t)in_blocks[g][i + 3], 0, (int64_t)in_blocks[g][i + 2],
-					0, (int64_t)in_blocks[g][i + 1], 0, (int64_t)in_blocks[g][i + 0]);
-				__m512i in_hi = _mm512_set_epi64(
-					0, (int64_t)in_blocks[g][i + 7], 0, (int64_t)in_blocks[g][i + 6],
-					0, (int64_t)in_blocks[g][i + 5], 0, (int64_t)in_blocks[g][i + 4]);
 
-				for (size_t k = 0; k < K; k++) {
-					__m512i coeff_bc = _mm512_set1_epi64(
-						(int64_t)*(coeff_block_2d + k * K_stride + g));
-					__m512i lo_v, hi_v;
-
-					__m512i prod_lo = _mm512_clmulepi64_epi128(in_lo, coeff_bc, 0x00);
-					gf64_split_prod_512(prod_lo, &lo_v, &hi_v);
-					__m512i red_lo = gf64_reduce_512(lo_v, hi_v);
-					__m512i prev_lo = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[k] + i);
-					_mm512_mask_storeu_epi64(outs[k] + i, (__mmask8)0x0F,
-					                         _mm512_xor_si512(prev_lo, red_lo));
-
-					__m512i prod_hi = _mm512_clmulepi64_epi128(in_hi, coeff_bc, 0x00);
-					gf64_split_prod_512(prod_hi, &lo_v, &hi_v);
-					__m512i red_hi = gf64_reduce_512(lo_v, hi_v);
-					__m512i prev_hi = _mm512_maskz_loadu_epi64((__mmask8)0x0F, outs[k] + i + 4);
-					_mm512_mask_storeu_epi64(outs[k] + i + 4, (__mmask8)0x0F,
-					                         _mm512_xor_si512(prev_hi, red_hi));
-				}
-			}
-			i += 8;
-		}
-	}
-
-	while (i < len) {
-		for (size_t g = 0; g < G; g++) {
+		/* Tail (0..3 elements) -- scalar epilog with sum-over-k semantics. */
+		while (i < len) {
 			gf64_t in_w = in_blocks[g][i];
 			for (size_t k = 0; k < K; k++) {
-				outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)*(coeff_block_2d + k * K_stride + g));
+				outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)coeff_block_2d[k * K_stride + g]);
 			}
+			i++;
 		}
-		i++;
 	}
 }
 
