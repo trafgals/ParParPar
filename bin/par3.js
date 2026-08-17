@@ -127,9 +127,17 @@ var buildOpts = function() {
 	if(argv['recovery-slices']) {
 		var recVal = argv['recovery-slices'];
 		if(typeof recVal === 'string' && recVal.indexOf('%') !== -1) {
+			// Proportional — rounds up to the next power of 2 (see par3gen).
 			opts.recoverySlices = { unit: 'ratio', value: parseFloat(recVal) / 100 };
 		} else {
-			opts.recoverySlices = parseInt(recVal) || 10;
+			// Explicit count — must be a power of 2 (issue #59 C2). The
+			// constructor surfaces a clear 'use PAR2 for arbitrary slice
+			// counts' error if the user passes a non-pow2 value.
+			opts.recoverySlices = parseInt(recVal, 10);
+			if(!isFinite(opts.recoverySlices) || opts.recoverySlices <= 0) {
+				process.stderr.write('PAR3: --recovery-slices requires a positive integer (use a trailing % for a proportional count)\n');
+				process.exit(1);
+			}
 		}
 	} else {
 		opts.recoverySlices = 0.1;

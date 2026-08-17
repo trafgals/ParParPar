@@ -76,7 +76,7 @@ ParParPar provides an intuitive command-line interface for creating, verifying, 
 Create a PAR3 archive with 10 recovery slices:
 
 ```bash
-node bin/par3.js create --output myarchive --recovery-slices 10 file1.mkv file2.iso
+node bin/par3.js create --output myarchive --recovery-slices 8 file1.mkv file2.iso  # explicit count: must be a power of 2
 ```
 
 Create with a percentage of recovery data:
@@ -112,7 +112,7 @@ node bin/par3.js repair myarchive.par3
 | Option | Description |
 | :--- | :--- |
 | `-o, --output <file>` | Base filename for generated PAR3 archive files |
-| `-r, --recovery-slices <N>` | Number of recovery slices to create (integer or percentage e.g., `10%`) |
+| `-r, --recovery-slices <N>` | Number of recovery slices to create (integer or percentage e.g., `10%`); the integer form must be a power of 2 (the Fenger/Bostan-Schost fast path requires it) — use a percentage or PAR2 for arbitrary counts |
 | `-b, --block-size <size>` | Matrix computation block size (default: `1MB`) |
 | `-m, --gf-method <method>` | GF arithmetic method (`auto`, `scalar`, `ssse3`, `avx2`, `avx512`) |
 | `-t, --threads <N>` | Number of worker threads |
@@ -135,7 +135,7 @@ const par3 = require('./lib/par3gen');
 
 // Create a PAR3 archive
 par3.create(['file1.bin', 'file2.bin'], 'myarchive', {
-  recoverySlices: '10%',
+  recoverySlices: '8%',
   blockSize: 4096
 }, function(err) {
   if (err) throw err;

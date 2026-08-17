@@ -38,8 +38,12 @@ function main() {
 	}
 
 	var tCreate = Date.now();
+	// Pow2 contract (issue #59 C2): round the 10% derivation up so the
+	// measured shape is the fast-path shape (cubic review on #87).
+	var rec = Math.max(2, Math.floor(opts.slices * 0.1));
+	if((rec & (rec - 1)) !== 0) { var p = 1; while(p < rec) p <<= 1; rec = p; }
 	par3.create([src], outBase, {
-		recoverySlices: Math.max(10, Math.floor(opts.slices * 0.1)),
+		recoverySlices: rec,
 		blockSize: opts.blockSize
 	}, function(err) {
 		var tEnd = Date.now();
@@ -81,7 +85,7 @@ if (require.main === module) {
 	var recovered = 0;
 	var tCreate0 = Date.now();
 	par32.create([src], outBase, {
-		recoverySlices: 1000,
+		recoverySlices: 1024,
 		blockSize: 4096
 	}, function(err) {
 		phases[lastName] = (phases[lastName] || 0) + (Date.now() - phaseStart);
