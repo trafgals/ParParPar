@@ -2,6 +2,5 @@
   "schemaVersion": 1,
   "label": "",
   "message": "30MB/s",
-  "color": "yellow",
-  "labelColor": "555"
+  "color": "yellow"
 }

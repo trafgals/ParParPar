@@ -150,9 +150,16 @@ function fetchJson(url) {
   // The Workload cell is the natural-language description (e.g.
   // "10 GiB Create ($R=8$)") and does NOT contain the slice count;
   // match on the badge id (e.g. par3-10g-262144-zen4) so the rule
-  // actually fires — matching on workload alone made this always
-  // false and silently disabled the very contract this PR fixes
-  // (cubic review 95db4ba2 P2 on PR #95).
+  // actually fires — the old code matched on p.workload, which made
+  // the 10 GiB/262k branch always false (workload doesn't contain
+  // "262k"/"262144"; the slice count lives in a separate cell), so
+  // Rule 2's 10 GiB → pow2/#87 attribution check silently never
+  // ran and the test would not have caught a future footnote
+  // dropping that attribution (cubic review 95db4ba2 P2 on PR #95).
+  // The 16 GiB branch's old /16 GiB/i workload regex DID match the
+  // "16 GiB Create ($R=8$)" cell, so the 16 GiB attribution check
+  // fired under the old code; we switch to badgeId for both so the
+  // future maintainer only has to remember one rule.
   var has16GiB = pendingRows.some(function(p) { return /16g-262144/.test(p.badgeId); });
   var has10GiB_262k = pendingRows.some(function(p) { return /10g-262144/.test(p.badgeId); });
 
