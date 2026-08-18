@@ -16,10 +16,15 @@
  *   - exit 1: a URL is broken OR an orphan badge exists
  */
 
+var shared = require('./readme-badges-shared');
+var fs = require('fs');
 var https = require('https');
 
-var BADGE_BRANCH_RAW = 'https://raw.githubusercontent.com/trafgals/ParParPar/feat/ci-benchmark-badge/';
+var BADGE_BRANCH_RAW = shared.BADGE_BRANCH_RAW;
 var README_PATH = 'README.md';
+// Per-test /g flag for iterating all matches; the shared regex is the
+// same pattern (test/readme-badges-shared.js) without the /g flag.
+var urlRe = new RegExp(shared.ZEN4_BADGE_ID_RE.source, 'g');
 
 // Fetch a URL, return promise<{status, body}>.
 function fetch(url) {
@@ -34,12 +39,7 @@ function fetch(url) {
 
 // Extract every badge URL from the README throughput table. We look for the
 // raw.githubusercontent.com URLs inside the Zen4 column cells.
-var fs = require('fs');
 var readme = fs.readFileSync(README_PATH, 'utf8');
-
-// Match the URL-ENCODED raw.githubusercontent.com form (what shields.io
-// actually fetches) so the test asserts the live URL the badge uses.
-var urlRe = /https%3A%2F%2Fraw\.githubusercontent\.com%2Ftrafgals%2FParParPar%2Ffeat%2Fci-benchmark-badge%2Fbenchmarks%2Fbadges%2F([a-z0-9-]+)\.json/g;
 var referencedIds = {};
 var m;
 while ((m = urlRe.exec(readme)) !== null) referencedIds[m[1]] = true;
