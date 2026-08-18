@@ -2364,10 +2364,29 @@ static napi_value ComputeRecoveryStreaming_NAPI(napi_env env, napi_callback_info
 		long long v = strtoll(fengerWinMaxEnv, &endp, 10);
 		if (endp != fengerWinMaxEnv && v > 0) fengerWinMax = v;
 	}
+	// Issue #96 P0 cost-model gate (mirrors lib/par3gen.js dispatchRecovery):
+	// Fenger's per-word cost is O(M(N)·log²N + R) vs Barycentric O(N·R).
+	// Fenger wins only when R > M(N)·log²N / (N-1). For N=16384 the
+	// theoretical crossover is R ≈ 5832; empirically Fenger loses to
+	// Barycentric at every power-of-2 R measured up to 4096 (16G/262144/R=8:
+	// Fenger 21 MB/s vs Barycentric 324 MB/s). So: prefer Barycentric for
+	// R < FENGER_MIN_R; use Fenger only for R >= FENGER_MIN_R (where its
+	// R-independence amortizes) or when forced via PAR3_GF64_USE_FENGER=1.
+	// FENGER_MIN_R = 8192 (first power-of-2 R at/above the crossover).
+	// Override via PAR3_FENGER_MIN_R.
+	long long fengerMinR = 8192;
+	const char* fengerMinREnv = getenv("PAR3_FENGER_MIN_R");
+	if (fengerMinREnv) {
+		char* endp = nullptr;
+		long long v = strtoll(fengerMinREnv, &endp, 10);
+		if (endp != fengerMinREnv && v > 0) fengerMinR = v;
+	}
+	const bool fengerCostFavorable = (numRecovery >= fengerMinR);
 	const bool fengerEligible =
 		paddingReasonable_N &&
 		isPowerOfTwoOrTrivial_R &&
 		(blockSize % 8 == 0) &&
+		(fengerCostFavorable || fengerForced) &&
 		(fengerForced || !defined_win32() ||
 		 numInputs <= fengerWinMax);
 
