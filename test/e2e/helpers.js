@@ -183,6 +183,74 @@ function deleteRandomSlices(filePath, sliceSize, count) {
 	return indices;
 }
 
+// Corrupt N random DATA packets inside a PAR3 archive by flipping bytes in
+// their body. This breaks the BLAKE3 packet checksum so that par3_repair's
+// validatePacketChecksum() fails and treats those blocks as missing, forcing
+// reconstruction from recovery data.
+//
+// PAR3 archive layout (sequential packet stream):
+//   [48-byte header][body]
+//   Header: [0..7] magic 'PAR3\0PKT', [8..23] BLAKE3 checksum,
+//           [24..31] totalLen (48+bodySize), [32..39] inputSetID,
+//           [40..47] type (8-byte ASCII)
+//   DATA body: [0..7] block_index (uint64 LE), [8..] block data
+//
+// Returns the list of corrupted block indices.
+function corruptArchiveDataPackets(par3File, count) {
+	var PAR3_MAGIC = Buffer.from('PAR3\0PKT');
+	var HDR_SIZE = 48;
+
+	var fd = fs.openSync(par3File, 'r+');
+	var fileSize = fs.fstatSync(fd).size;
+
+	// Pass 1: scan for DATA packets, record (bodyOffset, blockIndex)
+	var dataPackets = [];
+	var offset = 0;
+	while (offset + HDR_SIZE <= fileSize) {
+		var hdr = Buffer.alloc(HDR_SIZE);
+		fs.readSync(fd, hdr, 0, HDR_SIZE, offset);
+		if (!hdr.slice(0, 8).equals(PAR3_MAGIC)) break;
+		var totalLen = Number(hdr.readBigUInt64LE(24));
+		if (totalLen < HDR_SIZE) break;
+		var type = hdr.slice(40, 48).toString('ascii').replace(/\0/g, '').trim();
+		if (type === 'PAR DAT') {
+			var blockIdxBuf = Buffer.alloc(8);
+			fs.readSync(fd, blockIdxBuf, 0, 8, offset + HDR_SIZE);
+			dataPackets.push({
+				bodyOffset: offset + HDR_SIZE,
+				blockIndex: Number(blockIdxBuf.readBigUInt64LE(0))
+			});
+		}
+		offset += totalLen;
+	}
+
+	if (dataPackets.length === 0) {
+		fs.closeSync(fd);
+		throw new Error('corruptArchiveDataPackets: no DATA packets found in ' + par3File);
+	}
+
+	// Clamp count to available DATA packets
+	if (count > dataPackets.length) count = dataPackets.length;
+
+	// Select `count` random DATA packets (Fisher-Yates partial shuffle)
+	var corrupted = [];
+	var corruptBuf = Buffer.alloc(16, 0xFF);
+	for (var i = 0; i < count; i++) {
+		var j = i + Math.floor(Math.random() * (dataPackets.length - i));
+		var tmp = dataPackets[i];
+		dataPackets[i] = dataPackets[j];
+		dataPackets[j] = tmp;
+		var pkt = dataPackets[i];
+		// Flip 16 bytes in the body (after the 8-byte block_index) to break BLAKE3
+		fs.writeSync(fd, corruptBuf, 0, 16, pkt.bodyOffset + 8);
+		corrupted.push(pkt.blockIndex);
+	}
+
+	fs.fsyncSync(fd);
+	fs.closeSync(fd);
+	return corrupted;
+}
+
 module.exports = {
 	getTempDir: getTempDir,
 	cleanup: cleanup,
@@ -192,5 +260,6 @@ module.exports = {
 	runPar3Sync: runPar3Sync,
 	runParPar: runParPar,
 	runParParSync: runParParSync,
-	deleteRandomSlices: deleteRandomSlices
+	deleteRandomSlices: deleteRandomSlices,
+	corruptArchiveDataPackets: corruptArchiveDataPackets
 };

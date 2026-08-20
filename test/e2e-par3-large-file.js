@@ -83,7 +83,6 @@ function run() {
 	var fixtureCopy = path.join(tempDir, 'test.bin');
 	var outputBase = path.join(tempDir, 'out');
 	var par3File = outputBase + '.par3';
-	var corruptedFile = path.join(tempDir, 'test_corrupted.bin');
 
 	var metrics = {
 		fixture: path.basename(fixturePath),
@@ -91,7 +90,7 @@ function run() {
 		fileSizeHuman: formatBytes(fileSize),
 		sliceCount: actualDataSlices,
 		sliceSize: sliceSize,
-		slicesDeleted: slicesToDelete,
+		blocksCorrupted: slicesToDelete,
 		durations: {},
 		durationsHuman: {},
 		throughput: {},
@@ -111,10 +110,10 @@ function run() {
 	console.log('File size: ' + formatBytes(fileSize));
 	console.log('Data slices: ' + actualDataSlices + ' (' + formatBytes(sliceSize) + ' each)');
 	console.log('Recovery ratio: ' + (RECOVERY_RATIO * 100) + '%');
-	console.log('Slices to delete: ' + slicesToDelete + ' (' + (DELETE_RATIO * 100) + '%)\n');
+	console.log('Blocks to corrupt: ' + slicesToDelete + ' (' + (DELETE_RATIO * 100) + '%)\n');
 
 	var startTime = Date.now();
-	var copyFixtureStart, hashOriginalStart, createPar3Start, verifyStart, deleteSlicesStart, repairStart, hashRepairedStart;
+	var copyFixtureStart, hashOriginalStart, createPar3Start, verifyStart, corruptArchiveStart, repairStart, hashRepairedStart;
 
 	try {
 		copyFixtureStart = Date.now();
@@ -161,13 +160,35 @@ function run() {
 					console.log('    inputBlocks: ' + verifyResult.inputBlocks);
 					console.log('    recoveryBlocks: ' + verifyResult.recoveryBlocks);
 					console.log('    missingBlocks: ' + verifyResult.missingBlocks + '\n');
+
+					// #97 regression guard: a freshly-created archive must be
+					// fully intact. The verify FILE case must NOT inflate
+					// inputCount (phantom block per file). Ground truth for the
+					// input-block count is the create-side formula
+					// (par3gen.js:1002): Math.ceil(totalSize / blockSize).
+					var expectedInputBlocks = Math.ceil(fileSize / BLOCK_SIZE);
+					if (verifyResult.inputBlocks !== expectedInputBlocks) {
+						console.error('  ERROR: inputBlocks=' + verifyResult.inputBlocks + ' expected ' + expectedInputBlocks + ' (phantom-block bug #97)');
+						finish(null, new Error('inputBlocks mismatch: got ' + verifyResult.inputBlocks + ', expected ' + expectedInputBlocks + ' (#97)'));
+						return;
+					}
+					if (verifyResult.missingBlocks !== 0) {
+						console.error('  ERROR: missingBlocks=' + verifyResult.missingBlocks + ' expected 0 (fresh archive)');
+						finish(null, new Error('fresh archive reports ' + verifyResult.missingBlocks + ' missing blocks (#97)'));
+						return;
+					}
+					if (verifyResult.archiveOk !== true) {
+						console.error('  ERROR: archiveOk=' + verifyResult.archiveOk + ' expected true (fresh archive)');
+						finish(null, new Error('fresh archive reports archiveOk=false (#97)'));
+						return;
+					}
+					console.log('  Verify assertions passed: inputBlocks=' + verifyResult.inputBlocks + ', missingBlocks=0, archiveOk=true\n');
 				}
 
-				deleteSlicesStart = Date.now();
-				console.log('Copying file and deleting ' + slicesToDelete + ' random slices...');
-				fs.copyFileSync(fixtureCopy, corruptedFile);
-				var deletedIndices = helpers.deleteRandomSlices(corruptedFile, sliceSize, slicesToDelete);
-				console.log('  Deleted slices: ' + deletedIndices.length + '\n');
+				corruptArchiveStart = Date.now();
+				console.log('Corrupting ' + slicesToDelete + ' random DATA packets in archive...');
+				var corruptedBlocks = helpers.corruptArchiveDataPackets(par3File, slicesToDelete);
+				console.log('  Corrupted block indices: [' + corruptedBlocks.join(', ') + ']\n');
 
 				repairStart = Date.now();
 				console.log('Running repair...');
@@ -184,15 +205,26 @@ function run() {
 					console.log('    blocksRepaired: ' + result.blocksRepaired);
 					console.log('    missingBlocks: ' + result.missingBlocks + '\n');
 
+					if (result.missingBlocks !== corruptedBlocks.length) {
+						console.error('  ERROR: missingBlocks=' + result.missingBlocks + ' expected ' + corruptedBlocks.length);
+						finish(null, new Error('missingBlocks mismatch: got ' + result.missingBlocks + ', expected ' + corruptedBlocks.length));
+						return;
+					}
+					if (result.blocksRepaired !== corruptedBlocks.length) {
+						console.error('  ERROR: blocksRepaired=' + result.blocksRepaired + ' expected ' + corruptedBlocks.length);
+						finish(null, new Error('blocksRepaired mismatch: got ' + result.blocksRepaired + ', expected ' + corruptedBlocks.length));
+						return;
+					}
+
 					hashRepairedStart = Date.now();
 					console.log('Hashing repaired file...');
 
 					var repairedFile = path.join(tempDir, 'block_0.dat');
 					var exists = fs.existsSync(repairedFile);
 
-					if (!exists || result.blocksRepaired === 0) {
-						console.error('  ERROR: Repaired blocks not found in output directory');
-						finish(null, new Error('No repaired blocks produced'));
+					if (!exists) {
+						console.error('  ERROR: Repaired file not found in output directory');
+						finish(null, new Error('No repaired file produced'));
 						return;
 					}
 
@@ -225,8 +257,8 @@ function run() {
 		metrics.durations.hashOriginal = hashOriginalStart - copyFixtureStart;
 		metrics.durations.createPar3 = createPar3Start - hashOriginalStart;
 		metrics.durations.verify = verifyStart - createPar3Start;
-		metrics.durations.deleteSlices = deleteSlicesStart - verifyStart;
-		metrics.durations.repair = repairStart - deleteSlicesStart;
+		metrics.durations.corruptArchive = corruptArchiveStart - verifyStart;
+		metrics.durations.repair = repairStart - corruptArchiveStart;
 		metrics.durations.hashRepaired = hashRepairedStart - repairStart;
 		metrics.durations.total = endTime - startTime;
 
@@ -235,7 +267,7 @@ function run() {
 			hashOriginal: formatDuration(metrics.durations.hashOriginal),
 			createPar3: formatDuration(metrics.durations.createPar3),
 			verify: formatDuration(metrics.durations.verify),
-			deleteSlices: formatDuration(metrics.durations.deleteSlices),
+			corruptArchive: formatDuration(metrics.durations.corruptArchive),
 			repair: formatDuration(metrics.durations.repair),
 			hashRepaired: formatDuration(metrics.durations.hashRepaired),
 			total: formatDuration(metrics.durations.total)
@@ -269,13 +301,13 @@ function run() {
 		console.log('  Fixture: ' + metrics.fixture);
 		console.log('  File size: ' + metrics.fileSizeHuman);
 		console.log('  Slice count: ' + metrics.sliceCount + ' (' + formatBytes(metrics.sliceSize) + ' each)');
-		console.log('  Slices deleted: ' + metrics.slicesDeleted);
+		console.log('  Blocks corrupted: ' + metrics.blocksCorrupted);
 		console.log('\nDurations:');
 		console.log('  copyFixture: ' + metrics.durationsHuman.copyFixture);
 		console.log('  hashOriginal: ' + metrics.durationsHuman.hashOriginal);
 		console.log('  createPar3: ' + metrics.durationsHuman.createPar3);
 		console.log('  verify: ' + metrics.durationsHuman.verify);
-		console.log('  deleteSlices: ' + metrics.durationsHuman.deleteSlices);
+		console.log('  corruptArchive: ' + metrics.durationsHuman.corruptArchive);
 		console.log('  repair: ' + metrics.durationsHuman.repair);
 		console.log('  hashRepaired: ' + metrics.durationsHuman.hashRepaired);
 		console.log('  TOTAL: ' + metrics.durationsHuman.total);
