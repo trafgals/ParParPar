@@ -729,53 +729,6 @@ static void WorkerThread(const WorkerRange& range) {
 //
 // Uses gf64_region_muladd_arr (same SIMD dispatch as create path).
 // ============================================================================
-void GF64Controller::ComputeRepairBlocks(
-	const gf64_t* availBlocks, size_t numAvail,
-	gf64_t* repairedBlocks, size_t numMissing,
-	const gf64_t* solveMatrix,
-	size_t blockSize64,
-	int numThreads
-) {
-	if (numAvail == 0 || numMissing == 0) return;
-	EnsureDispatch();
-
-	size_t n_workers = (numThreads <= 0)
-		? GetEffectiveCpuCount()
-		: (size_t)numThreads;
-	if (n_workers == 0) n_workers = 1;
-	if (n_workers > numMissing) n_workers = numMissing;
-
-	auto worker = [&](size_t startMissing, size_t countMissing) {
-		for (size_t k = startMissing; k < startMissing + countMissing; k++) {
-			const gf64_t* row = solveMatrix + k * numAvail;
-			muladd_single_output(repairedBlocks + k * blockSize64,
-			                     availBlocks, row, numAvail, blockSize64);
-		}
-	};
-
-	if (n_workers == 1) {
-		worker(0, numMissing);
-	} else {
-		size_t chunk = (numMissing + n_workers - 1) / n_workers;
-		std::vector<std::thread> threads;
-		threads.reserve(n_workers);
-
-		size_t base = 0;
-		size_t active = 0;
-		while (base < numMissing) {
-			size_t end = base + chunk;
-			if (end > numMissing) end = numMissing;
-			size_t count = end - base;
-			threads.emplace_back(worker, base, count);
-			active++;
-			base = end;
-		}
-
-		for (size_t i = 0; i < active; i++) {
-			threads[i].join();
-		}
-	}
-}
 
 // ============================================================================
 // gf64_mul_combi — GF(2^64) multiply for solve_region
