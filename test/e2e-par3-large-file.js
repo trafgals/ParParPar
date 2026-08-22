@@ -252,6 +252,19 @@ function run() {
 		clearInterval(memoryCheck);
 
 		var endTime = Date.now();
+		// P3 cubic-review fix: when an early error path (verify/repair
+		// assertion, repaired-file-not-found) returns before later phases
+		// start, their xxxStart variables are still undefined and the
+		// duration arithmetic produces NaN. Fall back to "now" so the
+		// duration for an unreached phase equals time spent failing.
+		var nowFallback = endTime;
+		copyFixtureStart = copyFixtureStart !== undefined ? copyFixtureStart : nowFallback;
+		hashOriginalStart = hashOriginalStart !== undefined ? hashOriginalStart : nowFallback;
+		createPar3Start = createPar3Start !== undefined ? createPar3Start : nowFallback;
+		verifyStart = verifyStart !== undefined ? verifyStart : nowFallback;
+		corruptArchiveStart = corruptArchiveStart !== undefined ? corruptArchiveStart : nowFallback;
+		repairStart = repairStart !== undefined ? repairStart : nowFallback;
+		hashRepairedStart = hashRepairedStart !== undefined ? hashRepairedStart : nowFallback;
 
 		metrics.durations.copyFixture = copyFixtureStart - startTime;
 		metrics.durations.hashOriginal = hashOriginalStart - copyFixtureStart;

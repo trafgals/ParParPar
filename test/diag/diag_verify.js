@@ -2,7 +2,7 @@
 // Run the library's OWN verify + repair on a known-correct archive and
 // compare against the e2e's reported numbers. This isolates whether the
 // 4101/1-missing is a verify miscount or an archive-content difference.
-var par3 = require('./lib/par3gen.js');
+var par3 = require('../../lib/par3gen.js');
 var ARCHIVE = process.argv[2];
 if (!ARCHIVE) { console.error('usage: node diag_verify.js <path.par3>'); process.exit(2); }
 

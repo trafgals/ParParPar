@@ -7,6 +7,10 @@ var helpers = require('./e2e/helpers');
 
 var BLOCK_SIZE = 1024 * 1024;
 var TARGET_BLOCK = 4099; // last block — hits 4 GiB boundary
+// Fixture must be >= (TARGET_BLOCK + 1) * BLOCK_SIZE = 4100 MiB so the
+// target block index exists. A smaller file cannot substitute because the
+// bug being guarded only triggers past the 4 GiB boundary.
+var FIXTURE_SIZE = 4100 * 1024 * 1024;
 var FIXTURE = path.join(__dirname, 'test4100m.bin');
 
 // Deterministic corruption of a specific block in the PAR3 archive.
@@ -46,8 +50,20 @@ function corruptBlock(par3File, targetBlock) {
 
 function main() {
 	if (!fs.existsSync(FIXTURE)) {
-		console.error('SKIP: fixture not found: ' + FIXTURE);
-		process.exit(0);
+		// Bug only triggers at block index >= 4096 (4 GiB boundary), so a
+		// smaller fixture cannot substitute. Generate on the fly instead of
+		// silently exiting 0 (which masks regressions on CI runs that don't
+		// pre-provision the 4.3 GiB fixture).
+		console.error('Fixture missing: ' + FIXTURE);
+		console.error('Generating ' + (FIXTURE_SIZE / (1024 * 1024)) + ' MiB fixture on the fly...');
+		try {
+			helpers.createTestFile(FIXTURE_SIZE, FIXTURE);
+			console.error('  Generated: ' + FIXTURE + ' (' + fs.statSync(FIXTURE).size + ' bytes)\n');
+		} catch (e) {
+			console.error('ERROR: failed to generate fixture: ' + e.message);
+			console.error('A ' + (FIXTURE_SIZE / 1073741824).toFixed(2) + ' GiB fixture is required for this test.');
+			process.exit(1);
+		}
 	}
 
 	var tempDir = helpers.getTempDir();

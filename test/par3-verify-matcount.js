@@ -103,55 +103,70 @@ function run() {
       outputBase: outputBase,
       recoverySlices: RECOVERY_SLICES
     }, function(err) {
-      if (err) {
-        console.error('par3.create failed:', err.message);
-        rmrf(tempDir);
-        process.exit(2);
-        return;
-      }
-
-      // 3) Ground truth straight from the archive bytes
-      var matrix = parseMatrix(par3File);
-      var expectedInputBlocks = matrix.last_input - matrix.first_input + 1;
-      console.log('Matrix: first_input=' + matrix.first_input +
-        ' last_input=' + matrix.last_input +
-        ' first_recovery=' + matrix.first_recovery +
-        ' recovery_count=' + matrix.recovery_count);
-
-      // Sanity: the 16 MiB file must have produced exactly 16 blocks.
-      assertEq(expectedInputBlocks, NUM_BLOCKS,
-        'archive matrix does not reflect the 16-block input file');
-
-      // 4) Verify
-      par3.verify(par3File, function(err2, verifyResult) {
-        rmrf(tempDir);
-        if (err2) {
-          console.error('par3.verify failed:', err2.message);
+      // P3 cubic-review fix: callback body runs after the outer try has
+      // returned, so an uncaught throw here would skip rmrf and exit
+      // via uncaughtException instead of the 'TEST FAILED:' handler.
+      try {
+        if (err) {
+          console.error('par3.create failed:', err.message);
+          rmrf(tempDir);
           process.exit(2);
           return;
         }
 
-        console.log('Verify result:');
-        console.log('  inputBlocks:    ' + verifyResult.inputBlocks);
-        console.log('  recoveryBlocks: ' + verifyResult.recoveryBlocks);
-        console.log('  missingBlocks:  ' + verifyResult.missingBlocks);
-        console.log('  archiveOk:      ' + verifyResult.archiveOk);
-        console.log('  missingBlockList: ' + JSON.stringify(verifyResult.missingBlockList));
+        // 3) Ground truth straight from the archive bytes
+        var matrix = parseMatrix(par3File);
+        var expectedInputBlocks = matrix.last_input - matrix.first_input + 1;
+        console.log('Matrix: first_input=' + matrix.first_input +
+          ' last_input=' + matrix.last_input +
+          ' first_recovery=' + matrix.first_recovery +
+          ' recovery_count=' + matrix.recovery_count);
 
-        // The assertions that pin the #97 contract:
-        assertEq(verifyResult.inputBlocks, expectedInputBlocks,
-          'verify inputBlocks must equal matrix (last_input - first_input + 1)');
-        assertEq(verifyResult.recoveryBlocks, RECOVERY_SLICES,
-          'verify recoveryBlocks must equal the recovery slice count');
-        assertEq(verifyResult.missingBlocks, 0,
-          'intact archive must report zero missing blocks');
-        if (verifyResult.archiveOk !== true) {
-          throw new Error('intact archive must report archiveOk === true (got ' + verifyResult.archiveOk + ')');
-        }
+        // Sanity: the 16 MiB file must have produced exactly 16 blocks.
+        assertEq(expectedInputBlocks, NUM_BLOCKS,
+          'archive matrix does not reflect the 16-block input file');
 
-        console.log('TEST PASSED — verify input count matches matrix (no phantom block)');
-        process.exit(0);
-      });
+        // 4) Verify
+        par3.verify(par3File, function(err2, verifyResult) {
+          try {
+            rmrf(tempDir);
+            if (err2) {
+              console.error('par3.verify failed:', err2.message);
+              process.exit(2);
+              return;
+            }
+
+            console.log('Verify result:');
+            console.log('  inputBlocks:    ' + verifyResult.inputBlocks);
+            console.log('  recoveryBlocks: ' + verifyResult.recoveryBlocks);
+            console.log('  missingBlocks:  ' + verifyResult.missingBlocks);
+            console.log('  archiveOk:      ' + verifyResult.archiveOk);
+            console.log('  missingBlockList: ' + JSON.stringify(verifyResult.missingBlockList));
+
+            // The assertions that pin the #97 contract:
+            assertEq(verifyResult.inputBlocks, expectedInputBlocks,
+              'verify inputBlocks must equal matrix (last_input - first_input + 1)');
+            assertEq(verifyResult.recoveryBlocks, RECOVERY_SLICES,
+              'verify recoveryBlocks must equal the recovery slice count');
+            assertEq(verifyResult.missingBlocks, 0,
+              'intact archive must report zero missing blocks');
+            if (verifyResult.archiveOk !== true) {
+              throw new Error('intact archive must report archiveOk === true (got ' + verifyResult.archiveOk + ')');
+            }
+
+            console.log('TEST PASSED — verify input count matches matrix (no phantom block)');
+            process.exit(0);
+          } catch (cbErr) {
+            rmrf(tempDir);
+            console.error('TEST FAILED:', cbErr.message);
+            process.exit(1);
+          }
+        });
+      } catch (cbErr) {
+        rmrf(tempDir);
+        console.error('TEST FAILED:', cbErr.message);
+        process.exit(1);
+      }
     });
   } catch (err) {
     rmrf(tempDir);

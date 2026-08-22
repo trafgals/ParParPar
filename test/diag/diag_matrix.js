@@ -12,7 +12,7 @@ var fs = require('fs');
 var path = require('path');
 var os = require('os');
 var crypto = require('crypto');
-var par3 = require('./lib/par3gen.js');
+var par3 = require('../../lib/par3gen.js');
 
 var BLOCK_SIZE = 1024 * 1024; // 1 MiB
 

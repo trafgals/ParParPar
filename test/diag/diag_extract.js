@@ -35,6 +35,11 @@ while (pos + 48 <= fileSize && guard < 20000000) {
 }
 fs.closeSync(fd);
 dataPkts.sort(function(a,b){ return a.idx - b.idx; });
+if (dataPkts.length === 0) {
+  console.log('DATA packets = 0  (no DATA packets in archive — corrupt or non-PAR3 input)');
+  console.log('Cannot extract any blocks; aborting.');
+  process.exit(0);
+}
 console.log('DATA packets =', dataPkts.length, '  indices', dataPkts[0].idx, '..', dataPkts[dataPkts.length-1].idx);
 
 // Reopen and stream-extract in index order, hashing + comparing to source.
