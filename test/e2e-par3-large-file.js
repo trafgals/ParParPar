@@ -325,8 +325,9 @@ function run() {
 		console.log('  hashRepaired: ' + metrics.durationsHuman.hashRepaired);
 		console.log('  TOTAL: ' + metrics.durationsHuman.total);
 		console.log('\nThroughput:');
-		console.log('  createPar3: ' + metrics.throughput.createPar3MBps.toFixed(2) + ' MB/s');
-		console.log('  repair: ' + metrics.throughput.repairMBps.toFixed(2) + ' MB/s');
+		// Cubic cycle 2 #98 P2: guard against undefined throughput on early-failure paths (otherwise .toFixed(2) crashes finish()).
+		console.log('  createPar3: ' + (metrics.throughput.createPar3MBps || 0).toFixed(2) + ' MB/s');
+		console.log('  repair: ' + (metrics.throughput.repairMBps || 0).toFixed(2) + ' MB/s');
 		console.log('\nMemory:');
 		console.log('  peakRSS: ' + metrics.memoryUsage.peakRSSHuman);
 
