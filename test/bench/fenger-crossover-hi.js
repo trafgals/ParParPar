@@ -6,8 +6,9 @@
 //
 // Uses execFileSync against par3-create-bench.js (the canonical
 // `par3.create([sourceFile], outputBase, opts, cb)` path), and toggles
-// PAR3_GF64_USE_FENGER in the child env to actually dispatch
-// Fenger vs Barycentric (default is Fenger=on, so Bary must override to '0').
+// PAR3_GF64_USE_FENGER in the child env to force (1) or disable (0)
+// Fenger, overriding the cost-model gate; these R values are below
+// FENGER_MIN_R=8192, so without the override the gate picks Barycentric.
 'use strict';
 const { execFileSync } = require('child_process');
 const path = require('path');
@@ -29,7 +30,13 @@ function timed(label, env, R, cap) {
     console.log(`R=${R} ${label}: ${mbps !== null ? mbps.toFixed(2) + ' MB/s' : 'no-output'}`);
     return mbps;
   } catch (e) {
-    console.log(`R=${R} ${label}: TIMEOUT/CAP (>${cap}s)`);
+    // Cubic cycle 2 #98 P3: distinguish real timeouts (e.code === 'ETIMEDOUT')
+    // from other child-process failures (PAR3 crash, missing `node`, etc.).
+    if (e && e.code === 'ETIMEDOUT') {
+      console.log(`R=${R} ${label}: TIMEOUT/CAP (>${cap}s)`);
+    } else {
+      console.log(`R=${R} ${label}: FAILED (${(e && e.message) || e})`);
+    }
     return null;
   }
 }
