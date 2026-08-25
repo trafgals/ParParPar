@@ -60,6 +60,9 @@ function main() {
 			helpers.createTestFile(FIXTURE_SIZE, FIXTURE);
 			console.error('  Generated: ' + FIXTURE + ' (' + fs.statSync(FIXTURE).size + ' bytes)\n');
 		} catch (e) {
+			// Cubic cycle 2 #98 P2: unlink partial fixture so the next run regenerates
+			// instead of treating a truncated FIXTURE as valid via fs.existsSync.
+			try { fs.unlinkSync(FIXTURE); } catch (e2) { /* may not exist */ }
 			console.error('ERROR: failed to generate fixture: ' + e.message);
 			console.error('A ' + (FIXTURE_SIZE / 1073741824).toFixed(2) + ' GiB fixture is required for this test.');
 			process.exit(1);
