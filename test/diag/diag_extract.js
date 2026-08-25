@@ -38,7 +38,7 @@ dataPkts.sort(function(a,b){ return a.idx - b.idx; });
 if (dataPkts.length === 0) {
   console.log('DATA packets = 0  (no DATA packets in archive — corrupt or non-PAR3 input)');
   console.log('Cannot extract any blocks; aborting.');
-  process.exit(0);
+  process.exit(1);
 }
 console.log('DATA packets =', dataPkts.length, '  indices', dataPkts[0].idx, '..', dataPkts[dataPkts.length-1].idx);
 
