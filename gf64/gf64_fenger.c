@@ -155,8 +155,33 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 	ctx->V_prime_inv = bary;
 	ctx->V_prime = (gf64_t *)malloc(numInputsPadded * sizeof(gf64_t));
 	if (ctx->V_prime == NULL) abort();
-	for (size_t c = 0; c < numInputsPadded; c++) {
-		ctx->V_prime[c] = gf64_invert_ita_one(bary[c]);
+	/*
+	 * Issue #59 T2 (P2.2): invert V'(x_c) for each input via the AVX-512
+	 * 8-lane ZMM batch primitive gf64_invert_ita_batch when the host has a
+	 * fully functional VPCLMULQDQ+ZMM pipeline; otherwise fall through to
+	 * the scalar gf64_invert_ita_one loop. The batch primitive itself
+	 * dispatches the count % 8 tail to the scalar fallback inside
+	 * gf64_invert_ita_batch (gf64_invert_ita_avx512.c:121-124), so we
+	 * never round-down the input count.
+	 *
+	 * Mirrors the dispatch pattern in gf64_barycentric.c:208-212 (issue
+	 * #62/cubic-review 4914681432 P1): gate on gf64_has_vpclmulqdq (the
+	 * CPUID+XCR0+ZMM-probe-ANDed flag), NOT on gf64_current_method (the
+	 * PD2 workload-chosen method), so PD2 downclock downgrades do not
+	 * silently disable the batch path on hosts that genuinely support
+	 * the ISA.
+	 *
+	 * ISA fallback: on hosts without working AVX-512F+VPCLMULQDQ the
+	 * loop falls through to the scalar gf64_invert_ita_one path — the
+	 * bit-exact output is identical (verified by test_gf64_fenger_pipeline
+	 * and the new test_gf64_fenger_prepare_batch).
+	 */
+	if (gf64_has_vpclmulqdq) {
+		gf64_invert_ita_batch(ctx->V_prime, bary, numInputsPadded);
+	} else {
+		for (size_t c = 0; c < numInputsPadded; c++) {
+			ctx->V_prime[c] = gf64_invert_ita_one(bary[c]);
+		}
 	}
 
 	/* ---- V(y_r) for each recovery point (MPE on tree_y) ---- */
@@ -171,8 +196,16 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 
 	ctx->V_at_y_inv = (gf64_t *)malloc(numRecoveryPadded * sizeof(gf64_t));
 	if (ctx->V_at_y_inv == NULL) abort();
-	for (size_t r = 0; r < numRecoveryPadded; r++) {
-		ctx->V_at_y_inv[r] = gf64_invert_ita_one(V_at_y[r]);
+	/* Same dispatch as the V_prime loop above — see the comment there.
+	 * At N=262144/R=32768 (1G/262144/4KiB bench target shape) this loop
+	 * alone runs R=32768 scalar inversions of 63 squarings + 62 muls
+	 * each; the batch path drops the wall-time by the ZMM lane count. */
+	if (gf64_has_vpclmulqdq) {
+		gf64_invert_ita_batch(ctx->V_at_y_inv, V_at_y, numRecoveryPadded);
+	} else {
+		for (size_t r = 0; r < numRecoveryPadded; r++) {
+			ctx->V_at_y_inv[r] = gf64_invert_ita_one(V_at_y[r]);
+		}
 	}
 	free(V_at_y);
 
