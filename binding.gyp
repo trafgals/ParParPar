@@ -202,6 +202,7 @@
         "gf64/gf64_mpe.c",
         "gf64/gf64_poly_mul_karatsuba.c",
         "gf64/gf64_fenger.c",
+        "gf64/gf64_elem_mul.c",
         "gf64/gf64_square.c",
         "gf64/gf64_invert_ita.c"
       ],
