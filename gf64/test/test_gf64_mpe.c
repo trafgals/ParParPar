@@ -562,6 +562,92 @@ static void test_mpe_empty(void) {
 }
 
 /* ----------------------------------------------------------------------------
+ * Test 7 (issue #59 T4): scratch-path heap alloc count.
+ *
+ * The T4 arena routes the divmod/invmod working buffers through a caller-
+ * owned bump allocator instead of malloc/free. Bit-exact parity is
+ * covered by test_gf64_divmod_parity Test 6; this test pins the heap
+ * side of the contract:
+ *
+ *   - scratch path:  gf64_poly_divmod_scratch / _invmod_scratch add zero
+ *                   heap allocations (the working buffers come from the
+ *                   arena; the counter is only bumped in the malloc branch
+ *                   which the scratch code skips).
+ *   - legacy path:  the malloc branch bumps the counter per call (5 per
+ *                   divmod + 3 per invmod), so the counter must MOVE
+ *                   after even one legacy call. Sanity check on the
+ *                   instrumentation itself.
+ *
+ * The assertions are independent of the specific arithmetic result — they
+ * care only about the heap-alloc count contract.
+ * ------------------------------------------------------------------------- */
+static void test_alloc_count(void) {
+	printf("Test 7: scratch-path heap alloc count (issue #59 T4)\n");
+
+	/* Build (deg_f=200, deg_g=100) so m=101 (> GF64_DIVMOD_NEWTON_MIN)
+	 * exercises the Newton path's 5+3 buffers per call. */
+	const size_t df = 200, dg = 100;
+	gf64_t *f   = (gf64_t *)malloc((df + 1) * sizeof(gf64_t));
+	gf64_t *g   = (gf64_t *)malloc((dg + 1) * sizeof(gf64_t));
+	size_t qw = df - dg + 1;
+	size_t rw = (dg > df) ? (dg + 1) : (df + 1);
+	gf64_t *q   = (gf64_t *)calloc(qw, sizeof(gf64_t));
+	gf64_t *r   = (gf64_t *)calloc(rw, sizeof(gf64_t));
+	gf64_t *inv = (gf64_t *)calloc(df + 1, sizeof(gf64_t));
+	if (!f || !g || !q || !r || !inv) {
+		fail("alloc-count setup: out of memory");
+		goto cleanup_setup;
+	}
+	put_seed(0xCAFEBABEDEADBEEFULL);
+	for (size_t i = 0; i <= df; i++) f[i] = splitmix64_next();
+	for (size_t i = 0; i <= dg; i++) g[i] = splitmix64_next();
+	/* Keep the leading divisor coefficient nonzero so the legacy path
+	 * doesn't abort on the synthetic-input edge case. */
+	if (g[dg] == 0) g[dg] = 1ULL;
+
+	/* --- Scratch path: zero heap allocations expected. --- */
+	gf64_arena_t arena;
+	if (gf64_arena_init(&arena, 16 * (df + dg + 4)) != 0) {
+		fail("alloc-count: arena init");
+		goto cleanup_setup;
+	}
+	gf64_mpe_heap_alloc_count = 0;
+	for (int iter = 0; iter < 16; iter++) {
+		gf64_poly_divmod_scratch(f, df, g, dg, q, r, &arena);
+	}
+	if (gf64_mpe_heap_alloc_count == 0) {
+		pass("scratch path: 16 divmods add 0 heap allocations");
+	} else {
+		char msg[128];
+		snprintf(msg, sizeof(msg),
+		         "scratch path: 16 divmods added %zu heap allocs (want 0)",
+		         gf64_mpe_heap_alloc_count);
+		fail(msg);
+	}
+	gf64_arena_release(&arena, 0);
+	gf64_arena_free(&arena);
+
+	/* --- Legacy path: counter MUST move. --- */
+	gf64_mpe_heap_alloc_count = 0;
+	gf64_poly_divmod(f, df, g, dg, q, r);
+	/* One divmod call bumps the counter by 5 (rev_f + rev_g + inv +
+	 * rev_q + gq); the invmod inside also adds 3 (g_buf + r_sq +
+	 * prod). Total = 8 per legacy call. Assert >= 5 (loose floor). */
+	if (gf64_mpe_heap_alloc_count >= 5) {
+		char msg[128];
+		snprintf(msg, sizeof(msg),
+		         "legacy path: 1 divmod bumped counter by %zu (>=5 OK)",
+		         gf64_mpe_heap_alloc_count);
+		pass(msg);
+	} else {
+		fail("legacy path: counter did not move (instrumentation broken?)");
+	}
+
+cleanup_setup:
+	free(f); free(g); free(q); free(r); free(inv);
+}
+
+/* ----------------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------------- */
 int main(void) {
@@ -574,6 +660,7 @@ int main(void) {
 	test_invmod();
 	test_invmod_zero_n();
 	test_mpe_empty();
+	test_alloc_count();
 
 	printf("\n=== Summary ===\n");
 	printf("Passed: %d\n", g_passed);

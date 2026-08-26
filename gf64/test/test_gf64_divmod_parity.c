@@ -282,6 +282,81 @@ int main(void) {
 	run_alias_case(300, 100, 0xAAAA000011110000ULL); /* Newton path, m = 201 */
 	run_alias_case(1024, 512, 0xBBBB000022220000ULL);
 
+	/* -------------------------------------------------------------------------
+	 * Test 6 (issue #59 T4): scratch-vs-malloc parity for gf64_poly_divmod.
+	 * The _scratch variant routes its working buffers through a caller-owned
+	 * arena instead of malloc/free; the bit-exact contract must hold
+	 * across every dispatch boundary, the Newton/FFT tier, and edge
+	 * shapes (deg_f < deg_g, deg_f == deg_g, deg_g == 0).
+	 * ------------------------------------------------------------------------- */
+	{
+		struct scratch_case {
+			size_t deg_f, deg_g;
+		};
+		static const struct scratch_case s_cases[] = {
+			/* Schoolbook-path edges (m < GF64_DIVMOD_NEWTON_MIN). */
+			{  10,   3 },
+			{ 100,  20 },
+			{  95,  50 }, /* m = 46 (schoolbook) */
+			/* Dispatch-boundary (m == 96). */
+			{ 150,  55 }, /* m = 96 */
+			{ 200,  99 }, /* m = 102 */
+			/* Newton path through the HQC-FFT tier. */
+			{ 300, 100 },
+			{1024, 512 },
+			{4096,2048 },
+			{4099,   1 },
+			/* Edge shapes. */
+			{ 100, 200 }, /* deg_f < deg_g */
+			{  50,  50 }, /* deg_f == deg_g */
+			{   7,   0 }, /* deg_g == 0 constant divisor */
+		};
+		printf("\nTest 6: scratch variant parity (issue #59 T4)\n");
+		for (size_t i = 0; i < sizeof(s_cases) / sizeof(s_cases[0]); i++) {
+			const size_t df = s_cases[i].deg_f;
+			const size_t dg = s_cases[i].deg_g;
+			gf64_t *f = (gf64_t *)malloc((df + 1) * sizeof(gf64_t));
+			gf64_t *g = (gf64_t *)malloc((dg + 1) * sizeof(gf64_t));
+			/* q/r sized for the worst case: deg_f+1 wide, dg wide. */
+			size_t qw = (df >= dg) ? (df - dg + 1) : 1;
+			size_t rw = (dg > df) ? (dg + 1) : (df + 1);
+			gf64_t *q_ref = (gf64_t *)malloc(qw * sizeof(gf64_t));
+			gf64_t *r_ref = (gf64_t *)malloc(rw * sizeof(gf64_t));
+			gf64_t *q_scr = (gf64_t *)malloc(qw * sizeof(gf64_t));
+			gf64_t *r_scr = (gf64_t *)malloc(rw * sizeof(gf64_t));
+			for (size_t j = 0; j <= df; j++) {
+				f[j] = splitmix64_next();
+			}
+			for (size_t j = 0; j <= dg; j++) { g[j] = splitmix64_next(); }
+			if (dg == 0) g[0] = splitmix64_next() | 1ULL; /* keep div nonzero */
+
+			gf64_poly_divmod(f, df, g, dg, q_ref, r_ref);
+
+			/* Scratch path: arena sized to the worst single divmod demand
+			 * (root divmod with Newton reciprocal) plus safety margin. */
+			gf64_arena_t arena;
+			if (gf64_arena_init(&arena, 16 * (df + dg + 4)) != 0) {
+				fail("arena init");
+			}
+			gf64_poly_divmod_scratch(f, df, g, dg, q_scr, r_scr, &arena);
+			gf64_arena_release(&arena, 0);
+			gf64_arena_free(&arena);
+
+			int mismatch = memcmp(q_ref, q_scr, qw * sizeof(gf64_t)) ||
+			               memcmp(r_ref, r_scr, rw * sizeof(gf64_t));
+			if (mismatch) {
+				fail("scratch-vs-malloc bit-exactness");
+			} else {
+				char msg[128];
+				snprintf(msg, sizeof(msg),
+				         "scratch parity deg_f=%zu deg_g=%zu m=%zu",
+				         df, dg, (df >= dg) ? df - dg + 1 : 1);
+				pass(msg);
+			}
+			free(f); free(g); free(q_ref); free(r_ref); free(q_scr); free(r_scr);
+		}
+	}
+
 	printf("\n=== Summary ===\n");
 	printf("Passed: %d\n", g_passed);
 	printf("Failed: %d\n", g_failed);

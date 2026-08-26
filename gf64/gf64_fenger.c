@@ -575,6 +575,7 @@ static void fenger_eval_recurse_batch(
 	const gf64_t *f, size_t f_stride, const size_t *deg_fs,
 	gf64_t *out,
 	gf64_t *scratch,
+	gf64_arena_t *arena,
 	gf64_t *mul_scratch, size_t mul_scratch_words,
 	size_t K)
 {
@@ -617,8 +618,17 @@ static void fenger_eval_recurse_batch(
 	size_t child_degs[2 * FENGER_BATCH_K_MAX];
 	if (any_needs && fenger_hqc_eligible(child_deg + 1, m_max, child_deg)) {
 		/* Shared reciprocals: rev(P)^{-1} mod x^{m_max} (P monic, so
-		 * rev(P)[0] = 1 != 0). */
-		{
+		 * rev(P)[0] = 1 != 0). T4: rev + the two Newton inverses run
+		 * off the arena — zero heap traffic per node. */
+		if (arena != NULL) {
+			size_t amark = gf64_arena_mark(arena);
+			gf64_t *rev = gf64_arena_push(arena, child_deg + 1);
+			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_L[child_deg - i];
+			gf64_poly_invmod_scratch(rev, child_deg, m_max, inv_L, arena);
+			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_R[child_deg - i];
+			gf64_poly_invmod_scratch(rev, child_deg, m_max, inv_R, arena);
+			gf64_arena_release(arena, amark);
+		} else {
 			gf64_t *rev = (gf64_t *)malloc((child_deg + 1) * sizeof(gf64_t));
 			if (rev == NULL) abort();
 			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_L[child_deg - i];
@@ -728,12 +738,12 @@ static void fenger_eval_recurse_batch(
 			gf64_t *q = revq + k * m_max;
 			(void)q2;
 			if (K == 1) {
-				gf64_poly_divmod(fk, deg_fs[k], P_L, child_deg, q, rLk);
-				gf64_poly_divmod(fk, deg_fs[k], P_R, child_deg, revq, rRk);
+				gf64_poly_divmod_scratch(fk, deg_fs[k], P_L, child_deg, q, rLk, arena);
+				gf64_poly_divmod_scratch(fk, deg_fs[k], P_R, child_deg, revq, rRk, arena);
 			} else {
 				gf64_t *qR = q2 + k * m_max; /* separate from rRk (no aliasing) */
-				gf64_poly_divmod(fk, deg_fs[k], P_L, child_deg, q, rLk);
-				gf64_poly_divmod(fk, deg_fs[k], P_R, child_deg, qR, rRk);
+				gf64_poly_divmod_scratch(fk, deg_fs[k], P_L, child_deg, q, rLk, arena);
+				gf64_poly_divmod_scratch(fk, deg_fs[k], P_R, child_deg, qR, rRk, arena);
 			}
 			size_t dL = 0, dR = 0;
 			for (size_t i = child_deg; i-- > 0; ) {
@@ -758,10 +768,10 @@ static void fenger_eval_recurse_batch(
 		}
 		fenger_eval_recurse_batch(tree, lev + 1, 2 * node_idx,
 		                          r_L, N_at_lev, left_degs, out, child_scratch,
-		                          mul_scratch, mul_scratch_words, K);
+		                          arena, mul_scratch, mul_scratch_words, K);
 		fenger_eval_recurse_batch(tree, lev + 1, 2 * node_idx + 1,
 		                          r_R, N_at_lev, right_degs, out, child_scratch,
-		                          mul_scratch, mul_scratch_words, K);
+		                          arena, mul_scratch, mul_scratch_words, K);
 	}
 }
 
@@ -795,8 +805,15 @@ static void gf64_fenger_execute_batched(
 	 * (K <= 8) engages; the scalar/within-word paths use only the first 4N. */
 	gf64_t *interp_mul = (gf64_t *)malloc(32 * N * sizeof(gf64_t));
 	gf64_t *eval_mul   = (gf64_t *)malloc(4 * R * sizeof(gf64_t));
+	/* T4 (issue #59): arena for the eval walk's per-node divmod/invmod
+	 * scratch (Newton reciprocals + rev buffers). Degrees scale with the
+	 * recovery tree (R); worst single-call demand is ~6·max(N,R) words,
+	 * so 8× covers it with slack. Zero heap traffic inside the walk. */
+	gf64_arena_t ev_arena;
+	size_t arena_words = 8 * ((N > R) ? N : R);
 	if (!weighted || !poly_p || !p_at_y ||
-	    !interp_scratch || !eval_scratch || !interp_mul || !eval_mul) {
+	    !interp_scratch || !eval_scratch || !interp_mul || !eval_mul ||
+	    gf64_arena_init(&ev_arena, arena_words) != 0) {
 		abort();
 	}
 
@@ -862,8 +879,8 @@ static void gf64_fenger_execute_batched(
 			} else {
 				for (size_t k = 0; k < K_eff; k++) degs[k] = deg_p;
 				fenger_eval_recurse_batch(tree_y, 0, 0, poly_p, N, degs,
-				                          p_at_y, eval_scratch, eval_mul,
-				                          mul_sw, K_eff);
+				                          p_at_y, eval_scratch, &ev_arena,
+				                          eval_mul, mul_sw, K_eff);
 			}
 		}
 		/* 4d: divide by V(y_r) — only real recovery rows are written.
@@ -889,6 +906,7 @@ static void gf64_fenger_execute_batched(
 	free(weighted); free(poly_p); free(p_at_y);
 	free(interp_scratch); free(eval_scratch);
 	free(interp_mul); free(eval_mul);
+	gf64_arena_free(&ev_arena);
 }
 
 /* ----------------------------------------------------------------------------
