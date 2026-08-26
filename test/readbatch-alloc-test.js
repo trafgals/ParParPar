@@ -42,7 +42,10 @@ var origAlloc = Buffer.alloc;
 var origAllocUnsafe = Buffer.allocUnsafe;
 
 function noteSite(size) {
-	if (size < 4096) return;
+	// Stack capture is expensive and, on this host, intermittently deadlocks
+	// the async hash pipeline (worker callback starvation). Diagnostics only:
+	// enable explicitly with T9_ALLOC_SITES=1 after a churn-contract failure.
+	if (!process.env.T9_ALLOC_SITES || size < 4096) return;
 	var stack = new Error().stack.split('\n');
 	var key = 'unknown';
 	for (var i = 2; i < stack.length; i++) {
@@ -186,5 +189,8 @@ try {
 
 function finish() {
 	console.log('\n' + passed + ' passed, ' + failed + ' failed');
-	process.exitCode = failed ? 1 : 0;
+	// Force-exit: the parallel-hash pool leaves live-but-idle handles
+	// (unref'd workers, stream plumbing) that would otherwise stall exit
+	// long after all assertions have run.
+	process.exit(failed ? 1 : 0);
 }
