@@ -71,6 +71,14 @@ struct gf64_fenger_ctx {
 	gf64_t *V_prime_inv;   /* 1/V'(x_c) for each input (barycentric weights;
 	                        * reused per word by the weights-aware interp) */
 	gf64_t *V_at_y_inv;    /* 1/V(y_r) for each r    */
+	/* T5 (issue #59): precomputed per-node reciprocals for the eval walk
+	 * over tree_y. Eliminates the per-batch gf64_poly_invmod calls inside
+	 * fenger_eval_recurse_batch (the reciprocals depend only on the tree,
+	 * which is fixed at prepare). Storage = (num_levels-1)*R/2 words ≈
+	 * R/2 * log2(R); at R=32k that's ~250 KiB (trivial vs the tree's
+	 * own ~20 MiB). NULL if num_levels <= 1 (R == 1, no internal nodes). */
+	gf64_t *recip_pool;
+	size_t  recip_pool_words;
 	size_t  N;             /* padded input count (power of 2)  */
 	size_t  R;             /* padded recovery count (power of 2) */
 	size_t  num_inputs_real;   /* real input blocks (< N when padded) */
@@ -211,6 +219,52 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 		}
 	}
 	free(V_at_y);
+
+	/* T5 (issue #59): precompute reciprocals of every internal child
+	 * polynomial in tree_y. The per-batch gf64_poly_invmod calls inside
+	 * the execute walk collapse to pointer dereferences. The execute
+	 * walk's per-node call to fenger_eval_recurse_batch computes the
+	 * reciprocals of BOTH children (P_L and P_R) at every internal
+	 * level, so we must store 2(R-1) reciprocals = (L-1)*R words
+	 * (~8 MiB at R=65536 - trivial vs the tree's ~20 MiB). */
+	{
+		const size_t num_levels = ctx->tree_y.num_levels;
+		if (num_levels > 1) {
+			const size_t total_words = (num_levels - 1) *
+			                            numRecoveryPadded;
+			ctx->recip_pool = (gf64_t *)malloc(total_words *
+			                                    sizeof(gf64_t));
+			if (ctx->recip_pool == NULL) abort();
+			ctx->recip_pool_words = total_words;
+			/* BFS over CHILD levels. At child_lev the tree has
+			 * 2^child_lev child polys, each of degree R/2^child_lev
+			 * (so stride child_deg+1 in level_data[child_lev]). */
+			gf64_t *cursor = ctx->recip_pool;
+			for (size_t child_lev = 1; child_lev < num_levels; child_lev++) {
+				const size_t child_deg = numRecoveryPadded >>
+				                          child_lev;
+				const size_t child_stride = child_deg + 1;
+				const gf64_t *level_data = ctx->tree_y.level_data[child_lev];
+				const size_t num_children = (size_t)1 << child_lev;
+				for (size_t i = 0; i < num_children; i++) {
+					const gf64_t *p = level_data + i * child_stride;
+					gf64_t *rev = (gf64_t *)malloc(child_stride *
+					                               sizeof(gf64_t));
+					if (rev == NULL) abort();
+					for (size_t k = 0; k <= child_deg; k++) {
+						rev[k] = p[child_deg - k];
+					}
+					gf64_poly_invmod(rev, child_deg, child_deg,
+					                  cursor);
+					free(rev);
+					cursor += child_deg;
+				}
+			}
+		} else {
+			ctx->recip_pool = NULL;
+			ctx->recip_pool_words = 0;
+		}
+	}
 
 	return ctx;
 }
@@ -569,7 +623,25 @@ static void fenger_interp_batch(
  * gf64_multi_point_eval); the caller (gf64_fenger_execute_batched)
  * routes deg_p >= R (and R == 1) through a per-word Horner fallback.
  */
+/* T5: look up the precomputed reciprocal of an internal child node in
+ * tree_y by (level, local index). The pool is laid out BFS over child
+ * levels: child_lev=1 first (R/2 words), then child_lev=2 (R/4 per
+ * child * 4 = R words), etc. (see gf64_fenger_prepare_core). child_lev
+ * is the level of the CHILD whose reciprocal we want (>= 1, since
+ * leaves have no reciprocal). child_node_idx is the local index within
+ * that level. The reciprocal has child_deg = R/2^child_lev words (one
+ * polynomial of degree < child_deg). */
+static inline gf64_t *fenger_recip_at(
+	gf64_fenger_ctx *ctx,
+	size_t child_lev, size_t child_node_idx
+) {
+	const size_t R = ctx->R;
+	return ctx->recip_pool + (child_lev - 1) * R +
+	       child_node_idx * (R >> child_lev);
+}
+
 static void fenger_eval_recurse_batch(
+	const gf64_fenger_ctx *ctx,
 	const SubproductTree *tree,
 	size_t lev, size_t node_idx,
 	const gf64_t *f, size_t f_stride, const size_t *deg_fs,
@@ -617,26 +689,11 @@ static void fenger_eval_recurse_batch(
 	/* 2K entries: left children occupy [0, K), right children [K, 2K). */
 	size_t child_degs[2 * FENGER_BATCH_K_MAX];
 	if (any_needs && fenger_hqc_eligible(child_deg + 1, m_max, child_deg)) {
-		/* Shared reciprocals: rev(P)^{-1} mod x^{m_max} (P monic, so
-		 * rev(P)[0] = 1 != 0). T4: rev + the two Newton inverses run
-		 * off the arena — zero heap traffic per node. */
-		if (arena != NULL) {
-			size_t amark = gf64_arena_mark(arena);
-			gf64_t *rev = gf64_arena_push(arena, child_deg + 1);
-			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_L[child_deg - i];
-			gf64_poly_invmod_scratch(rev, child_deg, m_max, inv_L, arena);
-			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_R[child_deg - i];
-			gf64_poly_invmod_scratch(rev, child_deg, m_max, inv_R, arena);
-			gf64_arena_release(arena, amark);
-		} else {
-			gf64_t *rev = (gf64_t *)malloc((child_deg + 1) * sizeof(gf64_t));
-			if (rev == NULL) abort();
-			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_L[child_deg - i];
-			gf64_poly_invmod(rev, child_deg, m_max, inv_L);
-			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_R[child_deg - i];
-			gf64_poly_invmod(rev, child_deg, m_max, inv_R);
-			free(rev);
-		}
+		/* T5: reciprocals were precomputed at prepare time. */
+		inv_L = fenger_recip_at((gf64_fenger_ctx *)ctx,
+		                       lev + 1, 2 * node_idx);
+		inv_R = fenger_recip_at((gf64_fenger_ctx *)ctx,
+		                       lev + 1, 2 * node_idx + 1);
 
 		const size_t n = 2 * child_deg;
 		const size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n);
@@ -766,10 +823,10 @@ static void fenger_eval_recurse_batch(
 			left_degs[k]  = child_degs[2 * k];
 			right_degs[k] = child_degs[2 * k + 1];
 		}
-		fenger_eval_recurse_batch(tree, lev + 1, 2 * node_idx,
+		fenger_eval_recurse_batch(ctx, tree, lev + 1, 2 * node_idx,
 		                          r_L, N_at_lev, left_degs, out, child_scratch,
 		                          arena, mul_scratch, mul_scratch_words, K);
-		fenger_eval_recurse_batch(tree, lev + 1, 2 * node_idx + 1,
+		fenger_eval_recurse_batch(ctx, tree, lev + 1, 2 * node_idx + 1,
 		                          r_R, N_at_lev, right_degs, out, child_scratch,
 		                          arena, mul_scratch, mul_scratch_words, K);
 	}
@@ -878,7 +935,7 @@ static void gf64_fenger_execute_batched(
 				}
 			} else {
 				for (size_t k = 0; k < K_eff; k++) degs[k] = deg_p;
-				fenger_eval_recurse_batch(tree_y, 0, 0, poly_p, N, degs,
+				fenger_eval_recurse_batch(ctx, tree_y, 0, 0, poly_p, N, degs,
 				                          p_at_y, eval_scratch, &ev_arena,
 				                          eval_mul, mul_sw, K_eff);
 			}
@@ -919,6 +976,7 @@ void gf64_fenger_release(gf64_fenger_ctx *ctx) {
 	free(ctx->V_prime);
 	free(ctx->V_prime_inv);
 	free(ctx->V_at_y_inv);
+	free(ctx->recip_pool);
 	free(ctx);
 }
 
