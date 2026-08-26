@@ -133,13 +133,6 @@ public:
 	/// @param solveMatrix    Solution matrix from gf64_solve (numMissing * numAvail elements)
 	/// @param blockSize64    Block size in 64-bit words
 	/// @param numThreads     Number of threads for parallel computation (0 = auto)
-	static void ComputeRepairBlocks(
-		const gf64_t* availBlocks, size_t numAvail,
-		gf64_t* repairedBlocks, size_t numMissing,
-		const gf64_t* solveMatrix,
-		size_t blockSize64,
-		int numThreads
-	);
 
 	/// Solve n×n system and reconstruct n blocks in one pass.
 	/// Gaussian-eliminate A, apply elimination to RHS blocks using

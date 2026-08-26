@@ -219,9 +219,11 @@ console.log('\n--- Test 12: BARY_MIN_INPUTS_DEFAULT constant is exposed and is 1
 check(par3gen.BARY_MIN_INPUTS_DEFAULT === 10000, 'BARY_MIN_INPUTS_DEFAULT === 10000 (got: ' + par3gen.BARY_MIN_INPUTS_DEFAULT + ')');
 
 // ============================================================================
-// Fenger dispatch tests (issue #46 K3): the Fenger pipeline is the DEFAULT
-// for power-of-2 workloads. PAR3_GF64_USE_FENGER=0 kills it; =1 forces it
-// (and errors if the binding lacks the kernel).
+// Fenger dispatch tests (issue #46 K3 + issue #96 P0 cost-model gate):
+// Fenger is selected when R >= FENGER_MIN_R (default 8192) AND R is
+// power-of-2. Below that threshold, Barycentric/full is preferred.
+// PAR3_GF64_USE_FENGER=0 kills Fenger; =1 forces it (and errors if the
+// binding lacks the kernel).
 // ============================================================================
 
 function makeFengerBinding() {
@@ -248,19 +250,18 @@ function withFengerEnv(value, fn) {
     }
 }
 
-console.log('\n--- Test 13: power-of-2 workload, env unset → Fenger by default (every host, A4/#62) ---');
+console.log('\n--- Test 13: power-of-2 workload R=4 (< FENGER_MIN_R=8192), env unset → full (N=64 ≤ BARY_MIN, Fenger cost gate blocks) ---');
 withFengerEnv(undefined, function () {
     var b = makeFengerBinding();
     var result = dispatchRecovery(b, null, null, 64, 4, 4096, 0, 0n, 0);
-    // A4/#62: the Windows-only exclusion is gone — the SIGILL that forced
-    // it (whole-TU /arch:AVX512 EVEX in the scalar pipeline) is fixed by
-    // the gf64_pipeline TU split, so the unset-env expectation is Fenger
-    // on EVERY host.
-    check(result === 'fenger-result', 'returned Fenger result by default (got: ' + JSON.stringify(result) + ')');
-    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'kernel was compute_recovery_fenger (got: ' + callsToString(b.calls) + ')');
+    // Cost-model gate (issue #96 P0): R=4 < FENGER_MIN_R=8192 → Fenger not
+    // selected. N=64 ≤ BARY_MIN_INPUTS_DEFAULT (10000) → Barycentric not
+    // selected either. Falls through to compute_recovery_full.
+    check(result === 'full-result', 'returned compute_recovery_full (got: ' + JSON.stringify(result) + ')');
+    check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'kernel was compute_recovery_full (got: ' + callsToString(b.calls) + ')');
 });
 
-console.log('\n--- Test 14: power-of-2 workload, PAR3_GF64_USE_FENGER=0 → kill switch, skip Fenger ---');
+console.log('\n--- Test 14: power-of-2 workload R=4, PAR3_GF64_USE_FENGER=0 → kill switch, skip Fenger ---');
 withFengerEnv('0', function () {
     var b = makeFengerBinding();
     var result = dispatchRecovery(b, null, null, 64, 4, 4096, 0, 0n, 0);
@@ -273,7 +274,7 @@ withFengerEnv('false', function () {
     check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'PAR3_GF64_USE_FENGER=false also kills Fenger (got: ' + callsToString(b.calls) + ')');
 });
 
-console.log('\n--- Test 15: power-of-2 workload, PAR3_GF64_USE_FENGER=1 → forced Fenger ---');
+console.log('\n--- Test 15: power-of-2 workload R=4, PAR3_GF64_USE_FENGER=1 → forced Fenger (bypasses cost gate) ---');
 withFengerEnv('1', function () {
     var b = makeFengerBinding();
     var result = dispatchRecovery(b, null, null, 64, 4, 4096, 0, 0n, 0);
@@ -335,11 +336,11 @@ withFengerEnv(undefined, function () {
     check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'blockSize=4097 (%8!=0) dispatches to full, NOT Fenger (got: ' + callsToString(b.calls) + ')');
 });
 
-console.log('\n--- Test 20: numInputs=0 (trivial), env unset → Fenger on every host (0 is power-of-2-or-trivial; A4/#62) ---');
+console.log('\n--- Test 20: numInputs=0 (trivial) R=4 (< FENGER_MIN_R), env unset → full (Fenger cost gate blocks, N=0 ≤ BARY_MIN) ---');
 withFengerEnv(undefined, function () {
     var b = makeFengerBinding();
     dispatchRecovery(b, null, null, 0, 4, 4096, 0, 0n, 0);
-    check(b.calls.length === 1 && b.calls[0].kernel === 'fenger', 'numInputs=0 (trivial) dispatches to compute_recovery_fenger (got: ' + callsToString(b.calls) + ')');
+    check(b.calls.length === 1 && b.calls[0].kernel === 'full', 'numInputs=0 R=4 (trivial, R<FENGER_MIN_R) dispatches to full (got: ' + callsToString(b.calls) + ')');
 });
 
 // ============================================================================
