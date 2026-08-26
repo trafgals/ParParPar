@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 
 SUITE_FAILED=0
 
-for t in test test_all test_gf64_mul_avx512 test_gf64_square test_gf64_invert_ita \
+for t in test test_all test_gf64_mul_avx512 test_gf64_elem_mul test_gf64_square test_gf64_invert_ita \
          test_gf64_additive_fft test_gf64_subproduct_tree test_gf64_barycentric \
          test_gf64_mpe test_cpu_detect test_gf64_zmm_probe test_gf64_poly_mul_karatsuba \
          test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded \

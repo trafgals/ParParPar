@@ -20,15 +20,18 @@
  * (T8a). The product gives p(y_r) in O((N + R) log² (N + R)) per word.
  *
  * Field operations are delegated to gf64_mul_reference (scalar SSE2) and
- * gf64_invert_ita_one (T5). The AVX-512 swap-in is deferred; the
- * pipeline's call shape is independent of the field-multiplication
- * primitive.
+ * gf64_invert_ita_one (T5). Stages 4a and 4d (the per-word weighted-V'
+ * and divide-by-V(y_r) element-wise multiplies) use gf64_elem_mul, the
+ * ISA-dispatched wrapper from gf64_elem_mul.c — AVX-512 hosts run the
+ * clmul-Barrett lane primitive (8 elements per VPCLMULQDQ pair); AVX-2 /
+ * SSSE3 / scalar hosts fall back to gf64_mul_reference (issue #59 T3).
  * ============================================================================
  */
 
 #include "gf64_fenger.h"
 #include "gf64_additive_fft.h"
 #include "gf64_barycentric.h"
+#include "gf64_elem_mul.h"
 #include "gf64_invert_ita.h"
 #include "gf64_mpe.h"
 #include "gf64_mul.h"
@@ -302,14 +305,31 @@ void gf64_fenger_execute(
 	for (size_t w = w_start; w < w_end; w++) {
 		/* 4a: weighted values. Synthetic padded inputs (c >=
 		 * num_inputs_real) have zero DATA (the caller's buffer only
-		 * holds real blocks), so weight them 0 without reading `in`. */
-		for (size_t c = 0; c < N; c++) {
-			if (c < ctx->num_inputs_real) {
-				weighted[c] = gf64_mul_reference(in[c * B + w], ctx->V_prime[c]);
-			} else {
-				weighted[c] = 0;
-			}
+		 * holds real blocks), so weight them 0 without reading `in`.
+		 *
+		 * Issue #59 T3: strided gather into a contiguous slab, then a
+		 * contiguous element-wise mul. The gather is the same memory
+		 * traffic as the original per-element scalar mul load (one
+		 * word per c), but the mul is now ISA-dispatched: AVX-512
+		 * uses the clmul-Barrett lane primitive (8 elements per
+		 * VPCLMULQDQ pair), AVX-2 / SSSE3 / scalar fall back to
+		 * gf64_mul_reference. Bit-exact because the gather reads the
+		 * same value the scalar mul would have read, and the
+		 * contiguous mul is bit-exact to the scalar reference
+		 * (test_gf64_elem_mul.c).
+		 *
+		 * Padded region (c >= num_inputs_real) gets weighted[c] = 0
+		 * via memset; the subsequent mul reads V_prime[c] for all c
+		 * (a valid array index), but 0 * anything = 0, so the result
+		 * matches the original scalar code exactly. */
+		for (size_t c = 0; c < ctx->num_inputs_real; c++) {
+			weighted[c] = in[c * B + w];
 		}
+		if (ctx->num_inputs_real < N) {
+			memset(weighted + ctx->num_inputs_real, 0,
+			       (N - ctx->num_inputs_real) * sizeof(gf64_t));
+		}
+		gf64_elem_mul(weighted, weighted, ctx->V_prime, N);
 		/* 4b: interpolate to polynomial p_w of degree < N. Fenger is the
 		 * sanctioned consumer of the Bostan-Schost body, so it calls the
 		 * ungated weights-aware variant directly — the
@@ -322,9 +342,19 @@ void gf64_fenger_execute(
 		/* 4c: evaluate p_w at each recovery point. */
 		gf64_multi_point_eval(poly_p, deg_p, tree_y, p_at_y);
 		/* 4d: divide by V(y_r) — only real recovery rows are written
-		 * (synthetic padded rows would overflow the caller's buffer). */
-		for (size_t r = 0; r < ctx->num_recovery_real; r++) {
-			out[r * B + w] = gf64_mul_reference(p_at_y[r], ctx->V_at_y_inv[r]);
+		 * (synthetic padded rows would overflow the caller's buffer).
+		 *
+		 * Issue #59 T3: contiguous vectorized mul into a local slab,
+		 * then strided scatter to the caller's column-major buffer.
+		 * `p_at_y` is a private scratch slab (allocated above) that
+		 * is discarded at the end of this call, so aliasing it with
+		 * itself (out == a in gf64_elem_mul) is safe. */
+		if (ctx->num_recovery_real > 0) {
+			gf64_elem_mul(p_at_y, p_at_y, ctx->V_at_y_inv,
+			              ctx->num_recovery_real);
+			for (size_t r = 0; r < ctx->num_recovery_real; r++) {
+				out[r * B + w] = p_at_y[r];
+			}
 		}
 	}
 
@@ -776,22 +806,38 @@ static void gf64_fenger_execute_batched(
 		const size_t K_eff = (w_end - w0 < K) ? (w_end - w0) : K;
 
 		/* 4a: weighted slabs. Synthetic padded inputs (c >= real) have
-		 * zero DATA (never read from `in`), so weight them 0. */
+		 * zero DATA (never read from `in`), so weight them 0.
+		 *
+		 * Issue #59 T3: per-word strided gather into the contiguous
+		 * `weighted` slab, then a contiguous ISA-dispatched
+		 * element-wise mul. The gather reads the same bytes the
+		 * scalar mul would have read (one word per c per word k);
+		 * the mul is bit-exact to gf64_mul_reference (see
+		 * test_gf64_elem_mul.c). Padded region (c >= num_inputs_real)
+		 * gets memset to 0; the subsequent mul reads V_prime[c]
+		 * for those indices (a valid array index) but produces 0
+		 * because the operand is 0. */
 		for (size_t k = 0; k < K_eff; k++) {
 			const size_t w = w0 + k;
 			gf64_t *wk = weighted + k * N;
-			for (size_t c = 0; c < N; c++) {
-				wk[c] = (c < ctx->num_inputs_real)
-				        ? gf64_mul_reference(in[c * B + w], ctx->V_prime[c])
-				        : 0;
+			for (size_t c = 0; c < ctx->num_inputs_real; c++) {
+				wk[c] = in[c * B + w];
+			}
+			if (ctx->num_inputs_real < N) {
+				memset(wk + ctx->num_inputs_real, 0,
+				       (N - ctx->num_inputs_real) * sizeof(gf64_t));
 			}
 		}
-		/* 4b: z = weighted · 1/V'(x_c), then the batched combine. */
+		for (size_t k = 0; k < K_eff; k++) {
+			gf64_t *wk = weighted + k * N;
+			gf64_elem_mul(wk, wk, ctx->V_prime, N);
+		}
+		/* 4b: z = weighted · 1/V'(x_c), then the batched combine.
+		 * `weighted` slabs are contiguous — direct ISA-dispatched
+		 * element-wise mul, aliasing-safe (wk == a). */
 		for (size_t k = 0; k < K_eff; k++) {
 			gf64_t *zk = weighted + k * N;
-			for (size_t c = 0; c < N; c++) {
-				zk[c] = gf64_mul_reference(zk[c], ctx->V_prime_inv[c]);
-			}
+			gf64_elem_mul(zk, zk, ctx->V_prime_inv, N);
 		}
 		fenger_interp_batch(tree_x, weighted, K_eff, poly_p,
 		                    interp_scratch, interp_mul, 32 * N);
@@ -820,12 +866,22 @@ static void gf64_fenger_execute_batched(
 				                          mul_sw, K_eff);
 			}
 		}
-		/* 4d: divide by V(y_r) — only real recovery rows are written. */
+		/* 4d: divide by V(y_r) — only real recovery rows are written.
+		 *
+		 * Issue #59 T3: contiguous vectorized mul into the per-word
+		 * `p_at_y` slab, then strided scatter to the caller's
+		 * column-major buffer. `p_at_y` is private scratch (allocated
+		 * above, freed at the end of this call), so the in-place
+		 * mul (out == a aliasing) is safe. */
 		for (size_t k = 0; k < K_eff; k++) {
 			const size_t w = w0 + k;
-			const gf64_t *pk = p_at_y + k * R_stride;
-			for (size_t r = 0; r < ctx->num_recovery_real; r++) {
-				out[r * B + w] = gf64_mul_reference(pk[r], ctx->V_at_y_inv[r]);
+			gf64_t *pk = p_at_y + k * R_stride;
+			if (ctx->num_recovery_real > 0) {
+				gf64_elem_mul(pk, pk, ctx->V_at_y_inv,
+				              ctx->num_recovery_real);
+				for (size_t r = 0; r < ctx->num_recovery_real; r++) {
+					out[r * B + w] = pk[r];
+				}
 			}
 		}
 	}
