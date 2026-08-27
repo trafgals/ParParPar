@@ -79,7 +79,7 @@
       "label": "",
       "message": "176MB/s",
       "color": "yellow",
-      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 176.69 MB/s, peak RSS 48.34 GiB, wall-clock 434 s end-to-end (source 60 s + create 371 s + cleanup 3 s). **SWAP-BOUND**: input pool (64 GiB + 64 KiB) EXCEEDS the 63 GiB physical RAM on this host. Windows pagefile auto-grew to 173 GiB at peak to fit; the create phase thrashes the input pool through swap, accounting for ~340 s of the 371 s create time. The 176 MB/s number reflects swap-fault overhead on a 63 GiB-RAM host; on a host with ≥128 GiB RAM (input pool fully resident), expect ~500 MB/s proportional to the 32 GiB baseline (552 MB/s)."
+      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 176.69 MB/s, peak RSS 48.34 GiB, wall-clock 434 s end-to-end (source 60 s + create 371 s + cleanup 3 s). **SWAP-BOUND**: input pool (64 GiB + 64 KiB) EXCEEDS the 63 GiB physical RAM on this host. Windows pagefile auto-grew to 173 GiB at peak to fit; the create phase thrashes the input pool through swap, accounting for ~340 s of the 371 s create time. The 176 MB/s number reflects swap-fault overhead on a 63 GiB-RAM host; on a host with ≥128 GiB RAM (input pool fully resident), expect ~500 MB/s consistent with the 32 GiB baseline (552 MB/s)."
     }
   ]
 }
