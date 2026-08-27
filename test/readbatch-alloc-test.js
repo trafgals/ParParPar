@@ -182,6 +182,7 @@ try {
 	}
 } catch (e) {
 	console.error('FATAL: ' + (e && e.stack || e));
+	failed = 1;                          // cubic P1: so finish()'s process.exit(failed ? 1 : 0) actually exits 1
 	process.exitCode = 1;
 	cleanup();
 	finish();
