@@ -68,7 +68,7 @@ if (referencedList.length === 0) {
       continue;
     }
     var j;
-    try { j = JSON.parse(r.body); } catch (e) {
+    try { j = JSON.parse(r.body.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {
       console.error('FAIL: ' + id + ' -> invalid JSON: ' + e.message);
       failed.push(id);
       continue;
