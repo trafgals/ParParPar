@@ -257,6 +257,11 @@ static void test_mt_build_parity_large(void) {
 		g_rng = 0xC0DEC0DE00000000ULL ^ (uint64_t)trial ^ 0xA5A50000ULL;
 
 		gf64_t *points = (gf64_t *)malloc(N * sizeof(gf64_t));
+		if (!points) {
+			printf("    LARGE trial=%d malloc failed\n", trial);
+			all_ok = 0;
+			continue;
+		}
 		for (size_t i = 0; i < N; i++) points[i] = splitmix64_next();
 
 		omp_set_num_threads(1);
