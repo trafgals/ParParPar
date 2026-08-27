@@ -28,6 +28,7 @@
 #include "gf64_global.h"
 #include "par3_engine.h"
 #include "platform.h"
+#include "../hasher/hasher_blake3.h"
 
 // Forward declaration of par3_create_streaming_NAPI (defined in
 // src/gf64_create_streaming.cc). Module-level export — NOT a method on
@@ -2574,6 +2575,156 @@ static void AlignedBufferFinalizer(napi_env env, void* finalize_data, void* hint
 	ALIGN_FREE(finalize_data);
 }
 
+/*
+ * assemble_recovery_packets: native C++ implementation of the JS
+ * `_createRecoveryPackets` path (lib/par3gen.js:1568-1589). For each of the
+ * `numRecovery` recovery blocks in `recoveryBlocksBuf`, emits a complete
+ * PAR3 RECOVERY packet (48-byte header + 16-byte recovery-specific body +
+ * `blockSize` bytes of recovery data), BLAKE3-checksummed identically to
+ * the JS path, and returns the concatenated buffer.
+ *
+ * Inputs (positional):
+ *   0: recoveryBlocksBuf — Buffer, numRecovery * blockSize bytes
+ *   1: inputSetIdBuf     — Buffer, exactly 8 bytes
+ *   2: firstRecoveryIndex — Number or BigInt (LE64 block index of the first packet)
+ *   3: numRecovery        — uint32 (> 0)
+ *   4: blockSize          — uint32 (> 0)
+ *
+ * Output: Buffer of numRecovery * (64 + blockSize) bytes.
+ *
+ * Bit-exact vs the JS packetizer: same magic ("PAR3\0PKT"), same header
+ * field order, same BLAKE3 input span (header[24..48] || body[0..16+blockSize]),
+ * same 16-byte truncated checksum placement at header[8..24].
+ */
+static napi_value AssembleRecoveryPackets_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 5;
+	napi_value args[5];
+
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get callback info");
+		return NULL;
+	}
+	if(argc < 5) {
+		napi_throw_type_error(env, NULL,
+			"assemble_recovery_packets requires (recoveryBlocksBuf, inputSetIdBuf, firstRecoveryIndex, numRecovery, blockSize)");
+		return NULL;
+	}
+
+	uint8_t* recovery_data = NULL;
+	size_t   recovery_len  = 0;
+	status = napi_get_buffer_info(env, args[0], (void**)&recovery_data, &recovery_len);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "recoveryBlocksBuf must be a Buffer");
+		return NULL;
+	}
+
+	uint8_t* input_set_id = NULL;
+	size_t   input_set_id_len = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&input_set_id, &input_set_id_len);
+	if(status != napi_ok || input_set_id_len != 8) {
+		napi_throw_type_error(env, NULL, "inputSetIdBuf must be a 8-byte Buffer");
+		return NULL;
+	}
+
+	int64_t first_recovery_index = 0;
+	{
+		napi_valuetype vt;
+		napi_typeof(env, args[2], &vt);
+		if(vt == napi_bigint) {
+			bool lossless = false;
+			status = napi_get_value_bigint_int64(env, args[2], &first_recovery_index, &lossless);
+			if(status != napi_ok) {
+				napi_throw_type_error(env, NULL, "firstRecoveryIndex must be a BigInt or Number");
+				return NULL;
+			}
+		} else {
+			status = napi_get_value_int64(env, args[2], &first_recovery_index);
+			if(status != napi_ok) {
+				napi_throw_type_error(env, NULL, "firstRecoveryIndex must be a BigInt or Number");
+				return NULL;
+			}
+		}
+	}
+
+	int64_t num_recovery = 0;
+	status = napi_get_value_int64(env, args[3], &num_recovery);
+	if(status != napi_ok || num_recovery <= 0) {
+		napi_throw_range_error(env, NULL, "numRecovery must be a positive integer");
+		return NULL;
+	}
+
+	int64_t block_size = 0;
+	status = napi_get_value_int64(env, args[4], &block_size);
+	if(status != napi_ok || block_size <= 0) {
+		napi_throw_range_error(env, NULL, "blockSize must be a positive integer");
+		return NULL;
+	}
+
+	const size_t total_body_per_pkt = (size_t)16 + (size_t)block_size;
+	const size_t pkt_size = 48 + total_body_per_pkt;
+	const size_t total_in_bytes = (size_t)num_recovery * (size_t)block_size;
+	if(total_in_bytes != recovery_len) {
+		napi_throw_range_error(env, NULL, "recoveryBlocksBuf length must equal numRecovery * blockSize");
+		return NULL;
+	}
+
+	void* out_data = NULL;
+	uint8_t* out_buf = NULL;
+	napi_value out_jsbuf = NULL;
+	if(napi_create_buffer(env, (size_t)num_recovery * pkt_size, &out_data, &out_jsbuf) != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to allocate output Buffer");
+		return NULL;
+	}
+	out_buf = (uint8_t*)out_data;
+
+	const uint8_t kMagic[8] = {'P','A','R','3',0,'P','K','T'};
+	const uint8_t kType[8]  = {'P','A','R',' ','R','E','C',0};
+
+	for(int64_t i = 0; i < num_recovery; i++) {
+		uint8_t* pkt = out_buf + (size_t)i * pkt_size;
+
+		/* Header bytes 0..8: magic "PAR3\0PKT" */
+		memcpy(pkt, kMagic, 8);
+		/* Header bytes 8..24: checksum placeholder (zeroed) */
+		memset(pkt + 8, 0, 16);
+		/* Header bytes 24..32: totalLen LE64 = pkt_size */
+		{
+			uint64_t total_len = (uint64_t)pkt_size;
+			for(int b = 0; b < 8; b++) pkt[24 + b] = (uint8_t)(total_len >> (8 * b));
+		}
+		/* Header bytes 32..40: inputSetID (8 bytes from caller) */
+		memcpy(pkt + 32, input_set_id, 8);
+		/* Header bytes 40..48: type ASCII "PAR REC\0" */
+		memcpy(pkt + 40, kType, 8);
+
+		/* Body bytes 48..56: blockIndex LE64 = firstRecoveryIndex + i */
+		{
+			uint64_t bi = (uint64_t)first_recovery_index + (uint64_t)i;
+			for(int b = 0; b < 8; b++) pkt[48 + b] = (uint8_t)(bi >> (8 * b));
+		}
+		/* Body bytes 56..64: block_count LE64 = 1 */
+		{
+			uint64_t bc = 1;
+			for(int b = 0; b < 8; b++) pkt[56 + b] = (uint8_t)(bc >> (8 * b));
+		}
+		/* Body bytes 64..64+blockSize: recovery block data */
+		memcpy(pkt + 64, recovery_data + (size_t)i * (size_t)block_size, (size_t)block_size);
+
+		/* BLAKE3 checksum: header[24..48] || body[0..16+blockSize]; truncated to 16 bytes. */
+		blake3_hasher h;
+		blake3_hasher_init(&h);
+		blake3_hasher_update(&h, pkt + 24, 24);
+		blake3_hasher_update(&h, pkt + 48, total_body_per_pkt);
+		uint8_t full_hash[32];
+		blake3_hasher_finalize(&h, full_hash, 32);
+		memcpy(pkt + 8, full_hash, 16);
+	}
+
+	return out_jsbuf;
+}
+
 static napi_value AllocAlignedBuffer(napi_env env, napi_callback_info info) {
 	napi_status status;
 	size_t argc = 1;
@@ -3011,6 +3162,18 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "allocAlignedBuffer", alloc_aligned_buffer_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set allocAlignedBuffer property");
+		return NULL;
+	}
+
+	napi_value assemble_recovery_packets_fn;
+	status = napi_create_function(env, NULL, 0, AssembleRecoveryPackets_NAPI, NULL, &assemble_recovery_packets_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create assemble_recovery_packets function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "assemble_recovery_packets", assemble_recovery_packets_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set assemble_recovery_packets property");
 		return NULL;
 	}
 

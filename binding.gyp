@@ -223,7 +223,7 @@
     },
     {
       "target_name": "parpar_gf64",
-      "dependencies": ["parpar_gf64_cpu_detect", "gf64_avx512", "gf64_avx512_arr", "gf64_pipeline"],
+      "dependencies": ["parpar_gf64_cpu_detect", "gf64_avx512", "gf64_avx512_arr", "gf64_pipeline", "hasher_c"],
       "conditions": [
         ['target_arch in "ia32 x64"', {
           "sources": [
@@ -304,7 +304,7 @@
       "target_name": "hasher_c",
       "type": "static_library",
       "defines": ["NDEBUG"],
-      "sources": ["hasher/crc_zeropad.c", "hasher/md5-final.c"],
+      "sources": ["hasher/crc_zeropad.c", "hasher/md5-final.c", "hasher/hasher_blake3.c"],
       "cflags": ["-Wno-unused-function", "-std=c99"],
       "cflags!": ["-fno-omit-frame-pointer", "-fno-tree-vrp", "-fno-strict-aliasing"],
       "xcode_settings": {
