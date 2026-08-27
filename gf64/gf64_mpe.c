@@ -220,13 +220,21 @@ void gf64_poly_divmod_schoolbook(
 #define GF64_DIVMOD_NEWTON_MIN ((size_t)96)
 
 /* T4 (issue #59): heap-allocation instrumentation for tests. Incremented
- * at every malloc site inside the divmod/invmod implementations. */
-/* cubic P2 (task 19): atomic counter — T8 introduces OpenMP
- * (gf64_subproduct.c:184); the non-atomic += sites below are UB
- * under concurrent mutation. C11 _Atomic size_t is the minimum
- * portable cost. */
+ * at every malloc site inside the divmod/invmod implementations.
+ *
+ * cubic P2 (task 19, commit cad8d6b): atomic counter — T8 introduces
+ * OpenMP (gf64_subproduct.c:184); the non-atomic += sites below are
+ * UB under concurrent mutation. C11 _Atomic size_t is the minimum
+ * portable cost. Gated on GF64_OPENMP_PARALLEL_PREPARE so the C11
+ * <stdatomic.h> + _Atomic keyword don't leak into the Windows MSVC
+ * C89 default (single-threaded on Windows — binding.gyp keeps the
+ * define POSIX-only — so a plain size_t is fine there). */
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
 #include <stdatomic.h>
 _Atomic size_t gf64_mpe_heap_alloc_count = 0;
+#else
+size_t gf64_mpe_heap_alloc_count = 0;
+#endif
 
 /* ---------------------------------------------------------------------------
  * T4 arena: bump allocator over one caller-owned block. The _scratch
@@ -329,7 +337,11 @@ void gf64_poly_divmod_scratch(
 		rev_q = gf64_arena_push(arena, m);
 		gq    = gf64_arena_push(arena, deg_f + 1);
 	} else {
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
 		atomic_fetch_add(&gf64_mpe_heap_alloc_count, 5);
+#else
+		gf64_mpe_heap_alloc_count += 5;
+#endif
 		rev_f = (gf64_t *)malloc(m * sizeof(gf64_t));
 		rev_g = (gf64_t *)malloc((deg_g + 1) * sizeof(gf64_t));
 		inv   = (gf64_t *)malloc(m * sizeof(gf64_t));
@@ -473,7 +485,11 @@ void gf64_poly_invmod_scratch(
 		memset(r_sq, 0, 2 * n * sizeof(gf64_t));
 		memset(prod, 0, 3 * n * sizeof(gf64_t));
 	} else {
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
 		atomic_fetch_add(&gf64_mpe_heap_alloc_count, 3);
+#else
+		gf64_mpe_heap_alloc_count += 3;
+#endif
 		g_buf = (gf64_t *)calloc(n, sizeof(gf64_t));
 		r_sq  = (gf64_t *)calloc(2 * n, sizeof(gf64_t));
 		prod  = (gf64_t *)calloc(3 * n, sizeof(gf64_t));

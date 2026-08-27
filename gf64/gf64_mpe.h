@@ -379,10 +379,22 @@ void gf64_poly_invmod_scratch(
 
 /* Test instrumentation: number of heap allocations performed inside the
  * divmod/invmod implementations since the last reset. Zero when every
- * call is routed through an arena. */
-/* cubic P2 (task 19): atomic for OMP safety — see gf64_mpe.c. */
+ * call is routed through an arena.
+ *
+ * cubic P2 (task 19, commit cad8d6b): _Atomic size_t for OMP safety.
+ * Gated on GF64_OPENMP_PARALLEL_PREPARE so that the C11 <stdatomic.h>
+ * include is never seen by MSVC's default-C89 C compiler — Windows
+ * never compiles the OMP path (binding.gyp keeps the define POSIX-only),
+ * so the counter is single-threaded there and a plain size_t is fine.
+ * Avoids the cross-platform "C atomics require C11 or later" error
+ * from MSVC's vcruntime_c11_stdatomic.h when this header is transitively
+ * included by gf64_subproduct.c, gf64_barycentric.c, gf64_fenger.c. */
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
 #include <stdatomic.h>
 extern _Atomic size_t gf64_mpe_heap_alloc_count;
+#else
+extern size_t gf64_mpe_heap_alloc_count;
+#endif
 
 HEDLEY_END_C_DECLS
 
