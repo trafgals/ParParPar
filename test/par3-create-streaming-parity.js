@@ -159,6 +159,11 @@ function leg2(tempDir, cb) {
 						var nameLen = out.readUInt16LE(off + 48);
 						out.fill(0, off + 52 + nameLen, off + 52 + nameLen + 16);
 					}
+					if (out.slice(off + 40, off + 48).toString('latin1') === 'PAR STA\u0000') {
+						// START body[1..15] is allocUnsafe garbage (lib/par3gen.js:1438).
+						// body[0]=gf_size and body[16..34]=fields only; body[1..15] = header offsets 49..64.
+						out.fill(0, off + 48 + 1, off + 48 + 16);
+					}
 					if (out.slice(off + 40, off + 48).toString('latin1') === 'PAR ROO\u0000') {
 						// the ROOT packet embeds the FIL packet checksum as the
 						// last 16 body bytes — derived from the random fileId
