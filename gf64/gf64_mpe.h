@@ -337,7 +337,10 @@ void gf64_interp_dispatch_reset_probe(void);
  * MPE walk calls divmod twice per internal node, so one evaluation used
  * to perform O(N log N) heap allocations. The _scratch variants below
  * take a caller-owned bump arena instead: identical arithmetic, zero
- * per-call heap traffic. Bit-exact to the malloc variants (pinned by
+ * per-call heap traffic for the divmod/invmod working buffers. Note
+ * that gf64_poly_mul_internal at HQC FFT / Karatsuba tiers still
+ * malloc/free its own multiplication scratch — cubic P2 (task 20)
+ * flagged this. Bit-exact to the malloc variants (pinned by
  * test_gf64_divmod_parity / test_gf64_mpe).
  * ============================================================================ */
 
