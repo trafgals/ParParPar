@@ -242,7 +242,9 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 			gf64_t *cursor = ctx->recip_pool;
 			/* cubic P3 (task 17): exclude the leaf level (child_deg==1) —
 			 * leaf reciprocals are never consumed (HQC eligibility
-			 * requires child_deg >= 96). Bound is num_levels-1 inclusive. */
+			 * requires child_deg >= 96). Loop bound stops at
+			 * num_levels-2 inclusive (i.e. skips child_lev == num_levels-1,
+			 * which is the leaf where child_deg == 1). */
 			for (size_t child_lev = 1; child_lev + 1 < num_levels; child_lev++) {
 				const size_t child_deg = numRecoveryPadded >>
 				                          child_lev;
