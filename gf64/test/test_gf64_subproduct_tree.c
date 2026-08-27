@@ -239,6 +239,59 @@ static int tree_storage_size(const SubproductTree *t) {
 	return total;
 }
 
+/* Cubic P2 review: with N=1024 the OMP gate threshold
+ *   parent_count * child_deg^2 >= 2^20
+ * never fires (at the deepest levels child_deg is at most 2^9 so the
+ * product tops out at ~10^6 < 2^20, and the leaf level has child_deg=1),
+ * so the serial/parallel comparison at N=1024 was two identical
+ * serial builds and could not detect an OMP-race regression. Add a
+ * second sub-test at N=8192 (13 levels, child_deg up to 2^12 = 4096,
+ * so the level at child_deg=2^10 already has 8 parents × 2^20 ops =
+ * 8M >= 2^20 — the gate fires for ~3 levels). */
+static void test_mt_build_parity_large(void) {
+	const size_t N = 8192;
+	const int num_trials = 5;
+	int all_ok = 1;
+	const int saved_nthreads = omp_get_max_threads();
+	for (int trial = 0; trial < num_trials; trial++) {
+		g_rng = 0xC0DEC0DE00000000ULL ^ (uint64_t)trial ^ 0xA5A50000ULL;
+
+		gf64_t *points = (gf64_t *)malloc(N * sizeof(gf64_t));
+		for (size_t i = 0; i < N; i++) points[i] = splitmix64_next();
+
+		omp_set_num_threads(1);
+		SubproductTree t_serial;
+		gf64_subproduct_tree_build(points, N, &t_serial);
+
+		omp_set_num_threads(4);
+		SubproductTree t_parallel;
+		gf64_subproduct_tree_build(points, N, &t_parallel);
+
+		const size_t sz_serial   = tree_storage_size(&t_serial);
+		const size_t sz_parallel = tree_storage_size(&t_parallel);
+		int ok = (sz_serial == sz_parallel) &&
+		         (memcmp(t_serial.storage, t_parallel.storage,
+		                 sz_serial * sizeof(gf64_t)) == 0);
+		if (!ok) {
+			printf("    LARGE trial=%d sz_serial=%zu sz_parallel=%zu\n",
+			       trial, sz_serial, sz_parallel);
+			all_ok = 0;
+		}
+
+		gf64_subproduct_tree_free(&t_serial);
+		gf64_subproduct_tree_free(&t_parallel);
+		free(points);
+	}
+
+	omp_set_num_threads(saved_nthreads);
+
+	if (all_ok) {
+		pass("multi-threaded tree build (N=8192, OMP gate engages) bit-equal to serial across 5 trials");
+	} else {
+		fail("multi-threaded tree build (N=8192) diverged from serial in at least one trial");
+	}
+}
+
 static void test_mt_build_parity(void) {
 	const size_t N = 1024;
 	const int num_trials = 10;
@@ -305,6 +358,7 @@ int main(void) {
 	test_singleton();
 	test_full_tree_1024();
 	test_mt_build_parity();
+	test_mt_build_parity_large();
 	printf("\nSummary: %d passed, %d failed\n", g_passed, g_failed);
 	return g_failed == 0 ? 0 : 1;
 }

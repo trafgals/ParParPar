@@ -189,8 +189,18 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 			 * result is bit-equal to the serial path regardless of
 			 * execution order. */
 			#pragma omp parallel for schedule(dynamic, 16) \
+				/* cubic P2 review (32-bit overflow): cast one operand to
+				 * uint64_t before multiplication — on supported 32-bit
+				 * POSIX builds size_t is 32 bits and
+				 * `parent_count * child_deg * child_deg` overflows before
+				 * the threshold comparison, leaving the most expensive
+				 * tree levels serial. With (uint64_t) upcast the full
+				 * product is computed in 64 bits and the comparison is
+				 * exact. The threshold 1u<<20 (= 2^20 = 1048576) is the
+				 * total multiplies budget per level; <= 32-bit POSIX
+				 * never reaches this at any realistic N. */ \
 				if(parent_count >= 2 && \
-				   parent_count * (size_t)child_deg * (size_t)child_deg >= (1u << 20))
+				   (uint64_t)parent_count * child_deg * child_deg >= (1ull << 20))
 #endif
 			for (size_t i = 0; i < parent_count; i++) {
 				gf64_t *left   = child_base + (2 * i)     * (child_deg + 1);
