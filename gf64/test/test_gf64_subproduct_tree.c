@@ -243,6 +243,13 @@ static void test_mt_build_parity(void) {
 	const size_t N = 1024;
 	const int num_trials = 10;
 	int all_ok = 1;
+	/* cubic P3: capture the pre-test thread count so the reset at the
+	 * end restores whatever OMP_NUM_THREADS/environment value was in
+	 * effect before this test pinned it to 1 and 4. omp_get_max_threads()
+	 * inside the loop would read the post-pinned value and re-pin the
+	 * process at 4 threads for any later multi-threaded tests in this
+	 * process. */
+	const int saved_nthreads = omp_get_max_threads();
 	for (int trial = 0; trial < num_trials; trial++) {
 		/* Deterministic per-trial seed. */
 		g_rng = 0xC0DEC0DE00000000ULL ^ (uint64_t)trial;
@@ -283,7 +290,7 @@ static void test_mt_build_parity(void) {
 	}
 
 	/* Reset to default to avoid leaking the value to other tests. */
-	omp_set_num_threads(omp_get_max_threads());
+	omp_set_num_threads(saved_nthreads);
 
 	if (all_ok) {
 		pass("multi-threaded tree build bit-equal to serial across 10 trials (OMP_NUM_THREADS=1 vs 4, N=1024)");
