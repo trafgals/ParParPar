@@ -14,7 +14,7 @@ for t in test test_all test_gf64_mul_avx512 test_gf64_elem_mul test_gf64_square 
          test_gf64_fenger_kernel test_gf64_fenger_pipeline test_gf64_fenger_padded \
          test_gf64_invmod_mod_parity test_gf64_divmod_parity test_gf64_interp_parity \
          test_gf64_additive_fft_hqc2026 test_gf64_mul_batch_shared test_gf64_region_mularr \
-         test_gf64_fenger_batch test_gf64_interleaved_batch test_gf64_poly_mul_internal_dispatch; do
+         test_gf64_fenger_batch test_gf64_fenger_prepare_batch test_gf64_fenger_threads test_gf64_interleaved_batch test_gf64_poly_mul_internal_dispatch; do
 	if [ ! -x "./$t" ]; then
 		echo "MISSING: $t (build it first)"
 		SUITE_FAILED=1

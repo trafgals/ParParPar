@@ -888,6 +888,21 @@ void GF64Controller::ComputeRecoveryBlocks(
 		}
 	}
 
+	// Issue #59 T7-verify: PAR3_FENGER_THREADS env override. Mirrors the
+	// same override in ComputeRecoveryBlocksFenger — for the legacy
+	// matvec path. When set to a positive integer N, forces numThreads=N
+	// (subject to no upper cap; legacy path doesn't shard by B-size).
+	// Set to 0 or unset = keep the existing auto-detect path.
+	{
+		const char *fenger_env = std::getenv("PAR3_FENGER_THREADS");
+		if (fenger_env != nullptr && *fenger_env != '\0') {
+			int forced = std::atoi(fenger_env);
+			if (forced > 0) {
+				numThreads = forced;
+			}
+		}
+	}
+
 	if (numThreads <= 0) {
 		numThreads = (int)GetEffectiveCpuCount();
 		if (numThreads <= 0) numThreads = 1;
