@@ -249,19 +249,21 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 				const size_t child_stride = child_deg + 1;
 				const gf64_t *level_data = ctx->tree_y.level_data[child_lev];
 				const size_t num_children = (size_t)1 << child_lev;
+				/* cubic P2 (task 18): allocate rev once per level, reuse across
+				 * num_children iterations. Saves num_children-1 mallocs per
+				 * level — at R=32768 the deepest levels have 16384 children. */
+				gf64_t *rev = (gf64_t *)malloc(child_stride * sizeof(gf64_t));
+				if (rev == NULL) abort();
 				for (size_t i = 0; i < num_children; i++) {
 					const gf64_t *p = level_data + i * child_stride;
-					gf64_t *rev = (gf64_t *)malloc(child_stride *
-					                               sizeof(gf64_t));
-					if (rev == NULL) abort();
 					for (size_t k = 0; k <= child_deg; k++) {
 						rev[k] = p[child_deg - k];
 					}
 					gf64_poly_invmod(rev, child_deg, child_deg,
 					                  cursor);
-					free(rev);
 					cursor += child_deg;
 				}
+				free(rev);
 			}
 		} else {
 			ctx->recip_pool = NULL;
