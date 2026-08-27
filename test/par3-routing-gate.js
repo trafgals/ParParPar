@@ -268,6 +268,24 @@ withEnv({ PAR3_GF64_USE_FENGER: '0', PAR3_FENGER_MIN_R: undefined }, function ()
 		'PAR3_GF64_USE_FENGER=0 disables fenger (N=65536,R=8192 -> ' + d.kernel + ' instead of fenger)');
 });
 
+// cubic P2 (task 12): _costBary / decideRecoveryKernel must honor PAR3_BF64_MIN_INPUTS
+// (matches legacy _dispatchRecovery env-read at line 302). With a raised threshold
+// of 20000, a shape at N=15000 below default 10000 -> matvec but expected to
+// flip routing when N is below 20000 — actually the inverse: at N=15000, raising
+// the threshold is no-op (still < 10000? no — 15000 > 10000 so default would
+// allow barycentric). To verify the env actually tightens, set threshold lower
+// so N=15000 < 15000 = no — pick a clean inverted test: at N=15000 with default
+// threshold 10000, bary is eligible; with threshold 20000, 15000 < 20000 so
+// bary is NOT eligible.
+withEnv({ PAR3_BF64_MIN_INPUTS: '20000', PAR3_GF64_USE_FENGER: undefined, PAR3_FENGER_MIN_R: undefined }, function () {
+	// Pick a non-pow2 large R so fenger is ineligible, and small enough blockSize
+	// for matvec+coeff-matrix to be infeasible (8192*15000*8 = 960 MiB > 128 MiB cap);
+	// then barycentric should also be ineligible because N=15000 < new threshold 20000.
+	var d = decideRecoveryKernel(15000, 100, 4096, makeBinding());
+	check(d.baryEligible === false,
+		'PAR3_BF64_MIN_INPUTS=20000 tightens BARY threshold (N=15000 should be ineligible at threshold 20000; got eligible=' + d.baryEligible + ')');
+});
+
 // ============================================================================
 // Section 3 — cost-model invariants (monotonicity, fenger override)
 // ============================================================================
