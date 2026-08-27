@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <omp.h>
 
 #include "../gf64_global.h"
 #include "../gf64_subproduct.h"
@@ -253,12 +254,12 @@ static void test_mt_build_parity(void) {
 		}
 
 		/* Build with OMP_NUM_THREADS=1 (serial path). */
-		setenv("OMP_NUM_THREADS", "1", 1);
+		omp_set_num_threads(1);
 		SubproductTree t_serial;
 		gf64_subproduct_tree_build(points, N, &t_serial);
 
 		/* Build with OMP_NUM_THREADS=4 (parallel path, 4-way race). */
-		setenv("OMP_NUM_THREADS", "4", 1);
+		omp_set_num_threads(4);
 		SubproductTree t_parallel;
 		gf64_subproduct_tree_build(points, N, &t_parallel);
 
@@ -282,7 +283,7 @@ static void test_mt_build_parity(void) {
 	}
 
 	/* Reset to default to avoid leaking the value to other tests. */
-	unsetenv("OMP_NUM_THREADS");
+	omp_set_num_threads(omp_get_max_threads());
 
 	if (all_ok) {
 		pass("multi-threaded tree build bit-equal to serial across 10 trials (OMP_NUM_THREADS=1 vs 4, N=1024)");
