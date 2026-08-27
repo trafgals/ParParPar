@@ -120,9 +120,9 @@ function grid(gridName, cases) {
         threw = true;
         const ok = /RangeError|exceeds/.test(e.message);
         if (ok) console.log('  PASS  adversarial overflow throws RangeError (msg: ' + e.message + ')');
-        else { console.log('  FAIL  adversarial overflow threw but wrong error: ' + e.message); failures.push('overflow'); }
+        else { console.log('  FAIL  adversarial overflow threw but wrong error: ' + e.message); fail++; }
     }
-    if (!threw) { console.log('  FAIL  adversarial numRecovery=2^33 * blockSize=2^32 did not throw'); failures.push('overflow'); }
+    if (!threw) { console.log('  FAIL  adversarial numRecovery=2^33 * blockSize=2^32 did not throw'); fail++; }
 }
 
 grid('numRecovery', [
