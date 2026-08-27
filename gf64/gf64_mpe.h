@@ -348,7 +348,9 @@ typedef struct {
 } gf64_arena_t;
 
 /* Allocate `words` gf64_t words for the arena. Returns 0 on success,
- * nonzero on allocation failure (arena left zeroed). */
+ * nonzero on allocation failure (arena left zeroed). Words exceeding
+ * SIZE_MAX/sizeof(gf64_t) is treated as failure (returns 1) so the
+ * size_t multiplication never wraps. */
 int  gf64_arena_init(gf64_arena_t *a, size_t words);
 void gf64_arena_free(gf64_arena_t *a);
 size_t gf64_arena_mark(const gf64_arena_t *a);

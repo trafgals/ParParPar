@@ -234,6 +234,7 @@ int gf64_arena_init(gf64_arena_t *a, size_t words) {
 	a->cap = 0;
 	a->used = 0;
 	if (words == 0) return 1;
+	if (words > SIZE_MAX / sizeof(gf64_t)) return 1;
 	a->data = (gf64_t *)malloc(words * sizeof(gf64_t));
 	if (a->data == NULL) return 1;
 	a->cap = words;
