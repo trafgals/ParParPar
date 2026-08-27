@@ -161,8 +161,8 @@ ParParPar automatically selects the fastest available SIMD instructions (AVX-512
 | `PAR3_AVX512_FORCE` | `off` | Set to `2` to unconditionally force AVX-512 execution, bypassing workload size downclock heuristics. |
 | `PAR3_GF64_PARALLEL_HASH` | `on` | Enables parallel BLAKE3 hashing across worker threads. Set to `0` for single-threaded debugging. |
 | `PAR3_GF64_USE_FENGER` | `on` | Enables the Fenger Toeplitz pipeline for accelerated matrix-vector recovery on power-of-two geometries. |
-| `PAR3_FENGER_THREADS` | `auto` | Pin the Fenger multi-thread execute to a specific thread count (positive integer). Bypasses the affinity-aware `GetEffectiveCpuCount` fallback. Useful for deterministic thread-race parity tests and reproducible perf measurement. Cap of 32. |
-| `PAR3_SIMULATED_BUFFER_CAP` | `0` (off) | Inject a synthetic V8 Buffer cap (bytes) to exercise the chunked XOR-combine path on ordinary hardware — REC-body byte-equality is asserted at every caps in `[32768, 65536, 131072, 262144, 1048576]`. Set to `0` to disable. Useful for CI-only regression tests of the chunked-input path (issue #91). |
+| `PAR3_FENGER_THREADS` | `auto` | Pin the Fenger multi-thread execute to a specific thread count (positive integer). Bypasses the affinity-aware `GetEffectiveCpuCount` fallback. Useful for deterministic thread-race parity tests and reproducible perf measurement. The 32-thread cap applies to the auto-detected value; a forced value is clamped to `blockSize64` (and `≥ 1`) at the call site to prevent over-subscription. |
+| `PAR3_SIMULATED_BUFFER_CAP` | `0` (off) | Inject a synthetic V8 Buffer cap (bytes) to exercise the chunked XOR-combine path on ordinary hardware — REC-body byte-equality is asserted at every caps in `[32768, 50000, 65536, 131072, 262144, 1048576]`. Set to `0` to disable. Useful for CI-only regression tests of the chunked-input path (issue #91). |
 
 ---
 
