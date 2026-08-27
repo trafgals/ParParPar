@@ -388,9 +388,19 @@ console.log('\n--- Section 5: dispatchRecovery contract unchanged ---');
 withEnv({ PAR3_GF64_USE_FENGER: undefined, PAR3_FENGER_MIN_R: undefined }, function () {
 	var binding = makeBinding();
 	// N=2^18, R=8192 -> dispatchRecovery picks fenger (R >= FENGER_MIN_R).
-	var result = dispatchRecovery(binding, null, null, 262144, 8192, 4096, 0, 0n, 0);
+	// cubic P1: fenger path dereferences inputs.length BEFORE the mock binding
+	// is reached (lib/par3gen.js:275), so null inputs crashed the dispatch.
+	// Buffer.alloc(0) clears that gate (0 <= inputCap) for the mock binding.
+	var result = dispatchRecovery(binding, Buffer.alloc(0), Buffer.alloc(0), 262144, 8192, 4096, 0, 0n, 0);
 	check(binding.calls[binding.calls.length - 1] === 'fenger' && result === 'fenger-result',
 		'dispatchRecovery N=2^18,R=8192 still routes to fenger (R >= FENGER_MIN_R; got: ' + binding.calls[binding.calls.length - 1] + ')');
+
+	// Same code shape, fenger-ineligible (R=4096 < FENGER_MIN_R). Exercises
+	// that the gate no longer crashes on a non-fenger-eligible shape; routes
+	// to barycentric (N=262144 > BARY_MIN_INPUTS=10000, blockSize%8==0).
+	var result2 = dispatchRecovery(binding, Buffer.alloc(0), Buffer.alloc(0), 262144, 4096, 4096, 0, 0n, 0);
+	check(binding.calls[binding.calls.length - 1] === 'barycentric' && result2 === 'barycentric-result',
+		'dispatchRecovery N=2^18,R=4096 falls through fenger (R < FENGER_MIN_R) to barycentric; got: ' + binding.calls[binding.calls.length - 1]);
 });
 
 // ============================================================================
