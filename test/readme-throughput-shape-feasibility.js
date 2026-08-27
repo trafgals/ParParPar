@@ -131,6 +131,19 @@ function trackFetch(label, r) {
 
 	console.log('Found ' + rows32g.length + ' 32G row(s) and ' + rows64g.length + ' 64G row(s)');
 
+	// Contract precondition (cubic P2 #1, PR #102): the test must FAIL if
+	// either row is missing from the README. Without this guard, the
+	// per-row forEach assertions would silently run zero times and the
+	// test would exit 0 even if both rows were removed from the table.
+	if (rows32g.length < 1) {
+		console.error('FAIL: no 32G/524288 row found in the README throughput table (the contract has no rows to check)');
+		process.exit(1);
+	}
+	if (rows64g.length < 1) {
+		console.error('FAIL: no 64G/1048576 row found in the README throughput table (the contract has no rows to check)');
+		process.exit(1);
+	}
+
 	var failed = 0;
 
 	// 2. Per-row assertions.
@@ -148,14 +161,18 @@ function trackFetch(label, r) {
 	}
 
 	// 32G assertions:
-	//   - Kernel label identifies Barycentric (cost-model dispatch at R=8 < FENGER_MIN_R=8192)
-	//   - Mentions peak RSS
+	//   - Kernel label explicitly identifies Barycentric (NOT the bare
+	//     word "kernel" or "FENGER" — see cubic P2 #2 PR #102; the label
+	//     must name the actual kernel because that's what tells readers
+	//     why R=8 doesn't hit the Fenger fast-path)
+	//   - Mentions peak RSS (anchored on "peak" + "RSS" so a note with
+	//     "GiB" alone can't pass — see cubic P2 #3 PR #102)
 	//   - Mentions pagefile (Windows auto-grow was the headline enabler)
 	//   - Does NOT contain "Fenger fast-path" (Fenger is the WRONG kernel at R=8)
 	//   - Does NOT contain "swap-bound" (alloc pool fits in RAM)
-	var reBary32 = /\b(Barycentric|barycentric|cost[- ]model|FENGER|kernel)\b/i;
-	var reRss32 = /\b(RSS|peak|GiB|32\.25)\b/;
-	var rePagefile32 = /\b(pagefile|swap|memory wall|alloc pool|pagefile)\b/i;
+	var reBary32 = /\b(Barycentric|barycentric|cost[- ]model)\b/i;
+	var reRss32 = /\b(peak\s+RSS|peak RSS|RSS)\b/i;
+	var rePagefile32 = /\b(pagefile|swap|memory wall|alloc pool)\b/i;
 	var reNoFenger32 = /\bFenger fast-path\b/;
 	var reNoSwapBound32 = /\bswap-bound\b/;
 
@@ -168,14 +185,15 @@ function trackFetch(label, r) {
 	});
 
 	// 64G assertions:
-	//   - Kernel label identifies Barycentric
-	//   - Mentions peak RSS
+	//   - Kernel label explicitly identifies Barycentric (NOT the bare
+	//     word "kernel" or "FENGER" — see cubic P2 #2 PR #102)
+	//   - Mentions peak RSS (anchored on "peak" + "RSS" — see cubic P2 #3)
 	//   - Mentions pagefile (Windows auto-grow to 173 GiB was critical)
 	//   - MUST mention "swap-bound" (the alloc pool exceeds 64 GiB physical RAM)
 	//   - MUST mention "memory wall" or equivalent (the binding constraint)
 	//   - Does NOT contain "Fenger fast-path"
-	var reBary64 = /\b(Barycentric|barycentric|cost[- ]model|FENGER|kernel)\b/i;
-	var reRss64 = /\b(RSS|peak|GiB|48\.34)\b/;
+	var reBary64 = /\b(Barycentric|barycentric|cost[- ]model)\b/i;
+	var reRss64 = /\b(peak\s+RSS|peak RSS|RSS)\b/i;
 	var rePagefile64 = /\b(pagefile|swap|swap-bound|memory wall|alloc pool)\b/i;
 	var reSwapBound64 = /\bswap-bound\b/i;
 	var reMemoryWall64 = /\b(memory wall|exceeds)\b/i;
