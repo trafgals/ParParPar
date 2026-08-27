@@ -127,7 +127,9 @@ int main(void) {
 	 * out: their prepares alone are impractical on WSL2, and the P2
 	 * gate ("10G/100k <= 10 min") is JS-pipeline-bound anyway (the
 	 * ~27 MB/s env ceiling measured in P1). */
-	bench_shape("medium",     1u << 14, 1u << 9, 64, 0, 1u << 20);
+	bench_shape("medium B=64", 1u << 14, 1u << 9, 64, 0, 1u << 20);
+	bench_shape("medium B=32", 1u << 14, 1u << 9, 32, 0, 1u << 20);
+	bench_shape("medium B=16", 1u << 14, 1u << 9, 16, 0, 1u << 20);
 	bench_shape("1G/10K-ish", 1u << 18, 1u << 10, 8, 0, 1u << 20);
 	return 0;
 }
