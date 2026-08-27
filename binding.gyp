@@ -245,13 +245,22 @@
             "gf64/gf64_solve.c"
           ],
 "include_dirs": ["gf64"],
-      "cflags": ["-fmax-include-depth=1024", "-mno-avx512f",
-                 "-fopenmp", "-DGF64_OPENMP_PARALLEL_PREPARE"],
-      "ldflags": ["-fopenmp"],
+      "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
           "cxxflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
           "conditions": [
             ["OS!=\"win\"", {
-              "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
+              # POSIX: enable OpenMP-driven gf64_subproduct parallel-for.
+              # -fopenmp drives the runtime; -DGF64_OPENMP_PARALLEL_PREPARE
+              # toggles the parallel-for / TLS cache code paths on. These
+              # were previously at the target-level cflags (line ~248 before
+              # this fix), but that put them on the MSVC path too where
+              # cl.exe ignores -fopenmp (warning D9002), the runtime never
+              # links, and the define still wires the OMP code path on a
+              # no-OMP build — broken at link time. POSIX-only keeps
+              # Windows on the pre-680a494 behavior (serial subproduct).
+              "cflags": ["-fmax-include-depth=1024", "-mno-avx512f",
+                         "-fopenmp", "-DGF64_OPENMP_PARALLEL_PREPARE"],
+              "ldflags": ["-fopenmp"],
               "cxxflags": ["-std=c++11", "-fmax-include-depth=1024", "-fpermissive", "-mno-avx512f"],
               "cflags_cc": ["-fpermissive"]
             }],
