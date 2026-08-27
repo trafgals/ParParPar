@@ -171,16 +171,26 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 			gf64_t *child_base  = out->level_data[child_lev];
 
 #ifdef GF64_OPENMP_PARALLEL_PREPARE
-			/* Work-proportional chunking: gate OMP on multiplication
-			 * work (parent_count * child_deg) rather than parent_count
-			 * alone — cubic P2 (task 16). The cheapest levels (small
-			 * child_deg × many parents) stay serial; the expensive
-			 * near-root levels (large child_deg × few parents) get
-			 * parallelized. gf64_poly_mul is deterministic on the same
-			 * inputs, so the result is bit-equal to the serial path
-			 * regardless of execution order. */
+			/* Work-proportional chunking: gate OMP on per-iteration
+			 * multiplication cost (O(child_deg^2)) and total level
+			 * work, not on parent_count * child_deg alone — that product
+			 * equals N/2 at every level and parallelizes trivial leaf
+			 * products while leaving root-level single-iteration
+			 * launches as 1-thread teams (cubic P2 review).
+			 *
+			 * Threshold rationale: ~100k multiplies ≈ 100 µs of work,
+			 * the ballpark OMP team-spin-up cost; one level needs at
+			 * least 2 iterations (parent_count >= 2) for a parallel
+			 * region to deliver more than serial. Total level cost
+			 * >= 2^20 (~1M) ops keeps the threshold aligned with the
+			 * big-tree (N >= 2^20) geometry where the speedup matters.
+			 *
+			 * gf64_poly_mul is deterministic on the same inputs, so the
+			 * result is bit-equal to the serial path regardless of
+			 * execution order. */
 			#pragma omp parallel for schedule(dynamic, 16) \
-				if(parent_count * child_deg > 4096)
+				if(parent_count >= 2 && \
+				   parent_count * (size_t)child_deg * (size_t)child_deg >= (1u << 20))
 #endif
 			for (size_t i = 0; i < parent_count; i++) {
 				gf64_t *left   = child_base + (2 * i)     * (child_deg + 1);
