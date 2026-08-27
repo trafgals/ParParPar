@@ -240,7 +240,10 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 			 * 2^child_lev child polys, each of degree R/2^child_lev
 			 * (so stride child_deg+1 in level_data[child_lev]). */
 			gf64_t *cursor = ctx->recip_pool;
-			for (size_t child_lev = 1; child_lev < num_levels; child_lev++) {
+			/* cubic P3 (task 17): exclude the leaf level (child_deg==1) —
+			 * leaf reciprocals are never consumed (HQC eligibility
+			 * requires child_deg >= 96). Bound is num_levels-1 inclusive. */
+			for (size_t child_lev = 1; child_lev + 1 < num_levels; child_lev++) {
 				const size_t child_deg = numRecoveryPadded >>
 				                          child_lev;
 				const size_t child_stride = child_deg + 1;
