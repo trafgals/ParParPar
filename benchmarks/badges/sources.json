@@ -66,6 +66,20 @@
       "message": "523MB/s",
       "color": "brightgreen",
       "detail": "PAR3 create, 16 GiB / 262144 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Requires Node 22+ (V8 Buffer cap lifted; Node 20's 4 GiB single-Buffer limit crashes Buffer.alloc(16 GiB)). Measured 2026-08-28 on Node 22.22.3 with MSVC addon rebuilt for ABI=127: 3 runs, per-run 602.46 / 523.10 / 512.35 MB/s; median 523.10 / mean 545.97 MB/s (dropping run 1 as JIT-warmup outlier: 2 measured runs 523.10 / 512.35, mean 517.73, stdev 5.37 = 1.0%). Wall-clock 141 s (3 runs end-to-end, ~47 s per run). Peak RSS 32.20 GiB at steady state (run 1 = 16.23 GiB JIT-warmup outlier; the +16 GiB alloc pool plus working buffers exceed V8's 32-bit compressed-pointer heap range). Supersedes the architectural-limit framing in #91 — the path runs cleanly on Node 22"
+    },
+    {
+      "id": "par3-32g-524288-zen4",
+      "label": "",
+      "message": "552MB/s",
+      "color": "brightgreen",
+      "detail": "PAR3 create, 32 GiB / 524288 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 552.39 MB/s, peak RSS 32.25 GiB, wall-clock 91 s end-to-end. Windows pagefile auto-grew 30 GiB → 116 GiB to accommodate the alloc pool + working buffers. Alloc pool (32 GiB + 64 KiB) fits in 63 GiB physical RAM with minimal swap pressure."
+    },
+    {
+      "id": "par3-64g-1048576-zen4",
+      "label": "",
+      "message": "176MB/s",
+      "color": "yellow",
+      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 176.69 MB/s, peak RSS 48.34 GiB, wall-clock 434 s end-to-end (source 60 s + create 371 s + cleanup 3 s). **SWAP-BOUND**: alloc pool (64 GiB + 64 KiB) EXCEEDS the 63 GiB physical RAM on this host. Windows pagefile auto-grew to 173 GiB to fit; the create phase thrashes the alloc pool out to swap and back, accounting for ~340 s of the 371 s create time. The 176 MB/s number reflects swap-fault overhead on a 63 GiB-RAM host; on a host with ≥128 GiB RAM (alloc pool fully resident), expect ~400-500 MB/s based on the 32G number (552 MB/s) × 2x scale penalty for kernel work."
     }
   ]
 }
