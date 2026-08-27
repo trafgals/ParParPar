@@ -72,14 +72,14 @@
       "label": "",
       "message": "552MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 32 GiB / 524288 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 552.39 MB/s, peak RSS 32.25 GiB, wall-clock 91 s end-to-end. Windows pagefile auto-grew 30 GiB → 116 GiB to accommodate the alloc pool + working buffers. Alloc pool (32 GiB + 64 KiB) fits in 63 GiB physical RAM with minimal swap pressure."
+      "detail": "PAR3 create, 32 GiB / 524288 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 552.39 MB/s, peak RSS 32.25 GiB, wall-clock 91 s end-to-end. Windows pagefile auto-grew 30 GiB → 116 GiB to accommodate the input pool (32 GiB + 64 KiB, fits in 63 GiB physical RAM) + working buffers with minimal swap pressure."
     },
     {
       "id": "par3-64g-1048576-zen4",
       "label": "",
       "message": "176MB/s",
       "color": "yellow",
-      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 176.69 MB/s, peak RSS 48.34 GiB, wall-clock 434 s end-to-end (source 60 s + create 371 s + cleanup 3 s). **SWAP-BOUND**: alloc pool (64 GiB + 64 KiB) EXCEEDS the 63 GiB physical RAM on this host. Windows pagefile auto-grew to 173 GiB to fit; the create phase thrashes the alloc pool out to swap and back, accounting for ~340 s of the 371 s create time. The 176 MB/s number reflects swap-fault overhead on a 63 GiB-RAM host; on a host with ≥128 GiB RAM (alloc pool fully resident), expect ~400-500 MB/s based on the 32G number (552 MB/s) × 2x scale penalty for kernel work."
+      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 176.69 MB/s, peak RSS 48.34 GiB, wall-clock 434 s end-to-end (source 60 s + create 371 s + cleanup 3 s). **SWAP-BOUND**: input pool (64 GiB + 64 KiB) EXCEEDS the 63 GiB physical RAM on this host. Windows pagefile auto-grew to 173 GiB at peak to fit; the create phase thrashes the input pool through swap, accounting for ~340 s of the 371 s create time. The 176 MB/s number reflects swap-fault overhead on a 63 GiB-RAM host; on a host with ≥128 GiB RAM (input pool fully resident), expect ~400-500 MB/s — the 32 GiB baseline (552 MB/s) with a ~2× kernel scale penalty for the 2× input set."
     }
   ]
 }
