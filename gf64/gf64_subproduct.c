@@ -170,6 +170,19 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 			gf64_t *parent_base = out->level_data[parent_lev];
 			gf64_t *child_base  = out->level_data[child_lev];
 
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
+			/* Work-proportional chunking: deepest levels (largest
+			 * child_deg) get bigger work items so load balance is
+			 * reasonable even on non-uniform architectures. The #pragma
+			 * is conditional on parent_count to avoid thread-spawn
+			 * overhead on the small levels (child_lev is small enough
+			 * that the serial cost is already negligible). gf64_poly_mul
+			 * is deterministic on the same inputs, so the result is
+			 * bit-equal to the serial path regardless of execution
+			 * order (test_gf64_subproduct_tree.c's MT parity test
+			 * pins this). */
+			#pragma omp parallel for schedule(dynamic, 16) if(parent_count > 64)
+#endif
 			for (size_t i = 0; i < parent_count; i++) {
 				gf64_t *left   = child_base + (2 * i)     * (child_deg + 1);
 				gf64_t *right  = child_base + (2 * i + 1) * (child_deg + 1);

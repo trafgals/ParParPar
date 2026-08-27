@@ -160,8 +160,15 @@ test_gf64_region_mularr: $(TEST_GF64_REGION_MULARR_SOURCES) $(GF64_SOURCES)
 # gf64_invert_ita.c (T5) is required because gf64_mpe.c calls
 # gf64_invert_ita_one for polynomial modular inverse's leading-coeff invert.
 # Needs AVX-512F + VPCLMULQDQ at runtime.
+# Issue #59 T8: -fopenmp + -DGF64_OPENMP_PARALLEL_PREPARE enable the
+# multi-threaded tree build guarded by GF64_OPENMP_PARALLEL_PREPARE
+# in gf64_subproduct.c. Only this test is built with the flag, so the
+# other tests are unaffected. The MT parity test (test_mt_build_parity
+# in test_gf64_subproduct_tree.c) builds the tree twice — once with
+# OMP_NUM_THREADS=1, once with OMP_NUM_THREADS>1 — and asserts the two
+# trees are bit-identical.
 test_gf64_subproduct_tree: $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) $(GF64_SOURCES)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) $(GF64_SOURCES)
+	$(CC) $(CFLAGS) -fopenmp -DGF64_OPENMP_PARALLEL_PREPARE $(LDFLAGS) -o $@ $(TEST_GF64_SUBPRODUCT_TREE_SOURCES) $(GF64_SOURCES) -lpthread
 
 # Barycentric weight extraction test (par3-cauchy-fft-kernel T7).
 # gf64_barycentric.c (T7) depends on the subproduct tree (T6) and the

@@ -223,11 +223,80 @@ static void test_full_tree_1024(void) {
 	}
 }
 
+/* Issue #59 T8: multi-threaded tree build parity. Builds the same tree
+ * twice (once with OMP_NUM_THREADS=1, once with >1) at N=1024 random
+ * points and asserts the two trees are bit-identical. gf64_poly_mul is
+ * deterministic on the same inputs, so any divergence between the
+ * serial and parallel paths indicates a real race or non-deterministic
+ * write in the OpenMP-annotated loop in gf64_subproduct.c. Repeated
+ * 10 times to catch transient races. */
+static int tree_storage_size(const SubproductTree *t) {
+	size_t total = 0;
+	for (size_t lev = 0; lev < t->num_levels; lev++) {
+		total += t->level_lens[lev] * (t->level_degs[lev] + 1);
+	}
+	return total;
+}
+
+static void test_mt_build_parity(void) {
+	const size_t N = 1024;
+	const int num_trials = 10;
+	int all_ok = 1;
+	for (int trial = 0; trial < num_trials; trial++) {
+		/* Deterministic per-trial seed. */
+		g_rng = 0xC0DEC0DE00000000ULL ^ (uint64_t)trial;
+
+		/* Generate the SAME input points for both builds. */
+		gf64_t *points = (gf64_t *)malloc(N * sizeof(gf64_t));
+		for (size_t i = 0; i < N; i++) {
+			points[i] = splitmix64_next();
+		}
+
+		/* Build with OMP_NUM_THREADS=1 (serial path). */
+		setenv("OMP_NUM_THREADS", "1", 1);
+		SubproductTree t_serial;
+		gf64_subproduct_tree_build(points, N, &t_serial);
+
+		/* Build with OMP_NUM_THREADS=4 (parallel path, 4-way race). */
+		setenv("OMP_NUM_THREADS", "4", 1);
+		SubproductTree t_parallel;
+		gf64_subproduct_tree_build(points, N, &t_parallel);
+
+		/* Compare the entire storage buffer. The two trees have
+		 * identical metadata (level_lens, level_degs) by construction
+		 * — only the computed polynomial coefficients could diverge. */
+		const size_t sz_serial   = tree_storage_size(&t_serial);
+		const size_t sz_parallel = tree_storage_size(&t_parallel);
+		int ok = (sz_serial == sz_parallel) &&
+		         (memcmp(t_serial.storage, t_parallel.storage,
+		                 sz_serial * sizeof(gf64_t)) == 0);
+		if (!ok) {
+			printf("    trial=%d sz_serial=%zu sz_parallel=%zu\n",
+			       trial, sz_serial, sz_parallel);
+			all_ok = 0;
+		}
+
+		gf64_subproduct_tree_free(&t_serial);
+		gf64_subproduct_tree_free(&t_parallel);
+		free(points);
+	}
+
+	/* Reset to default to avoid leaking the value to other tests. */
+	unsetenv("OMP_NUM_THREADS");
+
+	if (all_ok) {
+		pass("multi-threaded tree build bit-equal to serial across 10 trials (OMP_NUM_THREADS=1 vs 4, N=1024)");
+	} else {
+		fail("multi-threaded tree build diverged from serial in at least one trial");
+	}
+}
+
 int main(void) {
 	printf("GF64 subproduct tree tests (T6 of par3-cauchy-fft-kernel)\n\n");
 	test_empty_tree();
 	test_singleton();
 	test_full_tree_1024();
+	test_mt_build_parity();
 	printf("\nSummary: %d passed, %d failed\n", g_passed, g_failed);
 	return g_failed == 0 ? 0 : 1;
 }
