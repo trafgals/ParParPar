@@ -244,8 +244,10 @@
             "gf64/gf64_invert_avx2.c",
             "gf64/gf64_solve.c"
           ],
-          "include_dirs": ["gf64"],
-          "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
+"include_dirs": ["gf64"],
+      "cflags": ["-fmax-include-depth=1024", "-mno-avx512f",
+                 "-fopenmp", "-DGF64_OPENMP_PARALLEL_PREPARE"],
+      "ldflags": ["-fopenmp"],
           "cxxflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
           "conditions": [
             ["OS!=\"win\"", {

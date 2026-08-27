@@ -3,6 +3,7 @@
 
 // ============================================================================
 // test/par3-chunked-inputs.js — T11 (issue #91) chunked-input path
+
 // CI regression test.
 //
 // Forces the chunked-input code path via PAR3_SIMULATED_BUFFER_CAP and
@@ -84,7 +85,7 @@ createWith(null, path.join(tmpDir, "base"), function(err1) {
 	var baseRecs = extractRecBodies(fs.readFileSync(path.join(tmpDir, "base.par3")));
 	if (baseRecs.length === 0) { fail("no REC bodies in base archive"); return done(); }
 
-	var caps = [32768, 65536, 131072, 262144, 1048576];
+	var caps = [32768, 65536, 131072, 262144, 1048576, 50000 /* not-mult-of-blockSize */];
 	var pending = caps.length;
 	var allOk = true;
 	caps.forEach(function(cap) {
@@ -101,7 +102,7 @@ createWith(null, path.join(tmpDir, "base"), function(err1) {
 				}
 			}
 			if (--pending === 0) {
-				if (allOk) pass("chunked REC bodies == unchunked for caps " + JSON.stringify(caps));
+				if (allOk) pass("chunked REC bodies == unchunked for caps " + JSON.stringify(caps) + " (incl. non-aligned 50000)");
 				return done();
 			}
 		});
