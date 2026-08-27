@@ -170,6 +170,38 @@ void gf64_subproduct_tree_build(const gf64_t *points, size_t N, SubproductTree *
 			gf64_t *parent_base = out->level_data[parent_lev];
 			gf64_t *child_base  = out->level_data[child_lev];
 
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
+			/* Work-proportional chunking: gate OMP on per-iteration
+			 * multiplication cost (O(child_deg^2)) and total level
+			 * work, not on parent_count * child_deg alone — that product
+			 * equals N/2 at every level and parallelizes trivial leaf
+			 * products while leaving root-level single-iteration
+			 * launches as 1-thread teams (cubic P2 review).
+			 *
+			 * Threshold rationale: ~100k multiplies ≈ 100 µs of work,
+			 * the ballpark OMP team-spin-up cost; one level needs at
+			 * least 2 iterations (parent_count >= 2) for a parallel
+			 * region to deliver more than serial. Total level cost
+			 * >= 2^20 (~1M) ops keeps the threshold aligned with the
+			 * big-tree (N >= 2^20) geometry where the speedup matters.
+			 *
+			 * gf64_poly_mul is deterministic on the same inputs, so the
+			 * result is bit-equal to the serial path regardless of
+			 * execution order. */
+			#pragma omp parallel for schedule(dynamic, 16) \
+				/* cubic P2 review (32-bit overflow): cast one operand to
+				 * uint64_t before multiplication — on supported 32-bit
+				 * POSIX builds size_t is 32 bits and
+				 * `parent_count * child_deg * child_deg` overflows before
+				 * the threshold comparison, leaving the most expensive
+				 * tree levels serial. With (uint64_t) upcast the full
+				 * product is computed in 64 bits and the comparison is
+				 * exact. The threshold 1u<<20 (= 2^20 = 1048576) is the
+				 * total multiplies budget per level; <= 32-bit POSIX
+				 * never reaches this at any realistic N. */ \
+				if(parent_count >= 2 && \
+				   (uint64_t)parent_count * child_deg * child_deg >= (1ull << 20))
+#endif
 			for (size_t i = 0; i < parent_count; i++) {
 				gf64_t *left   = child_base + (2 * i)     * (child_deg + 1);
 				gf64_t *right  = child_base + (2 * i + 1) * (child_deg + 1);

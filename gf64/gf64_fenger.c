@@ -20,15 +20,18 @@
  * (T8a). The product gives p(y_r) in O((N + R) log² (N + R)) per word.
  *
  * Field operations are delegated to gf64_mul_reference (scalar SSE2) and
- * gf64_invert_ita_one (T5). The AVX-512 swap-in is deferred; the
- * pipeline's call shape is independent of the field-multiplication
- * primitive.
+ * gf64_invert_ita_one (T5). Stages 4a and 4d (the per-word weighted-V'
+ * and divide-by-V(y_r) element-wise multiplies) use gf64_elem_mul, the
+ * ISA-dispatched wrapper from gf64_elem_mul.c — AVX-512 hosts run the
+ * clmul-Barrett lane primitive (8 elements per VPCLMULQDQ pair); AVX-2 /
+ * SSSE3 / scalar hosts fall back to gf64_mul_reference (issue #59 T3).
  * ============================================================================
  */
 
 #include "gf64_fenger.h"
 #include "gf64_additive_fft.h"
 #include "gf64_barycentric.h"
+#include "gf64_elem_mul.h"
 #include "gf64_invert_ita.h"
 #include "gf64_mpe.h"
 #include "gf64_mul.h"
@@ -68,6 +71,14 @@ struct gf64_fenger_ctx {
 	gf64_t *V_prime_inv;   /* 1/V'(x_c) for each input (barycentric weights;
 	                        * reused per word by the weights-aware interp) */
 	gf64_t *V_at_y_inv;    /* 1/V(y_r) for each r    */
+	/* T5 (issue #59): precomputed per-node reciprocals for the eval walk
+	 * over tree_y. Eliminates the per-batch gf64_poly_invmod calls inside
+	 * fenger_eval_recurse_batch (the reciprocals depend only on the tree,
+	 * which is fixed at prepare). Storage = (num_levels-1)*R/2 words ≈
+	 * R/2 * log2(R); at R=32k that's ~250 KiB (trivial vs the tree's
+	 * own ~20 MiB). NULL if num_levels <= 1 (R == 1, no internal nodes). */
+	gf64_t *recip_pool;
+	size_t  recip_pool_words;
 	size_t  N;             /* padded input count (power of 2)  */
 	size_t  R;             /* padded recovery count (power of 2) */
 	size_t  num_inputs_real;   /* real input blocks (< N when padded) */
@@ -155,8 +166,33 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 	ctx->V_prime_inv = bary;
 	ctx->V_prime = (gf64_t *)malloc(numInputsPadded * sizeof(gf64_t));
 	if (ctx->V_prime == NULL) abort();
-	for (size_t c = 0; c < numInputsPadded; c++) {
-		ctx->V_prime[c] = gf64_invert_ita_one(bary[c]);
+	/*
+	 * Issue #59 T2 (P2.2): invert V'(x_c) for each input via the AVX-512
+	 * 8-lane ZMM batch primitive gf64_invert_ita_batch when the host has a
+	 * fully functional VPCLMULQDQ+ZMM pipeline; otherwise fall through to
+	 * the scalar gf64_invert_ita_one loop. The batch primitive itself
+	 * dispatches the count % 8 tail to the scalar fallback inside
+	 * gf64_invert_ita_batch (gf64_invert_ita_avx512.c:121-124), so we
+	 * never round-down the input count.
+	 *
+	 * Mirrors the dispatch pattern in gf64_barycentric.c:208-212 (issue
+	 * #62/cubic-review 4914681432 P1): gate on gf64_has_vpclmulqdq (the
+	 * CPUID+XCR0+ZMM-probe-ANDed flag), NOT on gf64_current_method (the
+	 * PD2 workload-chosen method), so PD2 downclock downgrades do not
+	 * silently disable the batch path on hosts that genuinely support
+	 * the ISA.
+	 *
+	 * ISA fallback: on hosts without working AVX-512F+VPCLMULQDQ the
+	 * loop falls through to the scalar gf64_invert_ita_one path — the
+	 * bit-exact output is identical (verified by test_gf64_fenger_pipeline
+	 * and the new test_gf64_fenger_prepare_batch).
+	 */
+	if (gf64_has_vpclmulqdq) {
+		gf64_invert_ita_batch(ctx->V_prime, bary, numInputsPadded);
+	} else {
+		for (size_t c = 0; c < numInputsPadded; c++) {
+			ctx->V_prime[c] = gf64_invert_ita_one(bary[c]);
+		}
 	}
 
 	/* ---- V(y_r) for each recovery point (MPE on tree_y) ---- */
@@ -171,10 +207,71 @@ static gf64_fenger_ctx *gf64_fenger_prepare_core(
 
 	ctx->V_at_y_inv = (gf64_t *)malloc(numRecoveryPadded * sizeof(gf64_t));
 	if (ctx->V_at_y_inv == NULL) abort();
-	for (size_t r = 0; r < numRecoveryPadded; r++) {
-		ctx->V_at_y_inv[r] = gf64_invert_ita_one(V_at_y[r]);
+	/* Same dispatch as the V_prime loop above — see the comment there.
+	 * At N=262144/R=32768 (1G/262144/4KiB bench target shape) this loop
+	 * alone runs R=32768 scalar inversions of 63 squarings + 62 muls
+	 * each; the batch path drops the wall-time by the ZMM lane count. */
+	if (gf64_has_vpclmulqdq) {
+		gf64_invert_ita_batch(ctx->V_at_y_inv, V_at_y, numRecoveryPadded);
+	} else {
+		for (size_t r = 0; r < numRecoveryPadded; r++) {
+			ctx->V_at_y_inv[r] = gf64_invert_ita_one(V_at_y[r]);
+		}
 	}
 	free(V_at_y);
+
+	/* T5 (issue #59): precompute reciprocals of every internal child
+	 * polynomial in tree_y. The per-batch gf64_poly_invmod calls inside
+	 * the execute walk collapse to pointer dereferences. The execute
+	 * walk's per-node call to fenger_eval_recurse_batch computes the
+	 * reciprocals of BOTH children (P_L and P_R) at every internal
+	 * level, so we must store 2(R-1) reciprocals = (L-1)*R words
+	 * (~8 MiB at R=65536 - trivial vs the tree's ~20 MiB). */
+	{
+		const size_t num_levels = ctx->tree_y.num_levels;
+		if (num_levels > 1) {
+			const size_t total_words = (num_levels - 1) *
+			                            numRecoveryPadded;
+			ctx->recip_pool = (gf64_t *)malloc(total_words *
+			                                    sizeof(gf64_t));
+			if (ctx->recip_pool == NULL) abort();
+			ctx->recip_pool_words = total_words;
+			/* BFS over CHILD levels. At child_lev the tree has
+			 * 2^child_lev child polys, each of degree R/2^child_lev
+			 * (so stride child_deg+1 in level_data[child_lev]). */
+			gf64_t *cursor = ctx->recip_pool;
+			/* cubic P3 (task 17): exclude the leaf level (child_deg==1) —
+			 * leaf reciprocals are never consumed (HQC eligibility
+			 * requires child_deg >= 96). Loop bound stops at
+			 * num_levels-2 inclusive (i.e. skips child_lev == num_levels-1,
+			 * which is the leaf where child_deg == 1). */
+			for (size_t child_lev = 1; child_lev + 1 < num_levels; child_lev++) {
+				const size_t child_deg = numRecoveryPadded >>
+				                          child_lev;
+				const size_t child_stride = child_deg + 1;
+				const gf64_t *level_data = ctx->tree_y.level_data[child_lev];
+				const size_t num_children = (size_t)1 << child_lev;
+				/* cubic P2 (task 18): allocate rev once per level, reuse across
+				 * num_children iterations. Saves num_children-1 mallocs per
+				 * level — at R=32768 the deepest levels have 16384 children. */
+				gf64_t *rev = (gf64_t *)malloc(child_stride * sizeof(gf64_t));
+				if (rev == NULL) abort();
+				for (size_t i = 0; i < num_children; i++) {
+					const gf64_t *p = level_data + i * child_stride;
+					for (size_t k = 0; k <= child_deg; k++) {
+						rev[k] = p[child_deg - k];
+					}
+					gf64_poly_invmod(rev, child_deg, child_deg,
+					                  cursor);
+					cursor += child_deg;
+				}
+				free(rev);
+			}
+		} else {
+			ctx->recip_pool = NULL;
+			ctx->recip_pool_words = 0;
+		}
+	}
 
 	return ctx;
 }
@@ -269,14 +366,31 @@ void gf64_fenger_execute(
 	for (size_t w = w_start; w < w_end; w++) {
 		/* 4a: weighted values. Synthetic padded inputs (c >=
 		 * num_inputs_real) have zero DATA (the caller's buffer only
-		 * holds real blocks), so weight them 0 without reading `in`. */
-		for (size_t c = 0; c < N; c++) {
-			if (c < ctx->num_inputs_real) {
-				weighted[c] = gf64_mul_reference(in[c * B + w], ctx->V_prime[c]);
-			} else {
-				weighted[c] = 0;
-			}
+		 * holds real blocks), so weight them 0 without reading `in`.
+		 *
+		 * Issue #59 T3: strided gather into a contiguous slab, then a
+		 * contiguous element-wise mul. The gather is the same memory
+		 * traffic as the original per-element scalar mul load (one
+		 * word per c), but the mul is now ISA-dispatched: AVX-512
+		 * uses the clmul-Barrett lane primitive (8 elements per
+		 * VPCLMULQDQ pair), AVX-2 / SSSE3 / scalar fall back to
+		 * gf64_mul_reference. Bit-exact because the gather reads the
+		 * same value the scalar mul would have read, and the
+		 * contiguous mul is bit-exact to the scalar reference
+		 * (test_gf64_elem_mul.c).
+		 *
+		 * Padded region (c >= num_inputs_real) gets weighted[c] = 0
+		 * via memset; the subsequent mul reads V_prime[c] for all c
+		 * (a valid array index), but 0 * anything = 0, so the result
+		 * matches the original scalar code exactly. */
+		for (size_t c = 0; c < ctx->num_inputs_real; c++) {
+			weighted[c] = in[c * B + w];
 		}
+		if (ctx->num_inputs_real < N) {
+			memset(weighted + ctx->num_inputs_real, 0,
+			       (N - ctx->num_inputs_real) * sizeof(gf64_t));
+		}
+		gf64_elem_mul(weighted, weighted, ctx->V_prime, N);
 		/* 4b: interpolate to polynomial p_w of degree < N. Fenger is the
 		 * sanctioned consumer of the Bostan-Schost body, so it calls the
 		 * ungated weights-aware variant directly — the
@@ -289,9 +403,19 @@ void gf64_fenger_execute(
 		/* 4c: evaluate p_w at each recovery point. */
 		gf64_multi_point_eval(poly_p, deg_p, tree_y, p_at_y);
 		/* 4d: divide by V(y_r) — only real recovery rows are written
-		 * (synthetic padded rows would overflow the caller's buffer). */
-		for (size_t r = 0; r < ctx->num_recovery_real; r++) {
-			out[r * B + w] = gf64_mul_reference(p_at_y[r], ctx->V_at_y_inv[r]);
+		 * (synthetic padded rows would overflow the caller's buffer).
+		 *
+		 * Issue #59 T3: contiguous vectorized mul into a local slab,
+		 * then strided scatter to the caller's column-major buffer.
+		 * `p_at_y` is a private scratch slab (allocated above) that
+		 * is discarded at the end of this call, so aliasing it with
+		 * itself (out == a in gf64_elem_mul) is safe. */
+		if (ctx->num_recovery_real > 0) {
+			gf64_elem_mul(p_at_y, p_at_y, ctx->V_at_y_inv,
+			              ctx->num_recovery_real);
+			for (size_t r = 0; r < ctx->num_recovery_real; r++) {
+				out[r * B + w] = p_at_y[r];
+			}
 		}
 	}
 
@@ -506,12 +630,31 @@ static void fenger_interp_batch(
  * gf64_multi_point_eval); the caller (gf64_fenger_execute_batched)
  * routes deg_p >= R (and R == 1) through a per-word Horner fallback.
  */
+/* T5: look up the precomputed reciprocal of an internal child node in
+ * tree_y by (level, local index). The pool is laid out BFS over child
+ * levels: child_lev=1 first (R/2 words), then child_lev=2 (R/4 per
+ * child * 4 = R words), etc. (see gf64_fenger_prepare_core). child_lev
+ * is the level of the CHILD whose reciprocal we want (>= 1, since
+ * leaves have no reciprocal). child_node_idx is the local index within
+ * that level. The reciprocal has child_deg = R/2^child_lev words (one
+ * polynomial of degree < child_deg). */
+static inline gf64_t *fenger_recip_at(
+	gf64_fenger_ctx *ctx,
+	size_t child_lev, size_t child_node_idx
+) {
+	const size_t R = ctx->R;
+	return ctx->recip_pool + (child_lev - 1) * R +
+	       child_node_idx * (R >> child_lev);
+}
+
 static void fenger_eval_recurse_batch(
+	const gf64_fenger_ctx *ctx,
 	const SubproductTree *tree,
 	size_t lev, size_t node_idx,
 	const gf64_t *f, size_t f_stride, const size_t *deg_fs,
 	gf64_t *out,
 	gf64_t *scratch,
+	gf64_arena_t *arena,
 	gf64_t *mul_scratch, size_t mul_scratch_words,
 	size_t K)
 {
@@ -553,17 +696,11 @@ static void fenger_eval_recurse_batch(
 	/* 2K entries: left children occupy [0, K), right children [K, 2K). */
 	size_t child_degs[2 * FENGER_BATCH_K_MAX];
 	if (any_needs && fenger_hqc_eligible(child_deg + 1, m_max, child_deg)) {
-		/* Shared reciprocals: rev(P)^{-1} mod x^{m_max} (P monic, so
-		 * rev(P)[0] = 1 != 0). */
-		{
-			gf64_t *rev = (gf64_t *)malloc((child_deg + 1) * sizeof(gf64_t));
-			if (rev == NULL) abort();
-			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_L[child_deg - i];
-			gf64_poly_invmod(rev, child_deg, m_max, inv_L);
-			for (size_t i = 0; i <= child_deg; i++) rev[i] = P_R[child_deg - i];
-			gf64_poly_invmod(rev, child_deg, m_max, inv_R);
-			free(rev);
-		}
+		/* T5: reciprocals were precomputed at prepare time. */
+		inv_L = fenger_recip_at((gf64_fenger_ctx *)ctx,
+		                       lev + 1, 2 * node_idx);
+		inv_R = fenger_recip_at((gf64_fenger_ctx *)ctx,
+		                       lev + 1, 2 * node_idx + 1);
 
 		const size_t n = 2 * child_deg;
 		const size_t sw = gf64_addfft64_poly_mul_recursive_scratch_words(n);
@@ -665,12 +802,12 @@ static void fenger_eval_recurse_batch(
 			gf64_t *q = revq + k * m_max;
 			(void)q2;
 			if (K == 1) {
-				gf64_poly_divmod(fk, deg_fs[k], P_L, child_deg, q, rLk);
-				gf64_poly_divmod(fk, deg_fs[k], P_R, child_deg, revq, rRk);
+				gf64_poly_divmod_scratch(fk, deg_fs[k], P_L, child_deg, q, rLk, arena);
+				gf64_poly_divmod_scratch(fk, deg_fs[k], P_R, child_deg, revq, rRk, arena);
 			} else {
 				gf64_t *qR = q2 + k * m_max; /* separate from rRk (no aliasing) */
-				gf64_poly_divmod(fk, deg_fs[k], P_L, child_deg, q, rLk);
-				gf64_poly_divmod(fk, deg_fs[k], P_R, child_deg, qR, rRk);
+				gf64_poly_divmod_scratch(fk, deg_fs[k], P_L, child_deg, q, rLk, arena);
+				gf64_poly_divmod_scratch(fk, deg_fs[k], P_R, child_deg, qR, rRk, arena);
 			}
 			size_t dL = 0, dR = 0;
 			for (size_t i = child_deg; i-- > 0; ) {
@@ -693,12 +830,12 @@ static void fenger_eval_recurse_batch(
 			left_degs[k]  = child_degs[2 * k];
 			right_degs[k] = child_degs[2 * k + 1];
 		}
-		fenger_eval_recurse_batch(tree, lev + 1, 2 * node_idx,
+		fenger_eval_recurse_batch(ctx, tree, lev + 1, 2 * node_idx,
 		                          r_L, N_at_lev, left_degs, out, child_scratch,
-		                          mul_scratch, mul_scratch_words, K);
-		fenger_eval_recurse_batch(tree, lev + 1, 2 * node_idx + 1,
+		                          arena, mul_scratch, mul_scratch_words, K);
+		fenger_eval_recurse_batch(ctx, tree, lev + 1, 2 * node_idx + 1,
 		                          r_R, N_at_lev, right_degs, out, child_scratch,
-		                          mul_scratch, mul_scratch_words, K);
+		                          arena, mul_scratch, mul_scratch_words, K);
 	}
 }
 
@@ -732,8 +869,15 @@ static void gf64_fenger_execute_batched(
 	 * (K <= 8) engages; the scalar/within-word paths use only the first 4N. */
 	gf64_t *interp_mul = (gf64_t *)malloc(32 * N * sizeof(gf64_t));
 	gf64_t *eval_mul   = (gf64_t *)malloc(4 * R * sizeof(gf64_t));
+	/* T4 (issue #59): arena for the eval walk's per-node divmod/invmod
+	 * scratch (Newton reciprocals + rev buffers). Degrees scale with the
+	 * recovery tree (R); worst single-call demand is ~6·max(N,R) words,
+	 * so 8× covers it with slack. Zero heap traffic inside the walk. */
+	gf64_arena_t ev_arena;
+	size_t arena_words = 8 * ((N > R) ? N : R);
 	if (!weighted || !poly_p || !p_at_y ||
-	    !interp_scratch || !eval_scratch || !interp_mul || !eval_mul) {
+	    !interp_scratch || !eval_scratch || !interp_mul || !eval_mul ||
+	    gf64_arena_init(&ev_arena, arena_words) != 0) {
 		abort();
 	}
 
@@ -743,22 +887,38 @@ static void gf64_fenger_execute_batched(
 		const size_t K_eff = (w_end - w0 < K) ? (w_end - w0) : K;
 
 		/* 4a: weighted slabs. Synthetic padded inputs (c >= real) have
-		 * zero DATA (never read from `in`), so weight them 0. */
+		 * zero DATA (never read from `in`), so weight them 0.
+		 *
+		 * Issue #59 T3: per-word strided gather into the contiguous
+		 * `weighted` slab, then a contiguous ISA-dispatched
+		 * element-wise mul. The gather reads the same bytes the
+		 * scalar mul would have read (one word per c per word k);
+		 * the mul is bit-exact to gf64_mul_reference (see
+		 * test_gf64_elem_mul.c). Padded region (c >= num_inputs_real)
+		 * gets memset to 0; the subsequent mul reads V_prime[c]
+		 * for those indices (a valid array index) but produces 0
+		 * because the operand is 0. */
 		for (size_t k = 0; k < K_eff; k++) {
 			const size_t w = w0 + k;
 			gf64_t *wk = weighted + k * N;
-			for (size_t c = 0; c < N; c++) {
-				wk[c] = (c < ctx->num_inputs_real)
-				        ? gf64_mul_reference(in[c * B + w], ctx->V_prime[c])
-				        : 0;
+			for (size_t c = 0; c < ctx->num_inputs_real; c++) {
+				wk[c] = in[c * B + w];
+			}
+			if (ctx->num_inputs_real < N) {
+				memset(wk + ctx->num_inputs_real, 0,
+				       (N - ctx->num_inputs_real) * sizeof(gf64_t));
 			}
 		}
-		/* 4b: z = weighted · 1/V'(x_c), then the batched combine. */
+		for (size_t k = 0; k < K_eff; k++) {
+			gf64_t *wk = weighted + k * N;
+			gf64_elem_mul(wk, wk, ctx->V_prime, N);
+		}
+		/* 4b: z = weighted · 1/V'(x_c), then the batched combine.
+		 * `weighted` slabs are contiguous — direct ISA-dispatched
+		 * element-wise mul, aliasing-safe (wk == a). */
 		for (size_t k = 0; k < K_eff; k++) {
 			gf64_t *zk = weighted + k * N;
-			for (size_t c = 0; c < N; c++) {
-				zk[c] = gf64_mul_reference(zk[c], ctx->V_prime_inv[c]);
-			}
+			gf64_elem_mul(zk, zk, ctx->V_prime_inv, N);
 		}
 		fenger_interp_batch(tree_x, weighted, K_eff, poly_p,
 		                    interp_scratch, interp_mul, 32 * N);
@@ -782,17 +942,27 @@ static void gf64_fenger_execute_batched(
 				}
 			} else {
 				for (size_t k = 0; k < K_eff; k++) degs[k] = deg_p;
-				fenger_eval_recurse_batch(tree_y, 0, 0, poly_p, N, degs,
-				                          p_at_y, eval_scratch, eval_mul,
-				                          mul_sw, K_eff);
+				fenger_eval_recurse_batch(ctx, tree_y, 0, 0, poly_p, N, degs,
+				                          p_at_y, eval_scratch, &ev_arena,
+				                          eval_mul, mul_sw, K_eff);
 			}
 		}
-		/* 4d: divide by V(y_r) — only real recovery rows are written. */
+		/* 4d: divide by V(y_r) — only real recovery rows are written.
+		 *
+		 * Issue #59 T3: contiguous vectorized mul into the per-word
+		 * `p_at_y` slab, then strided scatter to the caller's
+		 * column-major buffer. `p_at_y` is private scratch (allocated
+		 * above, freed at the end of this call), so the in-place
+		 * mul (out == a aliasing) is safe. */
 		for (size_t k = 0; k < K_eff; k++) {
 			const size_t w = w0 + k;
-			const gf64_t *pk = p_at_y + k * R_stride;
-			for (size_t r = 0; r < ctx->num_recovery_real; r++) {
-				out[r * B + w] = gf64_mul_reference(pk[r], ctx->V_at_y_inv[r]);
+			gf64_t *pk = p_at_y + k * R_stride;
+			if (ctx->num_recovery_real > 0) {
+				gf64_elem_mul(pk, pk, ctx->V_at_y_inv,
+				              ctx->num_recovery_real);
+				for (size_t r = 0; r < ctx->num_recovery_real; r++) {
+					out[r * B + w] = pk[r];
+				}
 			}
 		}
 	}
@@ -800,6 +970,7 @@ static void gf64_fenger_execute_batched(
 	free(weighted); free(poly_p); free(p_at_y);
 	free(interp_scratch); free(eval_scratch);
 	free(interp_mul); free(eval_mul);
+	gf64_arena_free(&ev_arena);
 }
 
 /* ----------------------------------------------------------------------------
@@ -812,6 +983,7 @@ void gf64_fenger_release(gf64_fenger_ctx *ctx) {
 	free(ctx->V_prime);
 	free(ctx->V_prime_inv);
 	free(ctx->V_at_y_inv);
+	free(ctx->recip_pool);
 	free(ctx);
 }
 

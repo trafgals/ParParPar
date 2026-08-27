@@ -2,7 +2,7 @@
  * ============================================================================
  * gf64/test/test_gf64_mpe.c — Tests for the multi-point evaluation stack
  *
- * T8 of the par3-cauchy-fft-kernel plan. The four tests below exercise:
+ * T8 of the par3-cauchy-fft-kernel plan. The eight tests below exercise:
  *
  *   1. multi_point_eval (random deg-100 poly, N=1024 random points):
  *      outputs match independent Horner eval at every point.
@@ -15,6 +15,13 @@
  *   4. poly_invmod: g * (1/g) ≡ 1 mod x^n. Multiply g (truncated to n)
  *      with the n-coefficient inverse, then assert the product's first n
  *      coefficients are [1, 0, 0, ..., 0].
+ *   5. poly_invmod zero-n edge: n==0 must produce a zero output, not abort.
+ *   6. multi_point_eval empty tree: N==0 must return early, not abort.
+ *   7. arena scratch-path heap-alloc count (issue #59 T4): counter must
+ *      stay at 0 across 16 divmods; legacy path bumps it.
+ *   8. gf64_arena_init overflow rejection (cubic P1, pr100 T4):
+ *      `gf64_arena_init(&a, SIZE_MAX / 4)` must return 1 with
+ *      `a.data == NULL` and `a.cap == 0`.
  *
  * Build & run from gf64/test/:
  *   $(CC) -O2 -march=native -I.. test_gf64_mpe.c \
@@ -562,6 +569,173 @@ static void test_mpe_empty(void) {
 }
 
 /* ----------------------------------------------------------------------------
+ * Test 7 (issue #59 T4): scratch-path heap alloc count.
+ *
+ * The T4 arena routes the divmod/invmod working buffers through a caller-
+ * owned bump allocator instead of malloc/free. Bit-exact parity is
+ * covered by test_gf64_divmod_parity Test 6; this test pins the heap
+ * side of the contract:
+ *
+ *   - scratch path:  gf64_poly_divmod_scratch / _invmod_scratch add zero
+ *                   heap allocations (the working buffers come from the
+ *                   arena; the counter is only bumped in the malloc branch
+ *                   which the scratch code skips).
+ *   - legacy path:  the malloc branch bumps the counter per call (5 per
+ *                   divmod + 3 per invmod), so the counter must MOVE
+ *                   after even one legacy call. Sanity check on the
+ *                   instrumentation itself.
+ *
+ * The assertions are independent of the specific arithmetic result — they
+ * care only about the heap-alloc count contract.
+ * ------------------------------------------------------------------------- */
+static void test_alloc_count(void) {
+	printf("Test 7: scratch-path heap alloc count (issue #59 T4)\n");
+
+	/* Build (deg_f=200, deg_g=100) so m=101 (> GF64_DIVMOD_NEWTON_MIN)
+	 * exercises the Newton path's 5+3 buffers per call. */
+	const size_t df = 200, dg = 100;
+	gf64_t *f   = (gf64_t *)malloc((df + 1) * sizeof(gf64_t));
+	gf64_t *g   = (gf64_t *)malloc((dg + 1) * sizeof(gf64_t));
+	size_t qw = df - dg + 1;
+	size_t rw = (dg > df) ? (dg + 1) : (df + 1);
+	gf64_t *q   = (gf64_t *)calloc(qw, sizeof(gf64_t));
+	gf64_t *r   = (gf64_t *)calloc(rw, sizeof(gf64_t));
+	gf64_t *inv = (gf64_t *)calloc(df + 1, sizeof(gf64_t));
+	if (!f || !g || !q || !r || !inv) {
+		fail("alloc-count setup: out of memory");
+		goto cleanup_setup;
+	}
+	put_seed(0xCAFEBABEDEADBEEFULL);
+	for (size_t i = 0; i <= df; i++) f[i] = splitmix64_next();
+	for (size_t i = 0; i <= dg; i++) g[i] = splitmix64_next();
+	/* Keep the leading divisor coefficient nonzero so the legacy path
+	 * doesn't abort on the synthetic-input edge case. */
+	if (g[dg] == 0) g[dg] = 1ULL;
+
+	/* --- Scratch path: zero heap allocations expected. --- */
+	gf64_arena_t arena;
+	if (gf64_arena_init(&arena, 16 * (df + dg + 4)) != 0) {
+		fail("alloc-count: arena init");
+		goto cleanup_setup;
+	}
+	gf64_mpe_heap_alloc_count = 0;
+	for (int iter = 0; iter < 16; iter++) {
+		gf64_poly_divmod_scratch(f, df, g, dg, q, r, &arena);
+	}
+	if (gf64_mpe_heap_alloc_count == 0) {
+		pass("scratch path: 16 divmods add 0 heap allocations");
+	} else {
+		char msg[128];
+		snprintf(msg, sizeof(msg),
+		         "scratch path: 16 divmods added %zu heap allocs (want 0)",
+		         gf64_mpe_heap_alloc_count);
+		fail(msg);
+	}
+	gf64_arena_release(&arena, 0);
+	gf64_arena_free(&arena);
+
+	/* --- Legacy path: counter MUST move. --- */
+	gf64_mpe_heap_alloc_count = 0;
+	gf64_poly_divmod(f, df, g, dg, q, r);
+	/* One divmod call bumps the counter by 5 (rev_f + rev_g + inv +
+	 * rev_q + gq); the invmod inside also adds 3 (g_buf + r_sq +
+	 * prod). Total = 8 per legacy call. Assert >= 5 (loose floor). */
+	if (gf64_mpe_heap_alloc_count >= 5) {
+		char msg[128];
+		snprintf(msg, sizeof(msg),
+		         "legacy path: 1 divmod bumped counter by %zu (>=5 OK)",
+		         gf64_mpe_heap_alloc_count);
+		pass(msg);
+	} else {
+		fail("legacy path: counter did not move (instrumentation broken?)");
+	}
+
+cleanup_setup:
+	free(f); free(g); free(q); free(r); free(inv);
+}
+
+/* ----------------------------------------------------------------------------
+ * Test 8 (cubic P1, pr100 task 4): gf64_arena_init size_t overflow rejection.
+ *
+ * Pre-fix bug: gf64_arena_init() called malloc(words * sizeof(gf64_t)) without
+ * first rejecting words that would cause the multiplication to wrap. With
+ * adversarial input the multiplication wraps modulo 2^64, malloc sees a
+ * (possibly small) size and returns a (possibly small) buffer, but the
+ * public surface promises "nonzero on allocation failure (arena left
+ * zeroed)" without an explicit overflow guard. On allocators that accept
+ * the overcommit (Linux overcommit_memory=1 with permissive mmap), the
+ * function returns 0 with a tiny buffer but a huge `cap` field, and any
+ * subsequent gf64_arena_push() writes OOB.
+ *
+ * The fix (cubic P1): a single guard at the top of gf64_arena_init rejects
+ * `words > SIZE_MAX / sizeof(gf64_t)` before the multiplication, treating
+ * the overflow as an allocation failure with the same zero-state contract
+ * the rest of the function already provides.
+ *
+ * This test pins the new contract with TWO adversarial inputs:
+ *
+ *   (a) SIZE_MAX / 4 (= 2^62 - 1)  → multiplication wraps to SIZE_MAX-7,
+ *       which most allocators reject with NULL even without the guard.
+ *       Asserts the guard fires and returns the zero-state contract.
+ *
+ *   (b) SIZE_MAX / 8 + 2           → multiplication wraps to 8 bytes,
+ *       so malloc(8) succeeds and the unfixed code returns 0 with
+ *       cap = 2^61 + 1 — the actual exploitable OOB. On the unfixed
+ *       code (a) succeeds, (b) fails. On the fixed code both succeed.
+ *       This is the test that *actually* proves the guard is needed.
+ *
+ * Both inputs share the assertions:
+ *   - rc == 1 (failure)
+ *   - a.data == NULL
+ *   - a.cap  == 0
+ * ------------------------------------------------------------------------- */
+static void test_arena_init_overflow_rejected(void) {
+	printf("Test 8: gf64_arena_init overflow rejection (cubic P1, pr100 T4)\n");
+
+	const size_t cap_limit = SIZE_MAX / sizeof(gf64_t);
+
+	struct {
+		const char *name;
+		size_t      words;
+	} cases[] = {
+		{ "SIZE_MAX/4",      SIZE_MAX / 4     }, /* wraps to SIZE_MAX-7 */
+		{ "SIZE_MAX/8 + 2",  SIZE_MAX / 8 + 2 }, /* wraps to 8 (OOB exploit) */
+	};
+
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		gf64_arena_t a;
+		a.data = (gf64_t *)0xDEADBEEFDEADBEEFULL;  /* sentinel */
+		a.cap  = 0xCAFEBABEDEADBEEFULL;            /* sentinel */
+		a.used = 0xFEEDFACE12345678ULL;            /* sentinel */
+
+		if (cases[i].words <= cap_limit) {
+			printf("  FAIL: %s: misconfigured (words=%zu must exceed cap_limit=%zu)\n",
+			       cases[i].name, cases[i].words, cap_limit);
+			fail("arena overflow: test misconfigured");
+			continue;
+		}
+
+		size_t wrapped = cases[i].words * sizeof(gf64_t);
+		printf("  case %s: words=%zu wrapped_size=%zu cap_limit=%zu\n",
+		       cases[i].name, cases[i].words, wrapped, cap_limit);
+
+		int rc = gf64_arena_init(&a, cases[i].words);
+		char msg[160];
+		if (rc == 1 && a.data == NULL && a.cap == 0) {
+			snprintf(msg, sizeof(msg),
+			         "arena_init(%s) returns 1 with data=NULL cap=0",
+			         cases[i].name);
+			pass(msg);
+		} else {
+			snprintf(msg, sizeof(msg),
+			         "arena_init(%s): rc=%d data=%p cap=%zu (want 1, NULL, 0)",
+			         cases[i].name, rc, (void *)a.data, a.cap);
+			fail(msg);
+		}
+	}
+}
+
+/* ----------------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------------- */
 int main(void) {
@@ -574,6 +748,8 @@ int main(void) {
 	test_invmod();
 	test_invmod_zero_n();
 	test_mpe_empty();
+	test_alloc_count();
+	test_arena_init_overflow_rejected();
 
 	printf("\n=== Summary ===\n");
 	printf("Passed: %d\n", g_passed);

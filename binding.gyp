@@ -202,6 +202,7 @@
         "gf64/gf64_mpe.c",
         "gf64/gf64_poly_mul_karatsuba.c",
         "gf64/gf64_fenger.c",
+        "gf64/gf64_elem_mul.c",
         "gf64/gf64_square.c",
         "gf64/gf64_invert_ita.c"
       ],
@@ -222,7 +223,7 @@
     },
     {
       "target_name": "parpar_gf64",
-      "dependencies": ["parpar_gf64_cpu_detect", "gf64_avx512", "gf64_avx512_arr", "gf64_pipeline"],
+      "dependencies": ["parpar_gf64_cpu_detect", "gf64_avx512", "gf64_avx512_arr", "gf64_pipeline", "hasher_c"],
       "conditions": [
         ['target_arch in "ia32 x64"', {
           "sources": [
@@ -243,12 +244,23 @@
             "gf64/gf64_invert_avx2.c",
             "gf64/gf64_solve.c"
           ],
-          "include_dirs": ["gf64"],
-          "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
+"include_dirs": ["gf64"],
+      "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
           "cxxflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
           "conditions": [
             ["OS!=\"win\"", {
-              "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
+              # POSIX: enable OpenMP-driven gf64_subproduct parallel-for.
+              # -fopenmp drives the runtime; -DGF64_OPENMP_PARALLEL_PREPARE
+              # toggles the parallel-for / TLS cache code paths on. These
+              # were previously at the target-level cflags (line ~248 before
+              # this fix), but that put them on the MSVC path too where
+              # cl.exe ignores -fopenmp (warning D9002), the runtime never
+              # links, and the define still wires the OMP code path on a
+              # no-OMP build — broken at link time. POSIX-only keeps
+              # Windows on the pre-680a494 behavior (serial subproduct).
+              "cflags": ["-fmax-include-depth=1024", "-mno-avx512f",
+                         "-fopenmp", "-DGF64_OPENMP_PARALLEL_PREPARE"],
+              "ldflags": ["-fopenmp"],
               "cxxflags": ["-std=c++11", "-fmax-include-depth=1024", "-fpermissive", "-mno-avx512f"],
               "cflags_cc": ["-fpermissive"]
             }],
@@ -303,7 +315,7 @@
       "target_name": "hasher_c",
       "type": "static_library",
       "defines": ["NDEBUG"],
-      "sources": ["hasher/crc_zeropad.c", "hasher/md5-final.c"],
+      "sources": ["hasher/crc_zeropad.c", "hasher/md5-final.c", "hasher/hasher_blake3.c"],
       "cflags": ["-Wno-unused-function", "-std=c99"],
       "cflags!": ["-fno-omit-frame-pointer", "-fno-tree-vrp", "-fno-strict-aliasing"],
       "xcode_settings": {

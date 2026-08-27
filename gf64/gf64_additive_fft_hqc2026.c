@@ -78,6 +78,10 @@
 #include "gf64_cantor_basis.h"
 
 #include <assert.h>
+#ifndef _WIN32
+/* POSIX: pthread_key_t-based TLS cache (see hqc_vtable_cache_t below). */
+#include <pthread.h>
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -228,7 +232,53 @@ typedef struct {
     int initialized;
 } hqc_vtable_cache_t;
 #define HQC_VTABLE_CACHE_SLOTS 16
-static hqc_vtable_cache_t hqc_vtable_cache[HQC_VTABLE_CACHE_SLOTS];
+/* FIX-task6: v_table cache is per-thread via pthread_key_t so that the
+ * #pragma omp parallel for in gf64_subproduct.c:184 (when built with
+ * -DGF64_OPENMP_PARALLEL_PREPARE) cannot race two workers on a shared
+ * global slot. Each thread allocates its own HQC_VTABLE_CACHE_SLOTS-slot
+ * array on first use; the TLS destructor frees each slot's v_table on
+ * thread exit. We avoid a global mutex so the OMP speedup is preserved.
+ *
+ * Windows (MSVC) fallback: a process-global static array. The OMP path
+ * is gated by GF64_OPENMP_PARALLEL_PREPARE, which is POSIX-only in
+ * binding.gyp, so on Windows this cache is single-threaded and the
+ * shared-slot layout is race-free. pthread_key_t is unavailable on
+ * MSVC, so we don't include <pthread.h> or wire the TLS path. */
+#ifdef _WIN32
+static hqc_vtable_cache_t hqc_vtable_cache_global[HQC_VTABLE_CACHE_SLOTS];
+static hqc_vtable_cache_t *get_thread_vtable_cache(void) {
+    return hqc_vtable_cache_global;
+}
+#else
+static pthread_key_t  hqc_vtable_cache_key;
+static pthread_once_t hqc_vtable_cache_once = PTHREAD_ONCE_INIT;
+static void hqc_vtable_cache_destroy(void *arg) {
+    hqc_vtable_cache_t *cache = (hqc_vtable_cache_t *)arg;
+    if (!cache) return;
+    for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
+        if (cache[s].initialized) {
+            hqc_vindex_drop(cache[s].v_table);
+            free(cache[s].v_table);
+        }
+    }
+    free(cache);
+}
+static void hqc_vtable_cache_init_key(void) {
+    pthread_key_create(&hqc_vtable_cache_key, hqc_vtable_cache_destroy);
+}
+static hqc_vtable_cache_t *get_thread_vtable_cache(void) {
+    pthread_once(&hqc_vtable_cache_once, hqc_vtable_cache_init_key);
+    hqc_vtable_cache_t *cache =
+        (hqc_vtable_cache_t *)pthread_getspecific(hqc_vtable_cache_key);
+    if (!cache) {
+        cache = (hqc_vtable_cache_t *)calloc(HQC_VTABLE_CACHE_SLOTS,
+                                             sizeof(hqc_vtable_cache_t));
+        if (!cache) abort();
+        pthread_setspecific(hqc_vtable_cache_key, cache);
+    }
+    return cache;
+}
+#endif
 
 /* vindex: value→index hash for a v_table. The Cantor W_m(j) values are
  * unique, so a hash lookup is bit-exact to the linear scan it replaces.
@@ -294,6 +344,7 @@ static int hqc_vindex_lookup(const gf64_t *v_table, gf64_t a) {
 	return -2;
 }
 static gf64_t *get_or_build_v_table(int n) {
+    hqc_vtable_cache_t *hqc_vtable_cache = get_thread_vtable_cache();
     for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
         if (hqc_vtable_cache[s].initialized && hqc_vtable_cache[s].n == n)
             return hqc_vtable_cache[s].v_table;

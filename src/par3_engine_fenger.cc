@@ -127,6 +127,21 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 		recovery[i] = 0;
 	}
 
+	/* Issue #59 T7-verify: PAR3_FENGER_THREADS env override. When set to a
+	 * positive integer N, forces numThreads = N (subject to the same
+	 * blockSize64 / 1 cap applied below). Set to 0 to keep the existing
+	 * auto-detect path. Unset / "" = auto. Useful for A/B and CI runs
+	 * that want a deterministic thread count. */
+	{
+		const char *fenger_env = std::getenv("PAR3_FENGER_THREADS");
+		if (fenger_env != nullptr && *fenger_env != '\0') {
+			int forced = std::atoi(fenger_env);
+			if (forced > 0) {
+				numThreads = forced;
+			}
+		}
+	}
+
 	/* Auto thread count: cap at the smaller of (blockSize64, cpu count).
 	 * blockSize64 is the B-axis size; no point in spinning more threads
 	 * than words when each thread takes a contiguous B-slice. */

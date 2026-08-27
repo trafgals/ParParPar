@@ -329,6 +329,73 @@ void gf64_interp_dispatch_reset(void);
 int  gf64_interp_dispatch_probe_count(void);
 void gf64_interp_dispatch_reset_probe(void);
 
+/* ============================================================================
+ * T4 (issue #59): arena-backed scratch for the polynomial division path.
+ *
+ * The Newton-reciprocal gf64_poly_divmod mallocs 5 working buffers per
+ * call (m>=96) and gf64_poly_invmod mallocs 3 more; the Bostan-Schost
+ * MPE walk calls divmod twice per internal node, so one evaluation used
+ * to perform O(N log N) heap allocations. The _scratch variants below
+ * take a caller-owned bump arena instead: identical arithmetic, zero
+ * per-call heap traffic for the divmod/invmod working buffers. Note
+ * that gf64_poly_mul_internal at HQC FFT / Karatsuba tiers still
+ * malloc/free its own multiplication scratch — cubic P2 (task 20)
+ * flagged this. Bit-exact to the malloc variants (pinned by
+ * test_gf64_divmod_parity / test_gf64_mpe).
+ * ============================================================================ */
+
+typedef struct {
+	gf64_t *data;
+	size_t cap;   /* capacity in gf64_t words */
+	size_t used;
+} gf64_arena_t;
+
+/* Allocate `words` gf64_t words for the arena. Returns 0 on success,
+ * nonzero on allocation failure (arena left zeroed). Words exceeding
+ * SIZE_MAX/sizeof(gf64_t) is treated as failure (returns 1) so the
+ * size_t multiplication never wraps. */
+int  gf64_arena_init(gf64_arena_t *a, size_t words);
+void gf64_arena_free(gf64_arena_t *a);
+size_t gf64_arena_mark(const gf64_arena_t *a);
+void gf64_arena_release(gf64_arena_t *a, size_t mark);
+gf64_t *gf64_arena_push(gf64_arena_t *a, size_t words);
+
+/* Same contracts as gf64_poly_divmod / gf64_poly_invmod. `arena` must be
+ * initialised and have sufficient capacity; scratch is reclaimed when the
+ * caller releases the arena mark taken before the call. */
+void gf64_poly_divmod_scratch(
+	const gf64_t *f, size_t deg_f,
+	const gf64_t *g, size_t deg_g,
+	gf64_t *q,    gf64_t *r,
+	gf64_arena_t *arena
+);
+
+void gf64_poly_invmod_scratch(
+	const gf64_t *g, size_t deg_g,
+	size_t n,
+	gf64_t *result,
+	gf64_arena_t *arena
+);
+
+/* Test instrumentation: number of heap allocations performed inside the
+ * divmod/invmod implementations since the last reset. Zero when every
+ * call is routed through an arena.
+ *
+ * cubic P2 (task 19, commit cad8d6b): _Atomic size_t for OMP safety.
+ * Gated on GF64_OPENMP_PARALLEL_PREPARE so that the C11 <stdatomic.h>
+ * include is never seen by MSVC's default-C89 C compiler — Windows
+ * never compiles the OMP path (binding.gyp keeps the define POSIX-only),
+ * so the counter is single-threaded there and a plain size_t is fine.
+ * Avoids the cross-platform "C atomics require C11 or later" error
+ * from MSVC's vcruntime_c11_stdatomic.h when this header is transitively
+ * included by gf64_subproduct.c, gf64_barycentric.c, gf64_fenger.c. */
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
+#include <stdatomic.h>
+extern _Atomic size_t gf64_mpe_heap_alloc_count;
+#else
+extern size_t gf64_mpe_heap_alloc_count;
+#endif
+
 HEDLEY_END_C_DECLS
 
 #endif /* GF64_MPE_H */

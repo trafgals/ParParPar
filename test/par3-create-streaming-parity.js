@@ -159,6 +159,11 @@ function leg2(tempDir, cb) {
 						var nameLen = out.readUInt16LE(off + 48);
 						out.fill(0, off + 52 + nameLen, off + 52 + nameLen + 16);
 					}
+					if (out.slice(off + 40, off + 48).toString('latin1') === 'PAR STA\u0000') {
+						// START body[1..15] is allocUnsafe garbage (lib/par3gen.js:1438).
+						// body[0]=gf_size and body[16..34]=fields only; body[1..15] = header offsets 49..64.
+						out.fill(0, off + 48 + 1, off + 48 + 16);
+					}
 					if (out.slice(off + 40, off + 48).toString('latin1') === 'PAR ROO\u0000') {
 						// the ROOT packet embeds the FIL packet checksum as the
 						// last 16 body bytes — derived from the random fileId
@@ -175,7 +180,7 @@ function leg2(tempDir, cb) {
 			while (off2 + 48 <= a.length) {
 				var len2 = Number(a.readBigUInt64LE(off2 + 24));
 				var type2 = a.slice(off2 + 40, off2 + 48).toString('latin1');
-				if (type2 !== 'PAR FIL\u0000' && type2 !== 'PAR ROO\u0000') {
+				if (type2 !== 'PAR FIL\u0000' && type2 !== 'PAR ROO\u0000' && type2 !== 'PAR STA\u0000') {
 					assert(a.slice(off2, off2 + len2).equals(b.slice(off2, off2 + len2)),
 						'packet ' + JSON.stringify(type2) + ' differs unmasked');
 				}

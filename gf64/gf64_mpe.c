@@ -219,10 +219,80 @@ void gf64_poly_divmod_schoolbook(
  * mul, never a quadratic fallback. */
 #define GF64_DIVMOD_NEWTON_MIN ((size_t)96)
 
+/* T4 (issue #59): heap-allocation instrumentation for tests. Incremented
+ * at every malloc site inside the divmod/invmod implementations.
+ *
+ * cubic P2 (task 19, commit cad8d6b): atomic counter — T8 introduces
+ * OpenMP (gf64_subproduct.c:184); the non-atomic += sites below are
+ * UB under concurrent mutation. C11 _Atomic size_t is the minimum
+ * portable cost. Gated on GF64_OPENMP_PARALLEL_PREPARE so the C11
+ * <stdatomic.h> + _Atomic keyword don't leak into the Windows MSVC
+ * C89 default (single-threaded on Windows — binding.gyp keeps the
+ * define POSIX-only — so a plain size_t is fine there). */
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
+#include <stdatomic.h>
+_Atomic size_t gf64_mpe_heap_alloc_count = 0;
+#else
+size_t gf64_mpe_heap_alloc_count = 0;
+#endif
+
+/* ---------------------------------------------------------------------------
+ * T4 arena: bump allocator over one caller-owned block. The _scratch
+ * variants carve their working buffers from here instead of malloc/free
+ * per call; callers take a mark before a call and release it after, so
+ * peak usage is the deepest single call's demand rather than the sum.
+ * ------------------------------------------------------------------------- */
+int gf64_arena_init(gf64_arena_t *a, size_t words) {
+	a->data = NULL;
+	a->cap = 0;
+	a->used = 0;
+	if (words == 0) return 1;
+	if (words > SIZE_MAX / sizeof(gf64_t)) return 1;
+	a->data = (gf64_t *)malloc(words * sizeof(gf64_t));
+	if (a->data == NULL) return 1;
+	a->cap = words;
+	return 0;
+}
+
+void gf64_arena_free(gf64_arena_t *a) {
+	free(a->data);
+	a->data = NULL;
+	a->cap = 0;
+	a->used = 0;
+}
+
+size_t gf64_arena_mark(const gf64_arena_t *a) {
+	return a->used;
+}
+
+void gf64_arena_release(gf64_arena_t *a, size_t mark) {
+	a->used = mark;
+}
+
+gf64_t *gf64_arena_push(gf64_arena_t *a, size_t words) {
+	if (a->used + words > a->cap || words > SIZE_MAX - a->used) {
+		abort();
+	}
+	gf64_t *p = a->data + a->used;
+	a->used += words;
+	return p;
+}
+
 void gf64_poly_divmod(
 	const gf64_t *f, size_t deg_f,
 	const gf64_t *g, size_t deg_g,
 	gf64_t *q,    gf64_t *r
+) {
+	gf64_poly_divmod_scratch(f, deg_f, g, deg_g, q, r, NULL);
+}
+
+/* T4 (issue #59): arena-backed core. arena == NULL selects the legacy
+ * per-call malloc path (bit-identical arithmetic either way). */
+void gf64_poly_divmod_scratch(
+	const gf64_t *f, size_t deg_f,
+	const gf64_t *g, size_t deg_g,
+	gf64_t *q,    gf64_t *r,
+	gf64_arena_t *arena
 ) {
 	assert(f != NULL);
 	assert(g != NULL);
@@ -253,14 +323,36 @@ void gf64_poly_divmod(
 		return;
 	}
 
-	gf64_t *rev_f = (gf64_t *)malloc(m * sizeof(gf64_t));
-	gf64_t *rev_g = (gf64_t *)malloc((deg_g + 1) * sizeof(gf64_t));
-	gf64_t *inv   = (gf64_t *)malloc(m * sizeof(gf64_t));
-	gf64_t *rev_q = (gf64_t *)malloc(m * sizeof(gf64_t));
-	gf64_t *gq    = (gf64_t *)malloc((deg_f + 1) * sizeof(gf64_t));
+	size_t mark = 0;
+	gf64_t *rev_f;
+	gf64_t *rev_g;
+	gf64_t *inv;
+	gf64_t *rev_q;
+	gf64_t *gq;
+	if (arena != NULL) {
+		mark = gf64_arena_mark(arena);
+		rev_f = gf64_arena_push(arena, m);
+		rev_g = gf64_arena_push(arena, deg_g + 1);
+		inv   = gf64_arena_push(arena, m);
+		rev_q = gf64_arena_push(arena, m);
+		gq    = gf64_arena_push(arena, deg_f + 1);
+	} else {
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
+		atomic_fetch_add(&gf64_mpe_heap_alloc_count, 5);
+#else
+		gf64_mpe_heap_alloc_count += 5;
+#endif
+		rev_f = (gf64_t *)malloc(m * sizeof(gf64_t));
+		rev_g = (gf64_t *)malloc((deg_g + 1) * sizeof(gf64_t));
+		inv   = (gf64_t *)malloc(m * sizeof(gf64_t));
+		rev_q = (gf64_t *)malloc(m * sizeof(gf64_t));
+		gq    = (gf64_t *)malloc((deg_f + 1) * sizeof(gf64_t));
+	}
 	if (rev_f == NULL || rev_g == NULL || inv == NULL ||
 	    rev_q == NULL || gq == NULL) {
-		free(rev_f); free(rev_g); free(inv); free(rev_q); free(gq);
+		if (arena == NULL) {
+			free(rev_f); free(rev_g); free(inv); free(rev_q); free(gq);
+		}
 		abort();
 	}
 
@@ -274,7 +366,7 @@ void gf64_poly_divmod(
 
 	/* inv = rev_g^{-1} mod x^m. rev_g[0] = g[deg_g] != 0 by the divisor
 	 * contract, so the inverse exists. */
-	gf64_poly_invmod(rev_g, deg_g, m, inv);
+	gf64_poly_invmod_scratch(rev_g, deg_g, m, inv, arena);
 
 	/* rev_q = rev_f * inv mod x^m (low m coefficients). */
 	gf64_poly_mul_padded(rev_q, rev_f, m, inv, m, m);
@@ -300,11 +392,15 @@ void gf64_poly_divmod(
 	}
 	memset(r + deg_g, 0, (deg_f - deg_g + 1) * sizeof(gf64_t));
 
-	free(rev_f);
-	free(rev_g);
-	free(inv);
-	free(rev_q);
-	free(gq);
+	if (arena != NULL) {
+		gf64_arena_release(arena, mark);
+	} else {
+		free(rev_f);
+		free(rev_g);
+		free(inv);
+		free(rev_q);
+		free(gq);
+	}
 }
 
 /* ----------------------------------------------------------------------------
@@ -328,6 +424,18 @@ void gf64_poly_invmod(
 	size_t n,
 	gf64_t *result
 ) {
+	gf64_poly_invmod_scratch(g, deg_g, n, result, NULL);
+}
+
+/* T4 (issue #59): arena-backed core. arena == NULL selects the legacy
+ * per-call malloc path (bit-identical arithmetic either way; only the
+ * scratch provenance differs). */
+void gf64_poly_invmod_scratch(
+	const gf64_t *g, size_t deg_g,
+	size_t n,
+	gf64_t *result,
+	gf64_arena_t *arena
+) {
 	if (n == 0) {
 		return;
 	}
@@ -346,7 +454,7 @@ void gf64_poly_invmod(
 	assert(result != NULL);
 
 	/*
-	 * Allocation strategy:
+	 * Scratch strategy (T4):
 	 *   g_buf  -- truncated copy of g (n entries)
 	 *   r_sq   -- scratch for r^2 (up to 2n - 2 coefficients)
 	 *   prod   -- scratch for g * r^2
@@ -360,16 +468,36 @@ void gf64_poly_invmod(
 	 * heap, caught by ASan via the Newton-reciprocal divmod path). Only
 	 * the first m_new coefficients are read back, but the full product is
 	 * materialized.
-	 *
-	 * TODO(replace-with-fft): an FFT-based Newton iteration would reuse a
-	 * single scratch area of size O(n) and avoid the 2n-sized buffers
-	 * below.
 	 */
-	gf64_t *g_buf = (gf64_t *)calloc(n, sizeof(gf64_t));
-	gf64_t *r_sq  = (gf64_t *)calloc(2 * n, sizeof(gf64_t));
-	gf64_t *prod  = (gf64_t *)calloc(3 * n, sizeof(gf64_t));
+	size_t mark = 0;
+	gf64_t *g_buf;
+	gf64_t *r_sq;
+	gf64_t *prod;
+	if (arena != NULL) {
+		mark = gf64_arena_mark(arena);
+		g_buf = gf64_arena_push(arena, n);
+		r_sq  = gf64_arena_push(arena, 2 * n);
+		prod  = gf64_arena_push(arena, 3 * n);
+		/* Match the legacy calloc semantics exactly: the Newton loop's
+		 * reads stay within freshly written ranges, but zeroing keeps the
+		 * buffer contents deterministic and the parity proof trivial. */
+		memset(g_buf, 0, n * sizeof(gf64_t));
+		memset(r_sq, 0, 2 * n * sizeof(gf64_t));
+		memset(prod, 0, 3 * n * sizeof(gf64_t));
+	} else {
+#ifdef GF64_OPENMP_PARALLEL_PREPARE
+		atomic_fetch_add(&gf64_mpe_heap_alloc_count, 3);
+#else
+		gf64_mpe_heap_alloc_count += 3;
+#endif
+		g_buf = (gf64_t *)calloc(n, sizeof(gf64_t));
+		r_sq  = (gf64_t *)calloc(2 * n, sizeof(gf64_t));
+		prod  = (gf64_t *)calloc(3 * n, sizeof(gf64_t));
+	}
 	if (g_buf == NULL || r_sq == NULL || prod == NULL) {
-		free(g_buf); free(r_sq); free(prod);
+		if (arena == NULL) {
+			free(g_buf); free(r_sq); free(prod);
+		}
 		abort();
 	}
 
@@ -422,9 +550,13 @@ void gf64_poly_invmod(
 		m = m_new;
 	}
 
-	free(g_buf);
-	free(r_sq);
-	free(prod);
+	if (arena != NULL) {
+		gf64_arena_release(arena, mark);
+	} else {
+		free(g_buf);
+		free(r_sq);
+		free(prod);
+	}
 }
 
 /* ----------------------------------------------------------------------------
@@ -483,7 +615,8 @@ static void gf64_mp_eval_recurse(
 	const SubproductTree *tree,
 	size_t lev, size_t node_idx,
 	gf64_t *out,
-	gf64_t *HEDLEY_RESTRICT scratch
+	gf64_t *HEDLEY_RESTRICT scratch,
+	gf64_arena_t *arena
 ) {
 	const size_t num_levels = tree->num_levels;
 
@@ -521,8 +654,8 @@ static void gf64_mp_eval_recurse(
 	gf64_t *q2  = scratch + 3 * slot;
 	gf64_t *child_scratch = scratch + 4 * slot;
 
-	gf64_poly_divmod(f, deg_f, P_L, child_deg, q, r_L);
-	gf64_poly_divmod(f, deg_f, P_R, child_deg, q2, r_R);
+	gf64_poly_divmod_scratch(f, deg_f, P_L, child_deg, q, r_L, arena);
+	gf64_poly_divmod_scratch(f, deg_f, P_R, child_deg, q2, r_R, arena);
 
 	/* True remainder degree: the divmod contract leaves r[deg_g..deg_f]
 	 * unspecified, so scan for the actual highest set coefficient
@@ -533,7 +666,7 @@ static void gf64_mp_eval_recurse(
 	}
 	if (deg_f < child_deg && rem_deg > deg_f) rem_deg = deg_f;
 
-	gf64_mp_eval_recurse(r_L, rem_deg, tree, lev + 1, 2 * node_idx,     out, child_scratch);
+	gf64_mp_eval_recurse(r_L, rem_deg, tree, lev + 1, 2 * node_idx,     out, child_scratch, arena);
 
 	rem_deg = 0;
 	for (size_t i = child_deg; i > 0; i--) {
@@ -541,7 +674,7 @@ static void gf64_mp_eval_recurse(
 	}
 	if (deg_f < child_deg && rem_deg > deg_f) rem_deg = deg_f;
 
-	gf64_mp_eval_recurse(r_R, rem_deg, tree, lev + 1, 2 * node_idx + 1, out, child_scratch);
+	gf64_mp_eval_recurse(r_R, rem_deg, tree, lev + 1, 2 * node_idx + 1, out, child_scratch, arena);
 }
 
 void gf64_multi_point_eval(
@@ -572,14 +705,24 @@ void gf64_multi_point_eval(
 	/* Scratch: 4 slots of N_at_lev gf64_t per frame (r_L/q/r_R/q2);
 	 * each recursion depth consumes 4·N_at_lev and N_at_lev halves per
 	 * level, so the total is 4N·(1 + 1/2 + 1/4 + …) ≈ 8N — the same
-	 * worst-case bound as gf64_mpi_recurse's interp scratch. */
+	 * worst-case bound as gf64_mpi_recurse's interp scratch.
+	 *
+	 * T4 (issue #59): the divmod working buffers come from a bump arena
+	 * sized to the worst single-call demand (root divmod ≈ 6N words with
+	 * its Newton reciprocal) rather than from O(N log N) per-node heap
+	 * allocations. */
 	gf64_t *scratch = (gf64_t *)malloc(8 * N * sizeof(gf64_t));
 	if (scratch == NULL) {
 		abort();
 	}
+	gf64_arena_t arena;
+	if (gf64_arena_init(&arena, 8 * N) != 0) {
+		abort();
+	}
 
-	gf64_mp_eval_recurse(f, deg_f, tree, 0, 0, out, scratch);
+	gf64_mp_eval_recurse(f, deg_f, tree, 0, 0, out, scratch, &arena);
 
+	gf64_arena_free(&arena);
 	free(scratch);
 }
 
