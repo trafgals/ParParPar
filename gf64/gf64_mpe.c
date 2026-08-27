@@ -221,7 +221,12 @@ void gf64_poly_divmod_schoolbook(
 
 /* T4 (issue #59): heap-allocation instrumentation for tests. Incremented
  * at every malloc site inside the divmod/invmod implementations. */
-size_t gf64_mpe_heap_alloc_count = 0;
+/* cubic P2 (task 19): atomic counter — T8 introduces OpenMP
+ * (gf64_subproduct.c:184); the non-atomic += sites below are UB
+ * under concurrent mutation. C11 _Atomic size_t is the minimum
+ * portable cost. */
+#include <stdatomic.h>
+_Atomic size_t gf64_mpe_heap_alloc_count = 0;
 
 /* ---------------------------------------------------------------------------
  * T4 arena: bump allocator over one caller-owned block. The _scratch
@@ -324,7 +329,7 @@ void gf64_poly_divmod_scratch(
 		rev_q = gf64_arena_push(arena, m);
 		gq    = gf64_arena_push(arena, deg_f + 1);
 	} else {
-		gf64_mpe_heap_alloc_count += 5;
+		atomic_fetch_add(&gf64_mpe_heap_alloc_count, 5);
 		rev_f = (gf64_t *)malloc(m * sizeof(gf64_t));
 		rev_g = (gf64_t *)malloc((deg_g + 1) * sizeof(gf64_t));
 		inv   = (gf64_t *)malloc(m * sizeof(gf64_t));
@@ -468,7 +473,7 @@ void gf64_poly_invmod_scratch(
 		memset(r_sq, 0, 2 * n * sizeof(gf64_t));
 		memset(prod, 0, 3 * n * sizeof(gf64_t));
 	} else {
-		gf64_mpe_heap_alloc_count += 3;
+		atomic_fetch_add(&gf64_mpe_heap_alloc_count, 3);
 		g_buf = (gf64_t *)calloc(n, sizeof(gf64_t));
 		r_sq  = (gf64_t *)calloc(2 * n, sizeof(gf64_t));
 		prod  = (gf64_t *)calloc(3 * n, sizeof(gf64_t));

@@ -377,7 +377,9 @@ void gf64_poly_invmod_scratch(
 /* Test instrumentation: number of heap allocations performed inside the
  * divmod/invmod implementations since the last reset. Zero when every
  * call is routed through an arena. */
-extern size_t gf64_mpe_heap_alloc_count;
+/* cubic P2 (task 19): atomic for OMP safety — see gf64_mpe.c. */
+#include <stdatomic.h>
+extern _Atomic size_t gf64_mpe_heap_alloc_count;
 
 HEDLEY_END_C_DECLS
 
