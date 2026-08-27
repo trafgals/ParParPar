@@ -111,6 +111,20 @@ function grid(gridName, cases) {
     }
 }
 
+// cubic P1 adversarial: numRecovery=2**33 * blockSize=2**32 overflows size_t
+{
+    let threw = false;
+    try {
+        binding.assemble_recovery_packets(Buffer.alloc(0), Buffer.from('12345678'), 0n, 2**33, 2**32);
+    } catch (e) {
+        threw = true;
+        const ok = /RangeError|exceeds/.test(e.message);
+        if (ok) console.log('  PASS  adversarial overflow throws RangeError (msg: ' + e.message + ')');
+        else { console.log('  FAIL  adversarial overflow threw but wrong error: ' + e.message); failures.push('overflow'); }
+    }
+    if (!threw) { console.log('  FAIL  adversarial numRecovery=2^33 * blockSize=2^32 did not throw'); failures.push('overflow'); }
+}
+
 grid('numRecovery', [
     { label: '1',     numRecovery: 1,   blockSize: 4096, firstRecoveryIndex: 0 },
     { label: '4',     numRecovery: 4,   blockSize: 4096, firstRecoveryIndex: 0 },

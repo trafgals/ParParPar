@@ -2662,6 +2662,13 @@ static napi_value AssembleRecoveryPackets_NAPI(napi_env env, napi_callback_info 
 		return NULL;
 	}
 
+	// cubic P1: refuse adversarial numRecovery*blockSize that would wrap size_t.
+	const size_t kMaxRecoveryBytes = (size_t)1 << 40; // 1 TiB sane upper bound
+	if ((size_t)num_recovery > kMaxRecoveryBytes / (size_t)block_size) {
+		napi_throw_range_error(env, NULL, "numRecovery * blockSize exceeds 1 TiB cap");
+		return NULL;
+	}
+
 	const size_t total_body_per_pkt = (size_t)16 + (size_t)block_size;
 	const size_t pkt_size = 48 + total_body_per_pkt;
 	const size_t total_in_bytes = (size_t)num_recovery * (size_t)block_size;
