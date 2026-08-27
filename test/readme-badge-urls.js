@@ -62,6 +62,11 @@ if (referencedList.length === 0) {
     var id = referencedList[i];
     var url = BADGE_BRANCH_RAW + 'benchmarks/badges/' + id + '.json';
     var r = await fetch(url);
+    if (r.status === 0) {
+      console.error('FAIL: ' + id + ' -> network error: ' + r.body);
+      failed.push(id);
+      continue;
+    }
     if (r.status !== 200) {
       console.error('FAIL: ' + id + ' -> HTTP ' + r.status + ' (' + url + ')');
       failed.push(id);

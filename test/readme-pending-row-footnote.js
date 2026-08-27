@@ -16,16 +16,22 @@
  *     the footnote must distinguish them.
  *   - Update (2026-08-28, PR for Zen4 2026-08-28 re-measure): the 16 GiB
  *     row is now measured (no longer pending) on Node 22.22.3. The 10 GiB
- *     row was removed from the README in #99. The test now handles the
- *     0-pending-rows case as a PASS (the contract is satisfied vacuously),
- *     while still applying the per-row + lumping checks if any future PR
- *     adds a new pending row. We also assert that if any row IS pending,
- *     its badgeId still appears in sources.json (sanity).
+ *     row was removed from the README in #99 (40 KiB blocks fail
+ *     lib/par3gen.js:1270's `Block size must be a power of 2` check). The
+ *     test handles the 0-pending-rows case as a PASS (the contract is
+ *     satisfied vacuously), while still applying the per-row + lumping
+ *     checks if any future PR adds a new pending row.
+ *   - cubic P2 (PR #101): if any badge fetch returns a network/HTTP/parse
+ *     error, the test fails immediately. Previously a fetch failure
+ *     left `body === null`, the row was treated as non-pending, and the
+ *     vacuous-truth path could silently skip the per-row + lumping
+ *     checks — a false PASS on broken CI.
  *
  * Run: `node test/readme-pending-row-footnote.js`
  *   - exit 0: no pending rows are mis-attributed
- *   - exit 1: a pending row has no per-row note, OR the footnote lumps
- *     two differently-caused pending rows under the same cause
+ *   - exit 1: a badge fetch/parse failed, a pending row has no per-row
+ *     note, OR the footnote lumps two differently-caused pending rows
+ *     under the same cause
  */
 
 var fs = require('fs');
@@ -79,13 +85,31 @@ function fetchJson(url) {
       var buf = '';
       res.on('data', function(d) { buf += d.toString(); });
       res.on('end', function() {
-        if (res.statusCode !== 200) return resolve({ status: res.statusCode, body: null });
+        if (res.statusCode !== 200) return resolve({ status: res.statusCode, body: null, fetchError: 'HTTP ' + res.statusCode });
         // Tolerate trailing commas (the live badge JSONs have a trailing `,\n}`)
         var cleaned = buf.replace(/,(\s*[}\]])/g, '$1');
         try { resolve({ status: 200, body: JSON.parse(cleaned) }); } catch (e) { resolve({ status: 200, body: null, parseError: e.message }); }
       });
     }).on('error', function(e) { resolve({ status: 0, body: null, error: String(e) }); });
   });
+}
+
+// Track fetch/parse failures so the test cannot false-PASS when badge
+// resolution silently breaks. Without this, a row with a broken badge
+// would be treated as non-pending (the vacuous-truth path) and the
+// per-row + lumping checks would silently not run.
+var fetchFailures = [];
+function trackFetch(label, r) {
+  if (r.fetchError) {
+    console.error('FAIL: ' + label + ' badge fetch error: ' + r.fetchError);
+    fetchFailures.push(label);
+  } else if (r.parseError) {
+    console.error('FAIL: ' + label + ' badge JSON parse error: ' + r.parseError);
+    fetchFailures.push(label);
+  } else if (r.error) {
+    console.error('FAIL: ' + label + ' badge network error: ' + r.error);
+    fetchFailures.push(label);
+  }
 }
 
 (async function() {
@@ -104,6 +128,7 @@ function fetchJson(url) {
     var badgeId = m[1];
     var url = BADGE_BRANCH_RAW + 'benchmarks/badges/' + badgeId + '.json';
     var r = await fetchJson(url);
+    trackFetch(badgeId, r);
     var isPending = r.body && typeof r.body.message === 'string' && /pending/i.test(r.body.message);
     if (isPending) {
       pendingRows.push({
@@ -115,6 +140,14 @@ function fetchJson(url) {
         notes: notes
       });
     }
+  }
+
+  // Fail fast if any badge fetch/parse failed — otherwise a broken badge
+  // could leave us with zero pending rows and the vacuous-truth path
+  // would silently not run the per-row + lumping checks.
+  if (fetchFailures.length > 0) {
+    console.error('FAIL: ' + fetchFailures.length + ' badge fetch/parse failure(s) — cannot determine pending state');
+    process.exit(1);
   }
 
   console.log('Found ' + pendingRows.length + ' pending row(s) (Zen4 message = "pending"):');
