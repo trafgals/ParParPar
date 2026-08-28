@@ -248,12 +248,22 @@ function trackFetch(label, r) {
   //    blocks the larger shapes — see #91)"
   // which lumps both under the V8 Buffer cap. The post-#92 footnote uses
   // two separate sentences, so the lumping pattern should not match.
-  var lumpsBoth = /16 GiB[\s\S]{0,80}10 GiB[\s\S]{0,200}(V8|Buffer cap|#[ ]?91)/i.test(footnote);
-  if (lumpsBoth) {
-    console.error('FAIL: footnote lumps 16 GiB and 10 GiB/262k under the SAME cause (the original P3 finding):');
-    var m = footnote.match(/16 GiB[\s\S]{0,300}10 GiB[\s\S]{0,300}/);
-    if (m) console.error('    ' + m[0]);
-    failed++;
+  //
+  // Guard (cubic P2 #1, PR #102): only check lumping if at least one
+  // pending row was actually found. Without this, the regex runs
+  // unconditionally on the footnote text and could false-FAIL on a
+  // perfectly fine footnote that just happens to mention both 16 GiB
+  // and 10 GiB/262k in passing (e.g. "the 10 GiB row was removed from
+  // this table in #99" + a 16 GiB note). The vacuous-truth path is
+  // now consistent across Rules 2 and 3.
+  if (has16GiB || has10GiB_262k) {
+    var lumpsBoth = /16 GiB[\s\S]{0,80}10 GiB[\s\S]{0,200}(V8|Buffer cap|#[ ]?91)/i.test(footnote);
+    if (lumpsBoth) {
+      console.error('FAIL: footnote lumps 16 GiB and 10 GiB/262k under the SAME cause (the original P3 finding):');
+      var m = footnote.match(/16 GiB[\s\S]{0,300}10 GiB[\s\S]{0,300}/);
+      if (m) console.error('    ' + m[0]);
+      failed++;
+    }
   }
 
   if (failed > 0) {
