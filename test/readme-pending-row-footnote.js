@@ -1,22 +1,37 @@
 "use strict";
-/* Contract test (cubic review 4949074978 on PR #92, P3): every row in the
- * README throughput table whose Zen4 badge resolves to a "pending" message
- * must have its own per-row "Notes" cell explaining the cause, and the
- * table-level footnote must NOT mis-attribute that row's pending to a
- * cause different from the per-row note.
+/* Contract test (cubic review 4949074978 on PR #92, P3; updated 2026-08-28
+ * for the post-16G-measured state):
  *
- * The P3 finding: PR #92's footnote said "The 16 GiB and 10 GiB/262k rows
- * remain `pending` (V8 4 GiB Buffer cap blocks the larger shapes — see #91)"
- * but the 10 GiB/262144/40 KiB row's own per-row note said
- * "10 GiB / 262144 / 40 KiB is non-pow2 (rejected by #87); pending" — i.e.
- * the 10 GiB row is blocked earlier by #87's pow2 contract, not by V8's
- * Buffer cap. The two pending rows have different causes and the footnote
- * must distinguish them.
+ *   - For every row in the README throughput table whose Zen4 badge
+ *     resolves to a "pending" message, the per-row "Notes" cell MUST
+ *     contain a concrete cause explanation, and the table-level footnote
+ *     MUST NOT mis-attribute that row's pending to a cause different
+ *     from the per-row note.
+ *   - The P3 finding (PR #92): footnote said "The 16 GiB and 10 GiB/262k
+ *     rows remain `pending` (V8 4 GiB Buffer cap blocks the larger shapes
+ *     — see #91)" but the 10 GiB/262144/40 KiB row's own per-row note said
+ *     "10 GiB / 262144 / 40 KiB is non-pow2 (rejected by #87); pending" —
+ *     i.e. the 10 GiB row is blocked earlier by #87's pow2 contract, not
+ *     by V8's Buffer cap. The two pending rows have different causes and
+ *     the footnote must distinguish them.
+ *   - Update (2026-08-28, PR for Zen4 2026-08-28 re-measure): the 16 GiB
+ *     row is now measured (no longer pending) on Node 22.22.3. The 10 GiB
+ *     row was removed from the README in #99 (40 KiB blocks fail
+ *     lib/par3gen.js:1270's `Block size must be a power of 2` check). The
+ *     test handles the 0-pending-rows case as a PASS (the contract is
+ *     satisfied vacuously), while still applying the per-row + lumping
+ *     checks if any future PR adds a new pending row.
+ *   - cubic P2 (PR #101): if any badge fetch returns a network/HTTP/parse
+ *     error, the test fails immediately. Previously a fetch failure
+ *     left `body === null`, the row was treated as non-pending, and the
+ *     vacuous-truth path could silently skip the per-row + lumping
+ *     checks — a false PASS on broken CI.
  *
  * Run: `node test/readme-pending-row-footnote.js`
- *   - exit 0: pending rows are self-consistent
- *   - exit 1: a pending row's footnote mis-attributes its cause, or a
- *     pending row has no per-row note at all
+ *   - exit 0: no pending rows are mis-attributed
+ *   - exit 1: a badge fetch/parse failed, a pending row has no per-row
+ *     note, OR the footnote lumps two differently-caused pending rows
+ *     under the same cause
  */
 
 var fs = require('fs');
@@ -70,11 +85,31 @@ function fetchJson(url) {
       var buf = '';
       res.on('data', function(d) { buf += d.toString(); });
       res.on('end', function() {
-        if (res.statusCode !== 200) return resolve({ status: res.statusCode, body: null });
-        try { resolve({ status: 200, body: JSON.parse(buf) }); } catch (e) { resolve({ status: 200, body: null, parseError: e.message }); }
+        if (res.statusCode !== 200) return resolve({ status: res.statusCode, body: null, fetchError: 'HTTP ' + res.statusCode });
+        // Tolerate trailing commas (the live badge JSONs have a trailing `,\n}`)
+        var cleaned = buf.replace(/,(\s*[}\]])/g, '$1');
+        try { resolve({ status: 200, body: JSON.parse(cleaned) }); } catch (e) { resolve({ status: 200, body: null, parseError: e.message }); }
       });
     }).on('error', function(e) { resolve({ status: 0, body: null, error: String(e) }); });
   });
+}
+
+// Track fetch/parse failures so the test cannot false-PASS when badge
+// resolution silently breaks. Without this, a row with a broken badge
+// would be treated as non-pending (the vacuous-truth path) and the
+// per-row + lumping checks would silently not run.
+var fetchFailures = [];
+function trackFetch(label, r) {
+  if (r.fetchError) {
+    console.error('FAIL: ' + label + ' badge fetch error: ' + r.fetchError);
+    fetchFailures.push(label);
+  } else if (r.parseError) {
+    console.error('FAIL: ' + label + ' badge JSON parse error: ' + r.parseError);
+    fetchFailures.push(label);
+  } else if (r.error) {
+    console.error('FAIL: ' + label + ' badge network error: ' + r.error);
+    fetchFailures.push(label);
+  }
 }
 
 (async function() {
@@ -93,6 +128,7 @@ function fetchJson(url) {
     var badgeId = m[1];
     var url = BADGE_BRANCH_RAW + 'benchmarks/badges/' + badgeId + '.json';
     var r = await fetchJson(url);
+    trackFetch(badgeId, r);
     var isPending = r.body && typeof r.body.message === 'string' && /pending/i.test(r.body.message);
     if (isPending) {
       pendingRows.push({
@@ -106,15 +142,30 @@ function fetchJson(url) {
     }
   }
 
+  // Fail fast if any badge fetch/parse failed — otherwise a broken badge
+  // could leave us with zero pending rows and the vacuous-truth path
+  // would silently not run the per-row + lumping checks.
+  if (fetchFailures.length > 0) {
+    console.error('FAIL: ' + fetchFailures.length + ' badge fetch/parse failure(s) — cannot determine pending state');
+    process.exit(1);
+  }
+
   console.log('Found ' + pendingRows.length + ' pending row(s) (Zen4 message = "pending"):');
   for (var i = 0; i < pendingRows.length; i++) {
     var p = pendingRows[i];
     console.log('  ' + p.projectFormat + ' / ' + p.workload + '  (badge: ' + p.badgeId + ')');
     console.log('    Notes: ' + p.notes);
   }
+  // Vacuous-truth: zero pending rows means the contract is satisfied.
+  // (Previously this exited with failure; that was the wrong contract for a
+  // test — a test should pass when its assertion holds, including when
+  // there is nothing to assert. We still want to catch the lumping bug
+  // below in case a future PR adds a pending row, so we fall through.)
   if (pendingRows.length === 0) {
-    console.error('FAIL: no pending rows detected — test precondition is no longer relevant; remove the test');
-    process.exit(1);
+    console.log('PASS: 0 pending rows in the README — contract is vacuously satisfied');
+    // We still evaluate the lumping check below (a future PR with two
+    // pending rows would re-trigger it); but since there's nothing to
+    // attribute, the lumping pattern can't fire. Fall through.
   }
 
   var failed = 0;
@@ -209,6 +260,10 @@ function fetchJson(url) {
     console.error('\nFAIL: ' + failed + ' pending-row footnote contract violation(s)');
     process.exit(1);
   }
-  console.log('\nPASS: all ' + pendingRows.length + ' pending row(s) have per-row causes; footnote splits the 16 GiB and 10 GiB/262k causes correctly');
+  if (pendingRows.length === 0) {
+    console.log('\nPASS: 0 pending rows in the README — no cause-attribution checks needed');
+  } else {
+    console.log('\nPASS: all ' + pendingRows.length + ' pending row(s) have per-row causes; footnote splits the causes correctly');
+  }
   process.exit(0);
 })().catch(function(e) { console.error('FAIL: uncaught: ' + e.stack); process.exit(1); });
