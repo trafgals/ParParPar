@@ -124,7 +124,6 @@ function run(opts) {
       var bufAddr = diagBuf.buffer ? Number(diagBuf.buffer) : 0;
       console.log('  Buffer alignment:    ' + ((bufAddr % 64 === 0) ? '64-byte aligned' : 'NOT 64-byte aligned'));
       console.log('  Total input blocks:  ' + shape.totalBlocks);
-      console.log('  PAR3_GF64_INPUT_POOL_SIZE: ' + (process.env.PAR3_GF64_INPUT_POOL_SIZE || '(not set)'));
 
       var tCreate = Date.now();
       var peakRSS = 0;
