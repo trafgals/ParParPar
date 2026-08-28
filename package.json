@@ -25,7 +25,7 @@
     "par3": "bin/par3.js"
   },
   "engines": {
-    "node": ">=0.10"
+    "node": ">=22"
   },
   "scripts": {
     "preinstall": "node scripts/prebuild-check.js",
