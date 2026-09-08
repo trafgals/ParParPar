@@ -1761,6 +1761,160 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 	return NULL;
 }
 
+// compute_recovery_accumulate NAPI binding — accumulates recovery for a chunk
+// of input blocks directly into recoveryAccumulator in-place.
+static napi_value ComputeRecoveryAccumulate_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 8;
+	napi_value args[8];
+
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to get callback info");
+		return NULL;
+	}
+
+	if(argc < 7) {
+		napi_throw_type_error(env, NULL, "Requires inputs, outputs, numInputs, numRecovery, blockSize, firstInput, firstRecovery [, numThreads]");
+		return NULL;
+	}
+
+	gf64_t* inputs = NULL;
+	size_t inputsLen = 0;
+	status = napi_get_buffer_info(env, args[0], (void**)&inputs, &inputsLen);
+	if(status != napi_ok) {
+		napi_throw_type_error(env, NULL, "inputs must be a Buffer");
+		return NULL;
+	}
+	void* aligned_inputs = (void*)inputs;
+	bool needs_inputs_temp = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+		void* tmp = nullptr;
+		if (ALIGN_ALLOC(tmp, inputsLen, 64)) {
+			memcpy(tmp, inputs, inputsLen);
+			aligned_inputs = tmp;
+			needs_inputs_temp = true;
+		} else {
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed");
+			return NULL;
+		}
+	}
+
+	gf64_t* outputs = NULL;
+	size_t outputsLen = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&outputs, &outputsLen);
+	if(status != napi_ok) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		napi_throw_type_error(env, NULL, "outputs must be a Buffer");
+		return NULL;
+	}
+	void* aligned_outputs = (void*)outputs;
+	bool needs_outputs_temp = false;
+	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+		void* tmp = nullptr;
+		if (ALIGN_ALLOC(tmp, outputsLen, 64)) {
+			memcpy(tmp, outputs, outputsLen);
+			aligned_outputs = tmp;
+			needs_outputs_temp = true;
+		} else {
+			if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+			napi_throw_error(env, NULL, "ALIGN_ALLOC failed");
+			return NULL;
+		}
+	}
+
+	int32_t numInputs = 0;
+	status = napi_get_value_int32(env, args[2], &numInputs);
+	if(status != napi_ok) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_type_error(env, NULL, "numInputs must be an integer");
+		return NULL;
+	}
+
+	int32_t numRecovery = 0;
+	status = napi_get_value_int32(env, args[3], &numRecovery);
+	if(status != napi_ok) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_type_error(env, NULL, "numRecovery must be an integer");
+		return NULL;
+	}
+
+	int64_t blockSize = 0;
+	status = napi_get_value_int64(env, args[4], &blockSize);
+	if(status != napi_ok) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_type_error(env, NULL, "blockSize must be an integer");
+		return NULL;
+	}
+
+	uint64_t firstInput = 0;
+	status = get_uint64_from_value(env, args[5], &firstInput);
+	if(status != napi_ok) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_type_error(env, NULL, "firstInput must be a Number or BigInt");
+		return NULL;
+	}
+
+	uint64_t firstRecovery = 0;
+	status = get_uint64_from_value(env, args[6], &firstRecovery);
+	if(status != napi_ok) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_type_error(env, NULL, "firstRecovery must be a Number or BigInt");
+		return NULL;
+	}
+
+	int32_t numThreads = 0;
+	if(argc >= 8) {
+		status = napi_get_value_int32(env, args[7], &numThreads);
+		if(status != napi_ok) {
+			if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+			if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+			napi_throw_type_error(env, NULL, "numThreads must be an integer");
+			return NULL;
+		}
+	}
+
+	if(numInputs <= 0 || numRecovery <= 0 || blockSize <= 0 || blockSize % 8 != 0) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_range_error(env, NULL, "Invalid dimensions or unaligned block size");
+		return NULL;
+	}
+
+	if((size_t)numInputs > inputsLen / (size_t)blockSize || (size_t)numRecovery > outputsLen / (size_t)blockSize) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_range_error(env, NULL, "Buffer too small for specified dimensions");
+		return NULL;
+	}
+
+	size_t blockSize64 = (size_t)(blockSize / 8);
+	gf64_init_dispatch();
+
+	GF64Controller::AccumulateRecoveryChunk(
+		(const gf64_t*)aligned_inputs, (size_t)numInputs,
+		(gf64_t*)aligned_outputs, (size_t)numRecovery,
+		blockSize64,
+		firstInput, firstRecovery,
+		(int)numThreads
+	);
+
+	if (needs_inputs_temp) {
+		ALIGN_FREE(aligned_inputs);
+	}
+	if (needs_outputs_temp) {
+		memcpy(outputs, aligned_outputs, (size_t)numRecovery * blockSize);
+		ALIGN_FREE(aligned_outputs);
+	}
+
+	return NULL;
+}
+
 // compute_recovery_fenger NAPI binding — Fenger-Toeplitz (issue #28) single-
 // call variant of compute_recovery_full. Same args as ComputeRecoveryFull_NAPI,
 // but routes through GF64Controller::ComputeRecoveryBlocksFenger, which uses
@@ -3060,6 +3214,19 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "compute_recovery_barycentric", compute_recovery_barycentric_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set compute_recovery_barycentric property");
+		return NULL;
+	}
+
+	// Chunked accumulation recovery variant.
+	napi_value compute_recovery_accumulate_fn;
+	status = napi_create_function(env, NULL, 0, ComputeRecoveryAccumulate_NAPI, NULL, &compute_recovery_accumulate_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create compute_recovery_accumulate function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "compute_recovery_accumulate", compute_recovery_accumulate_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set compute_recovery_accumulate property");
 		return NULL;
 	}
 
