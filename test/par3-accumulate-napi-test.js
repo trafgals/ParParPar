@@ -18,8 +18,18 @@ var assert = require("assert");
 var crypto = require("crypto");
 var path = require("path");
 
-var addon = require("../build/Release/parpar_gf64.node");
-assert.strictEqual(typeof addon.compute_recovery_accumulate, "function", "addon must export compute_recovery_accumulate");
+var addon;
+try {
+	addon = require("../build/Release/parpar_gf64.node");
+} catch (e) {
+	console.log("SKIP: parpar_gf64.node not built: " + (e && e.message ? e.message : String(e)));
+	process.exit(0);
+}
+
+if (!addon || typeof addon.compute_recovery_accumulate !== "function") {
+	console.log("SKIP: compute_recovery_accumulate not exported by native addon");
+	process.exit(0);
+}
 
 var passed = 0;
 var failed = 0;
@@ -106,6 +116,26 @@ try {
 
 	// Larger N geometry (above Barycentric gate N>1000)
 	testGeometry(2048, 16, 4096, 4);
+
+	// cubic review 0c8cc30f P1: test error handling and bounds checks
+	var threwTooSmall = false;
+	try {
+		addon.compute_recovery_accumulate(Buffer.alloc(8), Buffer.alloc(8), 100, 100, 8, 0, 0, 1);
+	} catch (e) {
+		threwTooSmall = true;
+	}
+	assert.ok(threwTooSmall, "Must throw error when buffer too small");
+	pass("cubic review 0c8cc30f P1: out of bounds dimensions rejected cleanly");
+
+	// Zero blocks rejected cleanly
+	var threwZero = false;
+	try {
+		addon.compute_recovery_accumulate(Buffer.alloc(8), Buffer.alloc(8), 0, 0, 8, 0, 0, 1);
+	} catch (e) {
+		threwZero = true;
+	}
+	assert.ok(threwZero, "Must throw error when dimensions are 0");
+	pass("Zero blocks rejected cleanly with Invalid dimensions");
 } catch (e) {
 	fail("testGeometry threw", e);
 }

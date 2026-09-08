@@ -274,6 +274,7 @@
               # rejects the trampoline argument with C2664 because Node 22
               # makes the env pointer non-const by default in the typedef.
               "defines": ["NODE_API_EXPERIMENTAL_NOGC_ENV_OPT_OUT"],
+              "msvs_settings": {"VCCLCompilerTool": {"ExceptionHandling": "1"}},
               "cflags": ["/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS"],
               "cxxflags": ["/std:c++17", "/permissive-", "/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS", "/EHsc"]
             }]

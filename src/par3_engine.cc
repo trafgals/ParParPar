@@ -1040,9 +1040,18 @@ void GF64Controller::AccumulateRecoveryChunk(
 	if (numChunkBlocks == 0 || numRecovery == 0 || blockSize64 == 0) return;
 	EnsureDispatch();
 
-	// Allocate and build the Cauchy coefficient matrix for this chunk (numRecovery x numChunkBlocks)
+	// cubic review 0c8cc30f P1: prevent integer overflow in coeffCount
+	if (numChunkBlocks > SIZE_MAX / numRecovery) {
+		throw std::bad_alloc();
+	}
 	size_t coeffCount = numRecovery * numChunkBlocks;
-	std::vector<gf64_t> coeff(coeffCount);
+	if (coeffCount > SIZE_MAX / sizeof(gf64_t)) {
+		throw std::bad_alloc();
+	}
+
+	// Allocate and build the Cauchy coefficient matrix for this chunk (numRecovery x numChunkBlocks)
+	std::vector<gf64_t> coeff;
+	coeff.resize(coeffCount);
 	BuildCauchyMatrix(coeff.data(), numChunkBlocks, numRecovery, firstChunkInput, firstRecovery);
 
 	ComputeRecoveryBlocksWithCoeff(

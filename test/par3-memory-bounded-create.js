@@ -20,8 +20,8 @@ var assert = require("assert");
 
 var par3gen = require("../lib/par3gen.js");
 
-process.on("uncaughtException", function(e) { console.error("UNCAUGHT EXCEPTION:", e); });
-process.on("unhandledRejection", function(e) { console.error("UNHANDLED REJECTION:", e); });
+process.on("uncaughtException", function(e) { console.error("UNCAUGHT EXCEPTION:", e); process.exitCode = 1; });
+process.on("unhandledRejection", function(e) { console.error("UNHANDLED REJECTION:", e); process.exitCode = 1; });
 
 var passed = 0;
 var failed = 0;
@@ -94,6 +94,17 @@ function runTest() {
 				blockSize: 16 * 1024,
 				recoverySlices: 8,
 				chunkBytes: 16 * 1024
+			},
+			{
+				label: "Multi-file unaligned sizes (cubic review 0c8cc30f P1: 500K, 700K, 300K, B=32K, chunk=128K)",
+				files: [
+					{ name: "u1.bin", size: 500000 },
+					{ name: "u2.bin", size: 700000 },
+					{ name: "u3.bin", size: 300000 }
+				],
+				blockSize: 32 * 1024,
+				recoverySlices: 8,
+				chunkBytes: 128 * 1024
 			}
 		];
 
@@ -167,13 +178,21 @@ function runTest() {
 
 					if (unchunkedRecs.length !== chunkedRecs.length) {
 						fail(tc.label + " length mismatch: " + unchunkedRecs.length + " vs " + chunkedRecs.length);
+						runNext();
 					} else if (!unchunkedRecs.equals(chunkedRecs)) {
 						fail(tc.label + " content mismatch (recovery bytes not bit-identical)");
+						runNext();
 					} else {
-						pass(tc.label + " bit-identical (" + unchunkedRecs.length + " recovery bytes)");
+						// Verify that the generated chunked archive is valid and repairable
+						par3gen.verify(chunkedOut + ".par3", function(err3) {
+							if (err3) {
+								fail(tc.label + " verification failed: " + err3.message);
+							} else {
+								pass(tc.label + " bit-identical (" + unchunkedRecs.length + " recovery bytes, verified)");
+							}
+							runNext();
+						});
 					}
-
-					runNext();
 				});
 			});
 		}
@@ -195,11 +214,22 @@ function runTest() {
 			process.env.PAR3_STREAM_CHUNK_BYTES = String(1024 * 1024); // 1 MiB chunks
 
 			var initialRss = process.memoryUsage().rss;
+			var peakRss = initialRss;
+			// Sample RSS frequently during create to accurately capture peak RSS
+			var sampleTimer = setInterval(function() {
+				var cur = process.memoryUsage().rss;
+				if (cur > peakRss) peakRss = cur;
+			}, 5);
 
 			par3gen.create([bigFile], bigOut, {
 				blockSize: 64 * 1024,
-				recoverySlices: 8
+				recoverySlices: 8,
+				onEvent: function(evt, d) {
+					var cur = process.memoryUsage().rss;
+					if (cur > peakRss) peakRss = cur;
+				}
 			}, function(err) {
+				clearInterval(sampleTimer);
 				delete process.env.PAR3_FORCE_CHUNKED;
 				delete process.env.PAR3_STREAM_CHUNK_BYTES;
 
@@ -210,14 +240,20 @@ function runTest() {
 				}
 
 				var finalRss = process.memoryUsage().rss;
-				var rssDelta = finalRss - initialRss;
-				console.log("  Initial RSS: " + (initialRss / 1048576).toFixed(1) + " MiB");
-				console.log("  Final RSS:   " + (finalRss / 1048576).toFixed(1) + " MiB");
-				console.log("  Delta RSS:   " + (rssDelta / 1048576).toFixed(1) + " MiB");
+				if (finalRss > peakRss) peakRss = finalRss;
+				var peakRssDelta = peakRss - initialRss;
+				console.log("  Initial RSS:  " + (initialRss / 1048576).toFixed(1) + " MiB");
+				console.log("  Peak RSS:     " + (peakRss / 1048576).toFixed(1) + " MiB");
+				console.log("  Final RSS:    " + (finalRss / 1048576).toFixed(1) + " MiB");
+				console.log("  Peak RSS Δ:   " + (peakRssDelta / 1048576).toFixed(1) + " MiB");
 
-				// The delta RSS should be well under the file size + fullInputs buffer.
-				// In bounded mode, peak RSS stays strictly bounded.
-				pass("Bounded memory create succeeded with peak RSS within budget");
+				// cubic review 0c8cc30f P2: assert that peak RSS stays strictly bounded under budget
+				var maxAllowedRss = 350 * 1024 * 1024; // 350 MiB budget ceiling
+				if (peakRss > maxAllowedRss) {
+					fail("Peak RSS " + (peakRss / 1048576).toFixed(1) + " MiB exceeded budget ceiling of " + (maxAllowedRss / 1048576).toFixed(1) + " MiB");
+				} else {
+					pass("cubic review 0c8cc30f P2: Peak RSS " + (peakRss / 1048576).toFixed(1) + " MiB strictly bounded under 350 MiB");
+				}
 				console.log("\n=================================");
 				console.log("Summary: " + passed + " passed, " + failed + " failed");
 				console.log("=================================");

@@ -1896,13 +1896,26 @@ static napi_value ComputeRecoveryAccumulate_NAPI(napi_env env, napi_callback_inf
 	size_t blockSize64 = (size_t)(blockSize / 8);
 	gf64_init_dispatch();
 
-	GF64Controller::AccumulateRecoveryChunk(
-		(const gf64_t*)aligned_inputs, (size_t)numInputs,
-		(gf64_t*)aligned_outputs, (size_t)numRecovery,
-		blockSize64,
-		firstInput, firstRecovery,
-		(int)numThreads
-	);
+	// cubic review 0c8cc30f P1: catch bad_alloc and exceptions to prevent Node abort and avoid leaking bounce buffers
+	try {
+		GF64Controller::AccumulateRecoveryChunk(
+			(const gf64_t*)aligned_inputs, (size_t)numInputs,
+			(gf64_t*)aligned_outputs, (size_t)numRecovery,
+			blockSize64,
+			firstInput, firstRecovery,
+			(int)numThreads
+		);
+	} catch (const std::bad_alloc&) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_error(env, NULL, "Out of memory in compute_recovery_accumulate");
+		return NULL;
+	} catch (const std::exception& e) {
+		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
+		if (needs_outputs_temp) ALIGN_FREE(aligned_outputs);
+		napi_throw_error(env, NULL, e.what());
+		return NULL;
+	}
 
 	if (needs_inputs_temp) {
 		ALIGN_FREE(aligned_inputs);
