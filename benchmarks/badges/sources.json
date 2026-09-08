@@ -58,7 +58,7 @@
       "label": "",
       "message": "812MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Barycentric kernel; native Windows. Largest pow2 shape that fits `buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER` (Node 22+). Chunked create path (PR #108): input pool capped at 64 MiB (lib/par3gen.js:629) and reset via `_resetInputBufferPool` (lib/par3gen.js:620) between batches. 2 runs per-run 838.3 / 785.4, median 811.87, stdev 37.40. Peak RSS 301.73 MiB."
+      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Barycentric kernel; native Windows. Largest pow2 shape that fits `buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER` (Node 22+). Chunked create path (PR #108): input pool capped at 64 MiB via `poolSize = min(poolCap, max(64 MiB, totalSize + 64 KiB))` (lib/par3gen.js:633, where `poolCap` defaults to 64 MiB), reset between batches via `_resetInputBufferPool` (lib/par3gen.js:620). 2 runs per-run 838.3 / 785.4, median 811.87, stdev 37.40. Peak RSS 301.73 MiB."
     },
     {
       "id": "par3-14g-229376-zen4",
