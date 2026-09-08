@@ -1,44 +1,20 @@
 "use strict";
 /* Contract test for the 14 GiB / 229376 / 64 KiB / R=32768 pending row
- * added to the README throughput table by PR #103 (closes issue #91 on
- * the chunked-input pipeline CI leg + Node 22 buffer-cap lift).
+ * in the README throughput table.
  *
  * Pin:
- *   1. The 14G row exists in the README throughput table, references
- *      the `par3-14g-229376-zen4` Zen4 badge id, and has `(pending)`
- *      flagged in its workload cell (no measured MB/s figure).
- *   2. The 14G row's `Notes` cell names every contract clause the
- *      plan established:
- *        - "Fenger" (kernel identity at R >= FENGER_MIN_R)
- *        - "padded" (engine's always-pad policy at non-pow2 N=229376)
- *        - "next_pow2" or `262144` (the rounding target)
- *        - "Node 22" (Node 22 platform bump required to lift the
- *          V8 Buffer cap that previously blocked this geometry)
- *        - "test/par3-fenger-padded-engine.js" (the test that pins
- *          kernel parity at the always-pad boundary)
- *        - "test/par3-chunked-inputs.js" (the test that exercises the
- *          multi-chunk pipeline path on CI)
- *      This is the multi-faceted contract per `.omo/plans/variable-
- *      archive-fenger.md`; missing any one of these would let a future
- *      maintainer drop the test references or revert to a non-pow2
- *      treatment without the test flagging it.
- *   3. The table-level footnote mentions the 14G pending row and
- *      attributes the pending state to the Node 22 platform change
- *      (NOT to V8 Buffer cap or pow2 — those are the 16G and 10G
- *      historical pending states).
- *   4. The Zen4 badge id resolves to a live shields.io endpoint JSON
- *      served from `feat/ci-benchmark-badge` with `message: "pending"`,
- *      and `sources.json` declares the same id with a matching
- *      `message: "pending"`.
+ *   1. The 14G row exists, references `par3-14g-229376-zen4`, and has
+ *      `(pending)` in the workload cell.
+ *   2. The 14G `Notes` cell contains Fenger / padded / next_pow2 /
+ *      Node 22 / test/par3-fenger-padded-engine.js / test/par3-chunked-
+ *      inputs.js. Missing any one would let a future edit silently drop
+ *      a contract clause.
+ *   3. The footnote attributes 14G pending to Node 22, not to pow2 or
+ *      V8 Buffer cap (those are different rows' causes).
+ *   4. The live Zen4 badge JSON (feat/ci-benchmark-badge) and the local
+ *      sources.json both declare the id with `message: "pending"`.
  *
  * Run: `node test/readme-14g-pending-row.js`
- *   - exit 0: all four contract clauses pass
- *   - exit 1: any clause fails, OR the badge fetch/parse errors
- *
- * Verify the test FAILS on the unfixed README (where the 14G row is
- * absent, the footnote doesn't mention 14G, and the badge fetch would
- * 404). See the verify-test-fails recipe in
- * references/zen4-rerun-and-cubic-p3-content-consistency.md.
  */
 
 var fs = require('fs');
@@ -136,40 +112,28 @@ contractClauses.forEach(function(c) {
   check('14G notes cell contains "' + c.name + '"', c.re.test(notes));
 });
 
-// Clause 3: table-level footnote attributes the 14G pending row to the
-// Node 22 platform bump (NOT to V8 Buffer cap or pow2 — those are the
-// 16G and 10G historical pending states).
+// Clause 3: footnote attributes 14G pending to Node 22, NOT to pow2
+// or V8 Buffer cap (those are different rows' causes).
 var footnoteMatch = tableSection.match(/\*All throughput[\s\S]*?branch\.\*/);
 if (!footnoteMatch) {
   check('14G footnote presence', false, 'could not locate table footnote');
 } else {
   var footnote = footnoteMatch[0];
   check('14G footnote mentions the 14G/229376 row', /(14 GiB|14GB|229,?376)/i.test(footnote));
-  // Positive attribution: the 14G pending row must be attributed to the Node 22
-  // platform bump / engines.node (NOT V8 Buffer cap — that's the 16G row's
-  // historical cause, distinct from the 14G/Fenger-padded one). Drop the
-  // `V8 Buffer cap lifted` alternative the previous version accepted;
-  // accepting it would let a future edit falsely attribute the 14G pending
-  // state to the 16G cause and silently pass this test (cubic review-run
-  // cb6d2d97 P2 on PR #103).
+  // Positive attribution: pending to Node 22, NOT to V8 Buffer cap
+  // (which is the 16G row's cause). Don't accept "V8 Buffer cap" as
+  // a passing alternative — that's the 16G cause and would falsely
+  // pass an edit attributing 14G pending to it.
   check('14G footnote attributes pending to Node 22 platform bump',
     /\b14 GiB[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote) ||
     /\b14 GiB\/229376[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote));
-  // Anti-attribute checks: the 14G footnote must NOT attribute the pending state
-  // directly to either distinct cause:
-  //   - pow2 / #87 is the 10G row's cause.
-  //   - V8 Buffer cap is the 16G row's cause.
-  //
-  // The phrasing we forbid is "14G is pending BECAUSE of <cause>" — specifically
-  // the pattern "(is |are )?pending ... because of [V8 Buffer cap / pow2]" or
-  // a sentence that substitutes the cause as the main pending-attribution verb.
-  // We accept parenthetical mentions of V8 Buffer cap ("Node 22+ required
-  // (V8 Buffer cap lifted in Node 22)") because those explain WHY Node 22 is
-  // a prerequisite, not WHY 14G is pending. (cubic review-run e3b334cc P2:
-  // the original {0,300} window was too broad — it caught legitimate Node 22
-  // framing as false-positive 14G attribution. Tighten to the "pending ...<cause>"
-  // bridge so a real "14G pending because of V8 Buffer cap" still fails but the
-  // Node 22 explanation doesn't.)
+  // Anti-attribute checks: forbid "14G is pending because of <cause>".
+  // pow2 / #87 is the 10G row's cause; V8 Buffer cap is the 16G row's
+  // cause. The bridge pattern (pending ... <cause> OR <cause> ...
+  // pending) catches the causal phrasing without false-positiving on
+  // parenthetical context like "Node 22+ required (V8 Buffer cap
+  // lifted in Node 22)" — which explains the prerequisite, not the
+  // cause for 14G pending.
   check('14G footnote does NOT attribute pending to pow2 alone (the 10G cause)',
     !/14 GiB[\s\S]{0,300}pending[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)/i.test(footnote) &&
     !/14 GiB[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)[\s\S]{0,80}pending/i.test(footnote));

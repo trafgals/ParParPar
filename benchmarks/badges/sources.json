@@ -9,70 +9,70 @@
       "label": "",
       "message": "650MB/s",
       "color": "brightgreen",
-      "detail": "PAR2 create, 1 GiB / 1024 slices (1 MiB), R=8; native Windows. GFNI+AVX-512 reference; pow2 slice count for direct PAR3 comparison. Median of 5 back-to-back runs, stdev 1.98 (0.3%) — re-measured 2026-08-28, +4.9% vs 2026-08-18 baseline (within stdev; no GF16 code changes since 2026-07-06)"
+      "detail": "PAR2 create, 1 GiB / 1024 slices (1 MiB), R=8; native Windows. GFNI+AVX-512 reference; pow2 slice count for direct PAR3 comparison. Median of 5 back-to-back runs, stdev 1.98 (0.3%)."
     },
     {
       "id": "par3-1g-1k-zen4",
       "label": "",
       "message": "640MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 1 GiB / 1024 slices (1 MiB), R=8, Barycentric kernel (cost-model dispatch at R=8 < FENGER_MIN_R=8192); native Windows. Re-measured 2026-08-28: 5 runs median 640.00 / mean 630.39 MB/s (stdev 4.0%, run 5 = 580 MB/s outlier from AVX-512 downclock) — +900% vs 2026-08-18 64 MB/s baseline. The wave-2 closure of issue #59 (PRs #82 async par3_create_streaming, #86 hash-indexed v_table, #87 pow2 contract, #93 coupled RHS fix, #98 4100-block repair hash, #100 wave-2 closure) all landed AFTER the 2026-08-18 baseline; this is genuine code-driven perf recovery, not bench drift"
+      "detail": "PAR3 create, 1 GiB / 1024 slices (1 MiB), R=8, Barycentric kernel (cost-model dispatch at R=8 < FENGER_MIN_R=8192); native Windows. 5 runs median 640.00 / mean 630.39 MB/s (stdev 4.0%, run 5 = 580 MB/s outlier from AVX-512 downclock)."
     },
     {
       "id": "par2-1g-32k-zen4",
       "label": "",
       "message": "641MB/s",
       "color": "brightgreen",
-      "detail": "PAR2 create, 1 GiB / 32768 slices (32 KiB), R=8; native Windows. PAR2's GFNI+AVX-512 is the speed reference for the PAR3 rows. Median of 5 back-to-back runs, stdev 3.31 (0.5%) — re-measured 2026-08-28, +3.8% vs 2026-08-18 baseline (within stdev; no GF16 code changes since 2026-07-06). Note: the bench's default --recovery=10% would give 3276 recovery slices at this input count → ~137 MB/s (real perf cliff at high R, not a bug); the badge number requires --recovery=8"
+      "detail": "PAR2 create, 1 GiB / 32768 slices (32 KiB), R=8; native Windows. PAR2's GFNI+AVX-512 is the speed reference for the PAR3 rows. Median of 5 back-to-back runs, stdev 3.31 (0.5%). Note: the bench's default --recovery=10% would give 3276 recovery slices at this input count → ~137 MB/s (real perf cliff at high R, not a bug); the badge number requires --recovery=8."
     },
     {
       "id": "par3-1g-32k-zen4",
       "label": "",
       "message": "675MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. ~1.05x PAR2 at the same shape (PAR3 now matches PAR2 throughput on coarse slicing!). Re-measured 2026-08-28: 4 runs median 675.28 / mean 654.85 MB/s (stdev 6.1%, run 1 = 586 MB/s JIT-warmup outlier) — +2151% vs 2026-08-18 30 MB/s baseline. See par3-1g-1k detail for the wave-2 perf history"
+      "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. ~1.05x PAR2 at the same shape (PAR3 matches PAR2 throughput on coarse slicing). 4 runs median 675.28 / mean 654.85 MB/s (stdev 6.1%, run 1 = 586 MB/s JIT-warmup outlier)."
     },
     {
       "id": "par3-1g-131072-zen4",
       "label": "",
       "message": "495MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Barycentric kernel; native Windows. Re-measured 2026-08-28: 4 runs median 494.82 / mean 491.39 MB/s (stdev 2.8%) — +2149% vs 2026-08-18 22 MB/s baseline. The headline jump: PR #93's coupled XOR-accumulate RHS fix removed the cache thrash on small blocks that was the binding constraint pre-#93 (see issue #90)"
+      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Barycentric kernel; native Windows. 4 runs median 494.82 / mean 491.39 MB/s (stdev 2.8%)."
     },
     {
       "id": "par3-1g-262144-zen4",
       "label": "",
       "message": "345MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Barycentric kernel; native Windows. Re-measured 2026-08-28: 4 runs median 344.51 / mean 333.67 MB/s (stdev 6.8%, run 1 = 295 MB/s JIT-warmup outlier) — +1814% vs 2026-08-18 18 MB/s baseline. Same wave-2 perf story as the 131k row"
+      "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Barycentric kernel; native Windows. 4 runs median 344.51 / mean 333.67 MB/s (stdev 6.8%, run 1 = 295 MB/s JIT-warmup outlier)."
     },
     {
       "id": "par3-10g-262144-zen4",
       "label": "",
       "message": "pending",
       "color": "lightgrey",
-      "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8. 40 KiB is not a power of 2 — rejected at lib/par3gen.js:1270 with 'Block size must be a power of 2'; pending. To re-enable, use 64 KiB blocks (but 10 GiB / 64 KiB = 163840 slices, not a power of 2) or fall back to PAR2 for arbitrary block sizes. Removed from README in #99; row remains in sources.json for badge-id stability"
+      "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8. 40 KiB is not a power of 2 — rejected at lib/par3gen.js:1270 with 'Block size must be a power of 2'; pending. To re-enable, use 64 KiB blocks (but 10 GiB / 64 KiB = 163840 slices, not a power of 2) or fall back to PAR2 for arbitrary block sizes."
     },
     {
       "id": "par3-4g-65536-zen4",
       "label": "",
       "message": "741MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Barycentric kernel; native Windows. Largest pow2 shape that still fits the legacy V8 4 GiB single-Buffer cap from the Node 20 era — on Node 22+ the +64 KiB input-pool headroom collision at lib/par3gen.js:633 is no longer binding (buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER slots the alloc comfortably under the lifted cap). Re-measured 2026-08-28: 2 runs median 741.43 / mean 741.43 MB/s (stdev 0.2%) — +2646% vs 2026-08-18 27 MB/s baseline. (PAR3_GF64_INPUT_POOL_SIZE removed in PR #103; superseded by the Node 22 platform bump.) See bench-reports/zen4-rerun-2026-08-28/"
+      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Barycentric kernel; native Windows. Node 22+ input pool (lib/par3gen.js:633 — `poolSize = max(64 MiB, totalSize + 64 KiB)`) sits comfortably under `buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER`; no env-var override is required. The pool is reset during processing via `_resetInputBufferPool` (lib/par3gen.js:622) at strategic points, so the pool doesn't need to hold the entire input at once. 2 runs median 741.43 / mean 741.43 MB/s (stdev 0.2%)."
     },
     {
       "id": "par3-14g-229376-zen4",
       "label": "",
       "message": "pending",
       "color": "lightgrey",
-      "detail": "PAR3 create, 14 GiB-class Create (R=32768, pending), 229376 input / 64 KiB blocks / Fenger padded geometry. Engine's always-pad policy accepts the non-pow2 input count of 229376 on Node 22+ (next_pow2=262144); R=32768 >= FENGER_MIN_R=8192 so the Fenger (Bostan-Schost MPE) fast path engages. Kernel parity at this geometry is pinned by test/par3-fenger-padded-engine.js (runCase(229376, 32768, 64, ...): disjoint input/recovery ranges vs compute_recovery_barycentric reference, 9/9 PASS). The 14 MiB-class geometry is exercised in CI by test/par3-chunked-inputs.js (PAR3_SIMULATED_BUFFER_CAP=1048576 forces a cap < total input bytes); the test asserts REC-body byte-equality between the chunked and unchunked paths across multiple cap values. PR #103 closes issue #91 (chunked-input CI wiring) and bumps engines.node to >=22; pending a real measured throughput on the Zen4 reference host."
+      "detail": "PAR3 create, 14 GiB-class Create (R=32768, pending), 229376 input / 64 KiB blocks / Fenger padded geometry. Engine's always-pad policy accepts the non-pow2 input count of 229376 (next_pow2=262144); R=32768 >= FENGER_MIN_R=8192 so the Fenger (Bostan-Schost MPE) fast path engages. Kernel parity at this geometry is pinned by test/par3-fenger-padded-engine.js (runCase(229376, 32768, 64, ...): disjoint input/recovery ranges vs compute_recovery_barycentric reference, 9/9 PASS). The 14 MiB-class geometry is exercised in CI by test/par3-chunked-inputs.js (PAR3_SIMULATED_BUFFER_CAP=1048576 forces a cap < total input bytes); the test asserts REC-body byte-equality between the chunked and unchunked paths across multiple cap values. Pending a real measured throughput on the Zen4 reference host."
     },
     {
       "id": "par3-16g-262144-zen4",
       "label": "",
       "message": "523MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 16 GiB / 262144 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Requires Node 22+ (V8 Buffer cap lifted — Buffer.alloc(16 GiB) succeeds under buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER; the legacy Node 20 runtime's 4 GiB single-Buffer limit crashed this shape). Measured 2026-08-28 on Node 22.22.3 with the existing N-API addon (ABI-stable across Node 20→22, no rebuild needed): 3 runs, per-run 602.46 / 523.10 / 512.35 MB/s; median 523.10 / mean 545.97 MB/s (dropping run 1 as JIT-warmup outlier: 2 measured runs 523.10 / 512.35, mean 517.73, stdev 5.37 = 1.0%). Wall-clock 141 s (3 runs end-to-end, ~47 s per run). Peak RSS 32.20 GiB at steady state (run 1 = 16.23 GiB JIT-warmup outlier; the +16 GiB alloc pool plus working buffers exceed V8's 32-bit compressed-pointer heap range). Supersedes the architectural-limit framing in #91 — the path runs cleanly on Node 22+."
+      "detail": "PAR3 create, 16 GiB / 262144 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Requires Node 22+ (Buffer.alloc(16 GiB) succeeds under buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER). Measured 2026-08-28 on Node 22.22.3 with the existing N-API addon: 3 runs, per-run 602.46 / 523.10 / 512.35 MB/s; median 523.10 / mean 545.97 MB/s (dropping run 1 as JIT-warmup outlier: 2 measured runs 523.10 / 512.35, mean 517.73, stdev 5.37 = 1.0%). Wall-clock 141 s (3 runs end-to-end, ~47 s per run). Peak RSS 32.20 GiB at steady state."
     },
     {
       "id": "par3-32g-524288-zen4",
@@ -86,7 +86,7 @@
       "label": "",
       "message": "176MB/s",
       "color": "yellow",
-      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 176.69 MB/s, peak RSS 48.34 GiB, wall-clock 434 s end-to-end (source 60 s + create 371 s + cleanup 3 s). **SWAP-BOUND**: input pool (64 GiB + 64 KiB) EXCEEDS the 63 GiB physical RAM on this host. Windows pagefile auto-grew to 173 GiB at peak to fit; the create phase thrashes the input pool through swap, accounting for ~340 s of the 371 s create time. The 176 MB/s number reflects swap-fault overhead on a 63 GiB-RAM host; on a host with ≥128 GiB RAM (input pool fully resident), expect ~500 MB/s consistent with the 32 GiB baseline (552 MB/s)."
+      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 176.69 MB/s, peak RSS 48.34 GiB, wall-clock 434 s end-to-end (source 60 s + create 371 s + cleanup 3 s). **SWAP-BOUND**: input pool (64 GiB + 64 KiB) EXCEEDS the 63 GiB physical RAM on this host. Windows pagefile auto-grew to 173 GiB at peak to fit; the create phase thrashes the input pool through swap, accounting for ~340 s of the 371 s create time. The 176 MB/s number reflects swap-fault overhead on a 63 GiB-RAM host; on a host with ≥128 GiB RAM (input pool fully resident), expect ~500 MB/s consistent with the 32 GiB row (552 MB/s)."
     }
   ]
 }
