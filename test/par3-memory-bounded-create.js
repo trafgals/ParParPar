@@ -257,11 +257,47 @@ function runTest() {
 				} else {
 					pass("cubic review df1de4cb P2: Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB strictly bounded (peak " + (peakRss / 1048576).toFixed(1) + " MiB)");
 				}
-				console.log("\n=================================");
-				console.log("Summary: " + passed + " passed, " + failed + " failed");
-				console.log("=================================");
-				par3gen.shutdownHashPool();
-				done();
+				// cubic review 59dd8dd8 P2: verify fileInfo with concurrency > 1 preserves strict input ordering
+				testFileInfoConcurrency(tmpDir, function() {
+					console.log("\n=================================");
+					console.log("Summary: " + passed + " passed, " + failed + " failed");
+					console.log("=================================");
+					par3gen.shutdownHashPool();
+					done();
+				});
+			});
+		}
+
+		function testFileInfoConcurrency(tmpDir, next) {
+			console.log("\n--- fileInfo concurrency & deterministic ordering (cubic review 59dd8dd8 P2) ---");
+			var count = 8;
+			var fpaths = [];
+			for (var i = 0; i < count; i++) {
+				var p = path.join(tmpDir, "order_test_" + i + ".bin");
+				fs.writeFileSync(p, crypto.randomBytes((i + 1) * 8192));
+				fpaths.push(p);
+			}
+
+			par3gen.fileInfo(fpaths, false, false, 4, function(err, info) {
+				if (err) {
+					fail("fileInfo with concurrency=4 failed", err);
+				} else if (!info || info.length !== count) {
+					fail("fileInfo returned " + (info ? info.length : 0) + " items, expected " + count);
+				} else {
+					var orderMatches = true;
+					for (var i = 0; i < count; i++) {
+						if (info[i].name !== fpaths[i]) {
+							orderMatches = false;
+							break;
+						}
+					}
+					if (orderMatches) {
+						pass("cubic review 59dd8dd8 P2: fileInfo concurrency=4 preserves strict input order across " + count + " files");
+					} else {
+						fail("cubic review 59dd8dd8 P2: fileInfo returned out-of-order results");
+					}
+				}
+				next();
 			});
 		}
 

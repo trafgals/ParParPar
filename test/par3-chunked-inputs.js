@@ -116,8 +116,8 @@ function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 						fail(legLabel + " REC bodies differ at cap=" + cap + " (base=" + baseRecs.length + ", chunked=" + chunkedRecs.length + ")");
 						allOk = false;
 					}
-					// cubic review 0c8cc30f P2: assert on the real usedChunkedRecovery flag
-					if (assertMultiChunk && cap === 1048576) {
+					// cubic review 59dd8dd8 P3: assert usedChunkedRecovery on any cap below inputBytes that forces chunking
+					if (assertMultiChunk && cap < inputBytes && cap >= BLOCK_SIZE) {
 						if (eventData && eventData.usedChunkedRecovery) {
 							pass(legLabel + " cap=" + cap + " verified real chunked recovery path (usedChunkedRecovery=true)");
 						} else {
@@ -147,10 +147,10 @@ runLeg(1024, 4096, 32, capSweep1, {
 	assertMultiChunk: true
 }, function() {
 	// Leg 2: 14 MiB-class leg — exercises Fenger kernel with R=2048
-	// cubic review df1de4cb: Fenger is not in useChunkedCreate, so assertMultiChunk is false
+	// cubic review 59dd8dd8 P1: Fenger supports bounded chunk accumulation when inputBytes > cap
 	runLeg(14336, 1024, 2048, capSweep2, {
 		label: "14MiB",
-		assertMultiChunk: false,
+		assertMultiChunk: true,
 		minChunks: 4
 	}, function() {
 		console.log("\n" + passed + " passed, " + failed + " failed");

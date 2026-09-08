@@ -1031,7 +1031,8 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 				r.tile_size       = tileSize;
 				r.accumulate      = accumulate;
 
-				new (&workers[active]) std::thread(WorkerThread, r);
+				// cubic review 59dd8dd8 P1: move-assign into default-constructed slot (no placement-new)
+				workers[active] = std::thread(WorkerThread, r);
 				active++;
 				base = end;
 			}
