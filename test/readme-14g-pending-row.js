@@ -51,8 +51,9 @@ var SOURCES_PATH = path.join(__dirname, '..', 'benchmarks', 'badges', 'sources.j
 var BADGE_BRANCH_RAW = shared.BADGE_BRANCH_RAW;
 var BADGE_ID = 'par3-14g-229376-zen4';
 
-function fail(msg) {
-  console.error('FAIL: ' + msg);
+function fail(msg, detail) {
+  console.error('FAIL: ' + msg + (detail ? ' — ' + detail : ''));
+  if (typeof failures === 'number') failures++;
   process.exitCode = 1;
 }
 
@@ -154,16 +155,27 @@ if (!footnoteMatch) {
   check('14G footnote attributes pending to Node 22 platform bump',
     /\b14 GiB[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote) ||
     /\b14 GiB\/229376[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote));
-  // Anti-attribute checks: the 14G footnote must NOT attribute pending to
-  // either cause that's distinct from the 14G one:
-  //   - pow2 / #87 is the 10G row's cause (already covered).
-  //   - V8 Buffer cap is the 16G row's cause (cubic cb6d2d97 P2 wants this
-  //     check extended too — a future edit falsely attributing 14G pending
-  //     to the V8 cap must fail this test).
+  // Anti-attribute checks: the 14G footnote must NOT attribute the pending state
+  // directly to either distinct cause:
+  //   - pow2 / #87 is the 10G row's cause.
+  //   - V8 Buffer cap is the 16G row's cause.
+  //
+  // The phrasing we forbid is "14G is pending BECAUSE of <cause>" — specifically
+  // the pattern "(is |are )?pending ... because of [V8 Buffer cap / pow2]" or
+  // a sentence that substitutes the cause as the main pending-attribution verb.
+  // We accept parenthetical mentions of V8 Buffer cap ("Node 22+ required
+  // (V8 Buffer cap lifted in Node 22)") because those explain WHY Node 22 is
+  // a prerequisite, not WHY 14G is pending. (cubic review-run e3b334cc P2:
+  // the original {0,300} window was too broad — it caught legitimate Node 22
+  // framing as false-positive 14G attribution. Tighten to the "pending ...<cause>"
+  // bridge so a real "14G pending because of V8 Buffer cap" still fails but the
+  // Node 22 explanation doesn't.)
   check('14G footnote does NOT attribute pending to pow2 alone (the 10G cause)',
-    !/14 GiB[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)/i.test(footnote));
+    !/14 GiB[\s\S]{0,300}pending[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)/i.test(footnote) &&
+    !/14 GiB[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)[\s\S]{0,80}pending/i.test(footnote));
   check('14G footnote does NOT attribute pending to V8 Buffer cap alone (the 16G cause)',
-    !/14 GiB[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)/i.test(footnote));
+    !/14 GiB[\s\S]{0,300}pending[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)/i.test(footnote) &&
+    !/14 GiB[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)[\s\S]{0,80}pending/i.test(footnote));
 }
 
 // Clause 4: live badge + sources.json both declare pending.
