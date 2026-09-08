@@ -5,10 +5,11 @@
  * Pin:
  *   1. The 14G row exists, references `par3-14g-229376-zen4`, and has
  *      `(pending)` in the workload cell.
- *   2. The 14G `Notes` cell contains Fenger / padded / next_pow2 /
- *      Node 22 / test/par3-fenger-padded-engine.js / test/par3-chunked-
- *      inputs.js. Missing any one would let a future edit silently drop
- *      a contract clause.
+ *   2. The 14G `Notes` cell contains Fenger / padded / <sup>[3]</sup>.
+ *      Footnote [3] independently contains the full technical contract:
+ *      Fenger, padded, next_pow2, Node 22, test/par3-fenger-padded-engine.js,
+ *      and test/par3-chunked-inputs.js. Missing any one would let a
+ *      future edit silently drop a contract clause.
  *   3. The footnote attributes 14G pending to Node 22, not to pow2 or
  *      V8 Buffer cap (those are different rows' causes).
  *   4. The live Zen4 badge JSON (feat/ci-benchmark-badge) and the local
@@ -98,35 +99,44 @@ check('14G workload cell flags (pending)',
   /pending/i.test(workload),
   'workload="' + workload + '"');
 
-// Clause 2: notes cell names all six contract clauses.
+// Extract footnote [3] specifically (cubic review on PR #106 violation 1):
+var fn3Match = tableSection.match(/- \*\*\[3\][^\n]*:?([\s\S]*?)(?=\n- \*\*\[|\n####|\n---|$)/);
+var footnote3 = fn3Match ? fn3Match[0].trim() : '';
+check('Footnote [3] exists for 14G shape in tableSection', !!footnote3, 'could not extract footnote [3]');
+
+// Clause 2: Check notes cell and footnote [3] independently.
 var notes = fourteenGRow.cells[6];
-var contractClauses = [
+// The Notes cell must contain the key row descriptors:
+check('14G notes cell contains "Fenger"', /\bFenger\b/i.test(notes), 'notes="' + notes + '"');
+check('14G notes cell contains "padded"', /\bpadded?\b/i.test(notes), 'notes="' + notes + '"');
+check('14G notes cell references footnote [3]', /<sup>\[3\]<\/sup>/.test(notes), 'notes="' + notes + '"');
+
+// Footnote [3] must contain all technical contract clauses:
+var footnoteClauses = [
   { name: 'Fenger (kernel identity at R >= FENGER_MIN_R)', re: /\bFenger\b/i },
-  { name: 'padded (engine always-pad policy at non-pow2 N)', re: /\bpadded?\b/i },
+  { name: 'padded (engine always-pad policy at non-pow2 N)', re: /\bpadded\b/i },
   { name: 'next_pow2 = 262144 (Fenger rounding target)', re: /(next[ _\\]*pow2|262[, ]?144)/i },
   { name: 'Node 22+ required (platform bump lifts V8 Buffer cap)', re: /\bNode[ ]?(22|[ ]?22\+)/i },
   { name: 'test/par3-fenger-padded-engine.js (kernel parity contract)', re: /test\/par3-fenger-padded-engine\.js/ },
   { name: 'test/par3-chunked-inputs.js (multi-chunk pipeline regression)', re: /test\/par3-chunked-inputs\.js/ }
 ];
-contractClauses.forEach(function(c) {
-  check('14G notes cell contains "' + c.name + '"', c.re.test(notes));
+footnoteClauses.forEach(function(c) {
+  check('14G footnote [3] contains "' + c.name + '"', c.re.test(footnote3));
 });
 
-// Clause 3: footnote attributes 14G pending to Node 22, NOT to pow2
+// Clause 3: footnote [3] attributes 14G pending to Node 22, NOT to pow2
 // or V8 Buffer cap (those are different rows' causes).
-var footnoteMatch = tableSection.match(/\*All throughput[\s\S]*?branch\.\*/);
-if (!footnoteMatch) {
-  check('14G footnote presence', false, 'could not locate table footnote');
+if (!footnote3) {
+  check('14G footnote [3] presence', false, 'could not locate footnote [3]');
 } else {
-  var footnote = footnoteMatch[0];
-  check('14G footnote mentions the 14G/229376 row', /(14 GiB|14GB|229,?376)/i.test(footnote));
+  check('14G footnote [3] mentions the 14G/229376 row', /(14 GiB|14GB|229,?376)/i.test(footnote3));
   // Positive attribution: pending to Node 22, NOT to V8 Buffer cap
   // (which is the 16G row's cause). Don't accept "V8 Buffer cap" as
   // a passing alternative — that's the 16G cause and would falsely
   // pass an edit attributing 14G pending to it.
-  check('14G footnote attributes pending to Node 22 platform bump',
-    /\b14 GiB[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote) ||
-    /\b14 GiB\/229376[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote));
+  check('14G footnote [3] attributes pending to Node 22 platform bump',
+    /\b14 GiB[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote3) ||
+    /\b14 GiB\/229376[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote3));
   // Anti-attribute checks: forbid "14G is pending because of <cause>".
   // pow2 / #87 is the 10G row's cause; V8 Buffer cap is the 16G row's
   // cause. The bridge pattern (pending ... <cause> OR <cause> ...
@@ -134,12 +144,12 @@ if (!footnoteMatch) {
   // parenthetical context like "Node 22+ required (V8 Buffer cap
   // lifted in Node 22)" — which explains the prerequisite, not the
   // cause for 14G pending.
-  check('14G footnote does NOT attribute pending to pow2 alone (the 10G cause)',
-    !/14 GiB[\s\S]{0,300}pending[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)/i.test(footnote) &&
-    !/14 GiB[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)[\s\S]{0,80}pending/i.test(footnote));
-  check('14G footnote does NOT attribute pending to V8 Buffer cap alone (the 16G cause)',
-    !/14 GiB[\s\S]{0,300}pending[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)/i.test(footnote) &&
-    !/14 GiB[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)[\s\S]{0,80}pending/i.test(footnote));
+  check('14G footnote [3] does NOT attribute pending to pow2 alone (the 10G cause)',
+    !/14 GiB[\s\S]{0,300}pending[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)/i.test(footnote3) &&
+    !/14 GiB[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)[\s\S]{0,80}pending/i.test(footnote3));
+  check('14G footnote [3] does NOT attribute pending to V8 Buffer cap alone (the 16G cause)',
+    !/14 GiB[\s\S]{0,300}pending[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)/i.test(footnote3) &&
+    !/14 GiB[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)[\s\S]{0,80}pending/i.test(footnote3));
 }
 
 // Clause 4: live badge + sources.json both declare pending.
