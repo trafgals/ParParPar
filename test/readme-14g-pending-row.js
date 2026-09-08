@@ -144,13 +144,26 @@ if (!footnoteMatch) {
 } else {
   var footnote = footnoteMatch[0];
   check('14G footnote mentions the 14G/229376 row', /(14 GiB|14GB|229,?376)/i.test(footnote));
+  // Positive attribution: the 14G pending row must be attributed to the Node 22
+  // platform bump / engines.node (NOT V8 Buffer cap — that's the 16G row's
+  // historical cause, distinct from the 14G/Fenger-padded one). Drop the
+  // `V8 Buffer cap lifted` alternative the previous version accepted;
+  // accepting it would let a future edit falsely attribute the 14G pending
+  // state to the 16G cause and silently pass this test (cubic review-run
+  // cb6d2d97 P2 on PR #103).
   check('14G footnote attributes pending to Node 22 platform bump',
-    /\b14 GiB[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|V8 Buffer cap lifted|engines\.node)/i.test(footnote) ||
-    /\b14 GiB\/229376[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|V8 Buffer cap lifted|engines\.node)/i.test(footnote));
-  // Anti-attribute: the 14G footnote must NOT lump pending under V8 Buffer cap only
-  // (that's the 16G row's cause) or under pow2 (that's the 10G row's cause).
+    /\b14 GiB[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote) ||
+    /\b14 GiB\/229376[\s\S]{0,300}(Node[ ]?(22|[ ]?22\+)|engines\.node)/i.test(footnote));
+  // Anti-attribute checks: the 14G footnote must NOT attribute pending to
+  // either cause that's distinct from the 14G one:
+  //   - pow2 / #87 is the 10G row's cause (already covered).
+  //   - V8 Buffer cap is the 16G row's cause (cubic cb6d2d97 P2 wants this
+  //     check extended too — a future edit falsely attributing 14G pending
+  //     to the V8 cap must fail this test).
   check('14G footnote does NOT attribute pending to pow2 alone (the 10G cause)',
     !/14 GiB[\s\S]{0,200}(pow2|power[- ]of[- ]2|#[ ]?87)/i.test(footnote));
+  check('14G footnote does NOT attribute pending to V8 Buffer cap alone (the 16G cause)',
+    !/14 GiB[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)/i.test(footnote));
 }
 
 // Clause 4: live badge + sources.json both declare pending.
