@@ -2,91 +2,154 @@
   "repo": "trafgals/ParParPar",
   "branch": "feat/ci-benchmark-badge",
   "host": "Zen4 7800X3D, native Windows, MSVC addon, AVX-512 auto",
-  "date": "2026-08-28",
+  "date": "2026-09-09",
   "badges": [
     {
       "id": "par2-1g-1k-zen4",
       "label": "",
-      "message": "650MB/s",
+      "message": "657MB/s",
       "color": "brightgreen",
-      "detail": "PAR2 create, 1 GiB / 1024 slices (1 MiB), R=8; native Windows. GFNI+AVX-512 reference; pow2 slice count for direct PAR3 comparison. Median of 5 back-to-back runs, stdev 1.98 (0.3%)."
+      "detail": "PAR2 create, 1 GiB / 1024 slices (1 MiB), R=8; native Windows. GFNI+AVX-512 reference; pow2 slice count for direct PAR3 comparison. 5 back-to-back runs (PAR2 bench's --runs=N is broken), per-run 652.2 / 651.8 / 658.9 / 657.3 / 656.8, median 656.83, stdev 3.20 (0.5%)."
     },
     {
       "id": "par3-1g-1k-zen4",
       "label": "",
-      "message": "640MB/s",
+      "message": "753MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 1 GiB / 1024 slices (1 MiB), R=8, Barycentric kernel (cost-model dispatch at R=8 < FENGER_MIN_R=8192); native Windows. 5 runs median 640.00 / mean 630.39 MB/s (stdev 4.0%, run 5 = 580 MB/s outlier from AVX-512 downclock)."
+      "detail": "PAR3 create, 1 GiB / 1024 slices (1 MiB), R=8, matvec Cauchy kernel (N=1024 < BARY_MIN_INPUTS_DEFAULT=10000 and R=8 < FENGER_MIN_R=8192); native Windows. 5 runs per-run 736.2 / 758.5 / 749.1 / 752.9 / 758.5, median 752.94 / mean 751.04, stdev 9.23 (1.2%). 1.15x PAR2 at the same shape."
     },
     {
       "id": "par2-1g-32k-zen4",
       "label": "",
-      "message": "641MB/s",
+      "message": "646MB/s",
       "color": "brightgreen",
-      "detail": "PAR2 create, 1 GiB / 32768 slices (32 KiB), R=8; native Windows. PAR2's GFNI+AVX-512 is the speed reference for the PAR3 rows. Median of 5 back-to-back runs, stdev 3.31 (0.5%). Note: the bench's default --recovery=10% would give 3276 recovery slices at this input count → ~137 MB/s (real perf cliff at high R, not a bug); the badge number requires --recovery=8."
+      "detail": "PAR2 create, 1 GiB / 32768 slices (32 KiB), R=8; native Windows. PAR2's GFNI+AVX-512 is the speed reference for the PAR3 rows. 5 back-to-back runs, per-run 647.3 / 646.1 / 640.4 / 648.5 / 644.4, median 646.06, stdev 3.15 (0.5%). Note: the bench's default --recovery=10% would give 3276 recovery slices at this input count → ~137 MB/s (real perf cliff at high R, not a bug); the badge number requires --recovery=8."
     },
     {
       "id": "par3-1g-32k-zen4",
       "label": "",
-      "message": "675MB/s",
+      "message": "686MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. ~1.05x PAR2 at the same shape (PAR3 matches PAR2 throughput on coarse slicing). 4 runs median 675.28 / mean 654.85 MB/s (stdev 6.1%, run 1 = 586 MB/s JIT-warmup outlier)."
+      "detail": "PAR3 create, 1 GiB / 32768 slices (32 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. 1.06x PAR2 at the same shape (PAR3 matches PAR2 throughput on coarse slicing). 4 runs per-run 599.2 / 677.7 / 698.0 / 693.8, median 685.73 / mean 667.17, stdev 46.16 (run 1 = 599 MB/s JIT-warmup outlier; median of 3 measured runs = 693.77)."
     },
     {
       "id": "par3-1g-131072-zen4",
       "label": "",
-      "message": "495MB/s",
+      "message": "424MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Barycentric kernel; native Windows. 4 runs median 494.82 / mean 491.39 MB/s (stdev 2.8%)."
+      "detail": "PAR3 create, 1 GiB / 131072 slices (8 KiB blocks), R=8, Barycentric kernel; native Windows. 4 runs per-run 392.9 / 421.7 / 426.8 / 440.4, median 424.30 / mean 420.49, stdev 19.99 (4.7%, run 1 = 393 MB/s JIT-warmup outlier; median of 3 measured = 426.84)."
     },
     {
       "id": "par3-1g-262144-zen4",
       "label": "",
-      "message": "345MB/s",
+      "message": "289MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Barycentric kernel; native Windows. 4 runs median 344.51 / mean 333.67 MB/s (stdev 6.8%, run 1 = 295 MB/s JIT-warmup outlier)."
+      "detail": "PAR3 create, 1 GiB / 262144 slices (4 KiB blocks), R=8, Barycentric kernel; native Windows. 4 runs per-run 274.9 / 284.6 / 292.7 / 292.9, median 288.67 / mean 286.29, stdev 8.52 (3.0%, run 1 = 275 MB/s JIT-warmup outlier; median of 3 measured = 292.74)."
     },
     {
       "id": "par3-10g-262144-zen4",
       "label": "",
       "message": "pending",
       "color": "lightgrey",
-      "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8. 40 KiB is not a power of 2 — rejected at lib/par3gen.js:1270 with 'Block size must be a power of 2'; pending. To re-enable, use 64 KiB blocks (but 10 GiB / 64 KiB = 163840 slices, not a power of 2) or fall back to PAR2 for arbitrary block sizes."
+      "detail": "PAR3 create, 10 GiB / 262144 slices (40 KiB blocks), R=8. 40 KiB is not a power of 2 — rejected at lib/par3gen.js:1263 with 'Block size must be a power of 2'; pending. To re-enable, use 64 KiB blocks (but 10 GiB / 64 KiB = 163840 slices, not a power of 2) or fall back to PAR2 for arbitrary block sizes. Row absent from the README table (was removed in PR #99); entry kept for badge-id stability."
     },
     {
       "id": "par3-4g-65536-zen4",
       "label": "",
-      "message": "741MB/s",
+      "message": "812MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Barycentric kernel; native Windows. Node 22+ input pool (lib/par3gen.js:633 — `poolSize = max(64 MiB, totalSize + 64 KiB)`) sits comfortably under `buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER`; no env-var override is required. The pool is reset during processing via `_resetInputBufferPool` (lib/par3gen.js:622) at strategic points, so the pool doesn't need to hold the entire input at once. 2 runs median 741.43 / mean 741.43 MB/s (stdev 0.2%)."
+      "detail": "PAR3 create, 4 GiB / 65536 slices (64 KiB blocks), R=8, Barycentric kernel; native Windows. Largest pow2 shape that fits `buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER` (Node 22+). Chunked create path (PR #108): input pool capped at 64 MiB via `poolSize = min(poolCap, max(64 MiB, totalSize + 64 KiB))` (lib/par3gen.js:633, where `poolCap` defaults to 64 MiB), reset between batches via `_resetInputBufferPool` (lib/par3gen.js:620). 2 runs per-run 838.3 / 785.4, median 811.87, stdev 37.40. Peak RSS 301.73 MiB."
     },
     {
       "id": "par3-14g-229376-zen4",
       "label": "",
-      "message": "pending",
-      "color": "lightgrey",
-      "detail": "PAR3 create, 14 GiB-class Create (R=32768, pending), 229376 input / 64 KiB blocks / Fenger padded geometry. Engine's always-pad policy accepts the non-pow2 input count of 229376 (next_pow2=262144); R=32768 >= FENGER_MIN_R=8192 so the Fenger (Bostan-Schost MPE) fast path engages. Kernel parity at this geometry is pinned by test/par3-fenger-padded-engine.js (runCase(229376, 32768, 64, ...): disjoint input/recovery ranges vs compute_recovery_barycentric reference, 9/9 PASS). The 14 MiB-class geometry is exercised in CI by test/par3-chunked-inputs.js (PAR3_SIMULATED_BUFFER_CAP=1048576 forces a cap < total input bytes); the test asserts REC-body byte-equality between the chunked and unchunked paths across multiple cap values. Pending a real measured throughput on the Zen4 reference host."
+      "message": "849MB/s",
+      "color": "brightgreen",
+      "detail": "PAR3 create, 14 GiB / 229376 slices (64 KiB blocks), R=32768 (pow2), Fenger kernel (Bostan-Schost MPE; R >= FENGER_MIN_R=8192; non-pow2 input count N=229376 is padded up to next_pow2=262144). Chunked create path (PR #108). Kernel parity at this geometry is pinned by test/par3-fenger-padded-engine.js (disjoint input/recovery ranges vs compute_recovery_barycentric reference) and the chunked-input path by test/par3-chunked-inputs.js. 2 runs per-run 853.9 / 843.4, median 848.67, stdev 7.39. Peak RSS 283.37 MiB."
     },
     {
       "id": "par3-16g-262144-zen4",
       "label": "",
-      "message": "523MB/s",
+      "message": "835MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 16 GiB / 262144 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Requires Node 22+ (Buffer.alloc(16 GiB) succeeds under buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER). Measured 2026-08-28 on Node 22.22.3 with the existing N-API addon: 3 runs, per-run 602.46 / 523.10 / 512.35 MB/s; median 523.10 / mean 545.97 MB/s (dropping run 1 as JIT-warmup outlier: 2 measured runs 523.10 / 512.35, mean 517.73, stdev 5.37 = 1.0%). Wall-clock 141 s (3 runs end-to-end, ~47 s per run). Peak RSS 32.20 GiB at steady state."
+      "detail": "PAR3 create, 16 GiB / 262144 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Requires Node 22+ (Buffer.alloc(16 GiB) succeeds under buffer.constants.MAX_LENGTH === Number.MAX_SAFE_INTEGER). Chunked create path (PR #108): input pool capped at 64 MiB and reset between batches. 2 runs per-run 861.6 / 807.4, median 834.50, stdev 38.31. Peak RSS 282.60 MiB."
     },
     {
       "id": "par3-32g-524288-zen4",
       "label": "",
-      "message": "552MB/s",
+      "message": "539MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 32 GiB / 524288 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 552.39 MB/s, peak RSS 32.25 GiB, wall-clock 91 s end-to-end. Windows pagefile auto-grew 30 GiB → 116 GiB to accommodate the input pool (32 GiB + 64 KiB, fits in 63 GiB physical RAM) + working buffers with minimal swap pressure."
+      "detail": "PAR3 create, 32 GiB / 524288 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Chunked create path (PR #108): input pool capped at 64 MiB and reset between batches; peak RSS bounded to working-set size, not the full input. 2 runs per-run 637.9 / 440.7, median 539.32, stdev 139.44 (run 2 includes disk-read of the 32 GiB source). Peak RSS 280.55 MiB."
     },
     {
       "id": "par3-64g-1048576-zen4",
       "label": "",
-      "message": "176MB/s",
-      "color": "yellow",
-      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Measured 2026-08-28 on Node 22.22.3: 1 run 176.69 MB/s, peak RSS 48.34 GiB, wall-clock 434 s end-to-end (source 60 s + create 371 s + cleanup 3 s). **SWAP-BOUND**: input pool (64 GiB + 64 KiB) EXCEEDS the 63 GiB physical RAM on this host. Windows pagefile auto-grew to 173 GiB at peak to fit; the create phase thrashes the input pool through swap, accounting for ~340 s of the 371 s create time. The 176 MB/s number reflects swap-fault overhead on a 63 GiB-RAM host; on a host with ≥128 GiB RAM (input pool fully resident), expect ~500 MB/s consistent with the 32 GiB row (552 MB/s)."
+      "message": "361MB/s",
+      "color": "brightgreen",
+      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Chunked create path (PR #108) breaks the 64 GiB memory wall: input pool capped at 64 MiB and reset between batches, so the working set stays bounded regardless of source size. 2 runs per-run 366.5 / 356.4, median 361.46, stdev 7.14 (1.9%). Peak RSS 272.26 MiB. Wall-clock 272 s end-to-end (source read 88 s + recovery compute 184 s; run 2)."
+    },
+    {
+      "id": "par3-1g-1k-rss-zen4",
+      "label": "",
+      "message": "468MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 1 GiB / 1024 slices (1 MiB), R=8, matvec Cauchy kernel. 5 runs, max peakRssHuman 467.83 MiB (single-buffer matvec path keeps the full input resident; bounded by V8 32-bit compressed-pointer heap range)."
+    },
+    {
+      "id": "par3-1g-32k-rss-zen4",
+      "label": "",
+      "message": "262MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 1 GiB / 32768 slices (32 KiB blocks), R=8, Barycentric kernel. 4 runs, max peakRssHuman 262.05 MiB (chunked create path: input pool capped at 64 MiB)."
+    },
+    {
+      "id": "par3-1g-131072-rss-zen4",
+      "label": "",
+      "message": "207MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 1 GiB / 131072 slices (8 KiB blocks), R=8, Barycentric kernel. 4 runs, max peakRssHuman 207.08 MiB (chunked create path)."
+    },
+    {
+      "id": "par3-1g-262144-rss-zen4",
+      "label": "",
+      "message": "193MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 1 GiB / 262144 slices (4 KiB blocks), R=8, Barycentric kernel. 4 runs, max peakRssHuman 192.90 MiB (chunked create path)."
+    },
+    {
+      "id": "par3-4g-65536-rss-zen4",
+      "label": "",
+      "message": "302MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 4 GiB / 65536 slices (64 KiB blocks), R=8, Barycentric kernel. 2 runs, max peakRssHuman 301.73 MiB (chunked create path: peak RSS bounded regardless of source size)."
+    },
+    {
+      "id": "par3-14g-229376-rss-zen4",
+      "label": "",
+      "message": "283MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 14 GiB / 229376 slices (64 KiB blocks), R=32768, Fenger kernel (padded). 2 runs, max peakRssHuman 283.37 MiB (chunked create path)."
+    },
+    {
+      "id": "par3-16g-262144-rss-zen4",
+      "label": "",
+      "message": "283MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 16 GiB / 262144 slices (64 KiB blocks), R=8, Barycentric kernel. 2 runs, max peakRssHuman 282.60 MiB (chunked create path; PR #108 breaks the previous 32 GiB RSS cliff)."
+    },
+    {
+      "id": "par3-32g-524288-rss-zen4",
+      "label": "",
+      "message": "281MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 32 GiB / 524288 slices (64 KiB blocks), R=8, Barycentric kernel. 2 runs, max peakRssHuman 280.55 MiB (chunked create path; PR #108 bounds peak RSS at working-set size)."
+    },
+    {
+      "id": "par3-64g-1048576-rss-zen4",
+      "label": "",
+      "message": "272MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel. 2 runs, max peakRssHuman 272.26 MiB (chunked create path; PR #108 breaks the 64 GiB memory wall — pre-#108 the alloc pool was 64 GiB + 64 KiB and the bench was swap-bound)."
     }
   ]
 }
