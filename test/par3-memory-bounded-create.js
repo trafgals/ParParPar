@@ -297,6 +297,44 @@ function runTest() {
 						fail("cubic review 59dd8dd8 P2: fileInfo returned out-of-order results");
 					}
 				}
+				testFileInfoNonFileError(tmpDir, next);
+			});
+		}
+
+		function testFileInfoNonFileError(tmpDir, next) {
+			console.log("\n--- fileInfo non-file error handling (cubic review 41b8069e P1) ---");
+			var origStat = fs.stat;
+			var testFile = path.join(tmpDir, "non_file_test.bin");
+			fs.writeFileSync(testFile, "dummy");
+
+			fs.stat = function(p, cb) {
+				origStat.call(fs, p, function(err, stat) {
+					if (err) return cb(err);
+					if (p === testFile) {
+						var fakeStat = Object.create(stat);
+						fakeStat.isFile = function() { return false; };
+						fakeStat.isDirectory = function() { return false; };
+						fakeStat.isSymbolicLink = function() { return false; };
+						return cb(null, fakeStat);
+					}
+					cb(null, stat);
+				});
+			};
+
+			var timeout = setTimeout(function() {
+				fs.stat = origStat;
+				fail("cubic review 41b8069e P1: fileInfo hung on non-file (BufferPool corrupted by double-put)");
+				next();
+			}, 3000);
+
+			par3gen.fileInfo([testFile], false, false, 2, function(err, info) {
+				clearTimeout(timeout);
+				fs.stat = origStat;
+				if (err && err.message && err.message.indexOf("is not a valid file") !== -1) {
+					pass("cubic review 41b8069e P1: fileInfo cleanly reports non-file error without hanging or double-put");
+				} else {
+					fail("cubic review 41b8069e P1: expected 'is not a valid file' error, got: " + err);
+				}
 				next();
 			});
 		}
