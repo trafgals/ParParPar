@@ -125,6 +125,7 @@ static struct {
 	std::unordered_map<CoeffCacheKey, gf64_t*, CoeffCacheKeyHash> map;
 	std::list<CoeffCacheKey> lru;
 } s_coeffCache;
+static std::mutex s_coeffCacheMutex;
 
 static inline void EnsureDispatch() {
 	if (!s_dispatch_initialized) {
@@ -283,6 +284,7 @@ static gf64_t* GetOrBuildCoeffMatrix(
 	size_t numInputs, size_t numRecovery,
 	uint64_t firstInput, uint64_t firstRecovery
 ) {
+	std::lock_guard<std::mutex> lock(s_coeffCacheMutex);
 	CoeffCacheKey key = { numInputs, numRecovery, firstInput, firstRecovery };
 
 	auto it = s_coeffCache.map.find(key);
@@ -576,6 +578,7 @@ struct WorkerRange {
 	const gf64_t* coeff_row_start; // coeffMatrix + outStart * numIn
 	size_t        block_size64;
 	size_t        tile_size;       // L3-aware input tile size (in blocks)
+	bool          accumulate;      // whether to XOR-accumulate without zeroing
 };
 
 // ============================================================================
@@ -626,10 +629,25 @@ static void WorkerThread(const WorkerRange& range) {
 		// clamp) costs more than the work it saves when output count is
 		// small. Threshold is hardcoded at 32; matches issue #27
 		// §auxiliary guidance; no env gate.
-		for (size_t k = 0; k < num_out; k++) {
-			const gf64_t* row = range.coeff_row_start + k * num_in;
-			muladd_single_output(range.out_start + k * B,
-			                     range.in, row, num_in, B);
+		if (!range.accumulate) {
+			for (size_t k = 0; k < num_out; k++) {
+				memset(range.out_start + k * B, 0, B * sizeof(gf64_t));
+			}
+		}
+		if (num_out == 1) {
+			const gf64_t* row = range.coeff_row_start;
+			for (size_t j = 0; j < num_in; j++) {
+				gf64_region_muladd_arr(range.out_start, range.in + j * B, &row[j], B, 1);
+			}
+		} else {
+			// Inverted loop: read each input block once, update all num_out recovery blocks
+			for (size_t j = 0; j < num_in; j++) {
+				const gf64_t* in_blk = range.in + j * B;
+				for (size_t k = 0; k < num_out; k++) {
+					const gf64_t coeff = range.coeff_row_start[k * num_in + j];
+					gf64_region_muladd_arr(range.out_start + k * B, in_blk, &coeff, B, 1);
+				}
+			}
 		}
 		return;
 	}
@@ -648,10 +666,12 @@ static void WorkerThread(const WorkerRange& range) {
 	std::vector<const gf64_t*> in_blocks_heap;
 
 	auto process_out = [&](size_t k_start) {
-		gf64_t* out_k0 = range.out_start + k_start * B;
-		memset(out_k0, 0, B * sizeof(gf64_t));
-
 		const size_t Kk = std::min((size_t)K, num_out - k_start);
+		if (!range.accumulate) {
+			for (size_t k_local = 0; k_local < Kk; k_local++) {
+				memset(range.out_start + (k_start + k_local) * B, 0, B * sizeof(gf64_t));
+			}
+		}
 		gf64_t** outs_ptr = outs_stack;
 		if (Kk > MAX_STACK_K) {
 			outs_heap.resize(Kk);
@@ -929,12 +949,18 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	gf64_t*       recovery, size_t numRecovery,
 	size_t        blockSize64,
 	const gf64_t* coeff,
-	int           numThreads
+	int           numThreads,
+	bool          accumulate
 ) {
 	if (numInputs == 0 || numRecovery == 0 || !coeff) return;
 
 	// --- 2. Per-workload dispatch (PD2 AVX-512 downclock heuristic) ---
 	gf64_apply_method(gf64_method_for_workload(numInputs, numRecovery, blockSize64));
+
+	if (numThreads <= 0) {
+		numThreads = (int)GetEffectiveCpuCount();
+		if (numThreads <= 0) numThreads = 1;
+	}
 
 	// --- 3. Distribute work ---
 	// Cap threads at numRecovery (no point spinning more workers than blocks).
@@ -966,36 +992,109 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		r.coeff_row_start = coeff;
 		r.block_size64 = blockSize64;
 		r.tile_size = tileSize;
+		r.accumulate = accumulate;
 		WorkerThread(r);
 	} else {
-		std::thread* workers = new std::thread[n_workers];
-		size_t active = 0;
-
-		while (base < numRecovery) {
-			size_t end = base + chunk;
-			if (end > numRecovery) end = numRecovery;
+		std::thread* workers = nullptr;
+		try {
+			workers = new std::thread[n_workers];
+		} catch (...) {
+			// Fall back to single-threaded if allocating worker array fails
 			WorkerRange r;
-			r.out_start       = recovery + base * blockSize64;
-			r.num_out         = end - base;
+			r.out_start       = recovery;
+			r.num_out         = numRecovery;
 			r.total_num_out   = numRecovery;
 			r.in              = inputs;
 			r.num_in          = numInputs;
-			r.coeff_row_start = coeff + base * numInputs;
+			r.coeff_row_start = coeff;
 			r.block_size64    = blockSize64;
 			r.tile_size       = tileSize;
+			r.accumulate      = accumulate;
+			WorkerThread(r);
+			return;
+		}
 
-			new (&workers[active]) std::thread(WorkerThread, r);
-			active++;
-			base = end;
+		size_t active = 0;
+
+		// cubic review df1de4cb P1: if worker creation throws (e.g. std::system_error),
+		// join all already-started workers before re-throwing so bounce buffers are not accessed
+		try {
+			while (base < numRecovery) {
+				size_t end = base + chunk;
+				if (end > numRecovery) end = numRecovery;
+				WorkerRange r;
+				r.out_start       = recovery + base * blockSize64;
+				r.num_out         = end - base;
+				r.total_num_out   = numRecovery;
+				r.in              = inputs;
+				r.num_in          = numInputs;
+				r.coeff_row_start = coeff + base * numInputs;
+				r.block_size64    = blockSize64;
+				r.tile_size       = tileSize;
+				r.accumulate      = accumulate;
+
+				// cubic review 59dd8dd8 P1: move-assign into default-constructed slot (no placement-new)
+				workers[active] = std::thread(WorkerThread, r);
+				active++;
+				base = end;
+			}
+		} catch (...) {
+			for (size_t i = 0; i < active; i++) {
+				if (workers[i].joinable()) {
+					workers[i].join();
+				}
+			}
+			delete[] workers;
+			throw;
 		}
 
 		for (size_t i = 0; i < active; i++) {
-			workers[i].join();
+			if (workers[i].joinable()) {
+				workers[i].join();
+			}
 		}
 
 		delete[] workers;
 	}
 
+}
+
+// ============================================================================
+// GF64Controller::AccumulateRecoveryChunk
+// ----------------------------------------------------------------------------
+// Accumulates recovery blocks for a chunk of input blocks directly into
+// `recoveryAccumulator` in-place.
+// ============================================================================
+void GF64Controller::AccumulateRecoveryChunk(
+	const gf64_t* chunkInputs, size_t numChunkBlocks,
+	gf64_t*       recoveryAccumulator, size_t numRecovery,
+	size_t        blockSize64,
+	uint64_t      firstChunkInput, uint64_t firstRecovery,
+	int           numThreads
+) {
+	if (numChunkBlocks == 0 || numRecovery == 0 || blockSize64 == 0) return;
+	EnsureDispatch();
+
+	// cubic review 0c8cc30f P1: prevent integer overflow in coeffCount
+	if (numChunkBlocks > SIZE_MAX / numRecovery) {
+		throw std::bad_alloc();
+	}
+	size_t coeffCount = numRecovery * numChunkBlocks;
+	if (coeffCount > SIZE_MAX / sizeof(gf64_t)) {
+		throw std::bad_alloc();
+	}
+
+	// Allocate and build the Cauchy coefficient matrix for this chunk (numRecovery x numChunkBlocks)
+	std::vector<gf64_t> coeff;
+	coeff.resize(coeffCount);
+	BuildCauchyMatrix(coeff.data(), numChunkBlocks, numRecovery, firstChunkInput, firstRecovery);
+
+	ComputeRecoveryBlocksWithCoeff(
+		chunkInputs, numChunkBlocks,
+		recoveryAccumulator, numRecovery,
+		blockSize64, coeff.data(),
+		numThreads, /*accumulate=*/true
+	);
 }
 
 // ============================================================================

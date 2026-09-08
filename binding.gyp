@@ -245,8 +245,18 @@
             "gf64/gf64_solve.c"
           ],
 "include_dirs": ["gf64"],
-      "cflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
-          "cxxflags": ["-fmax-include-depth=1024", "-mno-avx512f"],
+          "cflags!": ["-fno-exceptions"],
+          "cxxflags!": ["-fno-exceptions"],
+          "cflags_cc!": ["-fno-exceptions"],
+          "cflags": ["-fmax-include-depth=1024", "-mno-avx512f", "-fexceptions"],
+          "cxxflags": ["-fmax-include-depth=1024", "-mno-avx512f", "-fexceptions"],
+          "xcode_settings": {
+            "OTHER_CFLAGS!": ["-fno-exceptions"],
+            "OTHER_CXXFLAGS!": ["-fno-exceptions"],
+            "OTHER_CFLAGS": ["-fexceptions"],
+            "OTHER_CXXFLAGS": ["-fexceptions"],
+            "GCC_ENABLE_CPP_EXCEPTIONS": "YES"
+          },
           "conditions": [
             ["OS!=\"win\"", {
               # POSIX: enable OpenMP-driven gf64_subproduct parallel-for.
@@ -259,10 +269,10 @@
               # no-OMP build — broken at link time. POSIX-only keeps
               # Windows on the pre-680a494 behavior (serial subproduct).
               "cflags": ["-fmax-include-depth=1024", "-mno-avx512f",
-                         "-fopenmp", "-DGF64_OPENMP_PARALLEL_PREPARE"],
+                         "-fopenmp", "-DGF64_OPENMP_PARALLEL_PREPARE", "-fexceptions"],
               "ldflags": ["-fopenmp"],
-              "cxxflags": ["-std=c++11", "-fmax-include-depth=1024", "-fpermissive", "-mno-avx512f"],
-              "cflags_cc": ["-fpermissive"]
+              "cxxflags": ["-std=c++11", "-fmax-include-depth=1024", "-fpermissive", "-mno-avx512f", "-fexceptions"],
+              "cflags_cc": ["-fpermissive", "-fexceptions"]
             }],
             ["OS==\"win\"", {
               # MSVC: no -mno-avx512f (cl.exe doesn't take it); use /arch:AVX2 as a
@@ -274,6 +284,7 @@
               # rejects the trampoline argument with C2664 because Node 22
               # makes the env pointer non-const by default in the typedef.
               "defines": ["NODE_API_EXPERIMENTAL_NOGC_ENV_OPT_OUT"],
+              "msvs_settings": {"VCCLCompilerTool": {"ExceptionHandling": "1"}},
               "cflags": ["/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS"],
               "cxxflags": ["/std:c++17", "/permissive-", "/arch:AVX2", "/D_CRT_SECURE_NO_WARNINGS", "/EHsc"]
             }]

@@ -58,7 +58,18 @@ public:
 		gf64_t* recovery, size_t numRecovery,
 		size_t blockSize64,
 		const gf64_t* coeff,
-		int numThreads
+		int numThreads,
+		bool accumulate = false
+	);
+
+	/// Chunked recovery accumulation for bounded-memory creates.
+	/// Builds Cauchy coefficients for this chunk and XOR-accumulates into recoveryAccumulator.
+	static void AccumulateRecoveryChunk(
+		const gf64_t* chunkInputs, size_t numChunkBlocks,
+		gf64_t* recoveryAccumulator, size_t numRecovery,
+		size_t blockSize64,
+		uint64_t firstChunkInput, uint64_t firstRecovery,
+		int numThreads = 0
 	);
 
 	/// v2-4: standalone matrix build. Allocates a buffer of
