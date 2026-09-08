@@ -197,22 +197,26 @@ if (lumpRegex.test(notesSection)) {
 // code spans (backticks).
 // We restrict the scan to tableSection (the benchmark table and notes block) and strip
 // markdown code blocks and backtick code spans first so code examples aren't scanned.
-var noCodeTableSection = tableSection.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
-var mathSpans = [];
-// 1. Display math: $$ ... $$
-var displayMathRe = /\$\$([\s\S]*?)\$\$/g;
-var dm;
-while ((dm = displayMathRe.exec(noCodeTableSection)) !== null) {
-  mathSpans.push(dm[1]);
-}
-// 2. Inline math: $ ... $ (strip display math first so $$ delimiters are not mis-parsed)
-var inlineSection = noCodeTableSection.replace(/\$\$[\s\S]*?\$\$/g, '');
-var inlineMathRe = /\$([^$\n]+)\$/g;
-var im;
-while ((im = inlineMathRe.exec(inlineSection)) !== null) {
-  mathSpans.push(im[1]);
+function extractMathSpans(text) {
+  var noCode = text.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
+  var spans = [];
+  // 1. Display math: $$ ... $$
+  var displayMathRe = /\$\$([\s\S]*?)\$\$/g;
+  var dm;
+  while ((dm = displayMathRe.exec(noCode)) !== null) {
+    spans.push(dm[1]);
+  }
+  // 2. Inline math: $ ... $ (strip display math first so $$ delimiters are not mis-parsed)
+  var inlineSection = noCode.replace(/\$\$[\s\S]*?\$\$/g, '');
+  var inlineMathRe = /\$([^$\n]+)\$/g;
+  var im;
+  while ((im = inlineMathRe.exec(inlineSection)) !== null) {
+    spans.push(im[1]);
+  }
+  return spans;
 }
 
+var mathSpans = extractMathSpans(tableSection);
 for (var mi = 0; mi < mathSpans.length; mi++) {
   var span = mathSpans[mi];
   // Check for \text{...} with underscores (both escaped and unescaped)
@@ -227,37 +231,69 @@ for (var mi = 0; mi < mathSpans.length; mi++) {
   }
 }
 
-// Synthetic check 8a: verify Rule 8 catches math containing \text{..._...}
+// Synthetic check 8a: verify Rule 8 catches math containing \text{..._...} via math span extraction
 var badSample = 'Sample with $N < \\text{BARY_MIN}=10$ and $R < \\text{FENGER\\_MIN_R}$';
-var badMatches = badSample.match(/\\text\{[^}]*\\?_[^}]*\}/g);
+var badSampleSpans = extractMathSpans(badSample);
+var badMatches = badSampleSpans.filter(function(s) {
+  return /\\text\{[^}]*_[^}]*\}/.test(s) || /\\text\{[^}]*\\_[^}]*\}/.test(s);
+});
 if (!badMatches || badMatches.length !== 2) {
-  console.error('FAIL: Rule 8 synthetic test failed to catch bad \\text{} with underscore patterns');
+  console.error('FAIL: Rule 8 synthetic test failed to catch bad \\text{} with underscore patterns in extracted math spans');
   failed++;
 }
 
-// Synthetic check 8b (cubic review on PR #106 violation 2): verify Rule 8 catches raw uppercase macro identifiers in math
-var badMacroSample = 'Sample with $R < FENGER_MIN_R$';
-var badMacroMatches = badMacroSample.match(/[A-Z]{2,}_[A-Z0-9_]*/);
-if (!badMacroMatches) {
-  console.error('FAIL: Rule 8 synthetic test failed to catch raw uppercase macro identifier inside math');
+// Synthetic check 8b (cubic review on PR #106): verify Rule 8 extracts $...$ and catches raw uppercase macro identifiers
+// Must verify the identifier is found via math extraction, and that outer text macros outside math are ignored.
+var badMacroSample = 'Outer text BARY_MIN_INPUTS_DEFAULT with $R < FENGER_MIN_R$';
+var badMacroSpans = extractMathSpans(badMacroSample);
+var badMacroMatches = badMacroSpans.filter(function(s) {
+  return /[A-Z]{2,}_[A-Z0-9_]*/.test(s);
+});
+if (!badMacroMatches || badMacroMatches.length !== 1) {
+  console.error('FAIL: Rule 8 synthetic test failed to catch raw uppercase macro identifier inside extracted math span');
   failed++;
+}
+var safeMacroSample = 'Outer text BARY_MIN_INPUTS_DEFAULT with $R < 100$';
+var safeMacroSpans = extractMathSpans(safeMacroSample);
+var safeMacroMatches = safeMacroSpans.filter(function(s) {
+  return /[A-Z]{2,}_[A-Z0-9_]*/.test(s);
+});
+if (safeMacroMatches.length !== 0) {
+  console.error('FAIL: Rule 8 synthetic test incorrectly matched macro identifier outside math spans');
+  failed++;
+}
+
+// Helper to extract image destination URLs from markdown: ![alt](destination_url)
+function extractBadgeImageUrls(markdown) {
+  var urls = [];
+  var imgRe = /!\[[^\]]*\]\(([^)]+)\)/g;
+  var m;
+  while ((m = imgRe.exec(markdown)) !== null) {
+    urls.push(m[1]);
+  }
+  return urls;
 }
 
 // Rule 9: CI Runner badges must override shields.io label (&label=) to match Zen4 badge compact width.
 // The raw CI gist JSONs have label: "PAR2 ... (CI)" which swells the badge to 200+ px wide.
 // Appending &label= instructs shields.io to drop the label, rendering a compact value-only badge (55-73 px).
-// Cubic review PR #106: ensure &label= has an empty value (not &label=SomeText).
+// Cubic review PR #106: check only the badge image destination URL, not the entire cell (to prevent
+// decoy URLs in link targets from satisfying the check), and ensure &label= has an empty value.
 var ciBadgeCount = 0;
 for (var i = 0; i < dataRows.length; i++) {
   var row = dataRows[i];
   var trimmed = row.replace(/^\| /, '').replace(/ \|$/, '');
   var cells = trimmed.split(' | ');
   var ciCell = cells[5] || '';
-  if (ciCell.indexOf('gist.githubusercontent.com') >= 0) {
-    ciBadgeCount++;
-    if (!/&label=(&|\)|$)/.test(ciCell)) {
-      console.error('FAIL: row ' + (i + 1) + ' CI badge URL does not have an empty "&label=" override: "' + ciCell + '"');
-      failed++;
+  var imgUrls = extractBadgeImageUrls(ciCell);
+  for (var uIdx = 0; uIdx < imgUrls.length; uIdx++) {
+    var imgUrl = imgUrls[uIdx];
+    if (imgUrl.indexOf('gist.githubusercontent.com') >= 0) {
+      ciBadgeCount++;
+      if (!/&label=(&|$)/.test(imgUrl)) {
+        console.error('FAIL: row ' + (i + 1) + ' CI badge image destination does not have an empty "&label=" override: "' + imgUrl + '"');
+        failed++;
+      }
     }
   }
 }
@@ -266,10 +302,27 @@ if (ciBadgeCount === 0) {
   failed++;
 }
 
-// Synthetic check 9: verify Rule 9 rejects &label=SomeText but accepts &label=
-if (!/&label=(&|\)|$)/.test('https://img.shields.io/endpoint?url=...&label=)') ||
-    /&label=(&|\)|$)/.test('https://img.shields.io/endpoint?url=...&label=SomeText)')) {
-  console.error('FAIL: Rule 9 empty &label= regex failed synthetic validation');
+// Synthetic check 9 (cubic review PR #106):
+// (a) Decoy URL test: a cell where the badge image lacks &label= but the link target has &label= must FAIL.
+var decoyCell = '[![PAR2 1GB/32k (CI)](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fdecoy.json&style=flat-square)](https://github.com/trafgals/ParParPar?view=table&label=)';
+var decoyUrls = extractBadgeImageUrls(decoyCell);
+if (decoyUrls.length !== 1 || decoyUrls[0].indexOf('gist.githubusercontent.com') < 0) {
+  console.error('FAIL: Synthetic check 9 failed to extract decoy badge image URL');
+  failed++;
+} else if (/&label=(&|$)/.test(decoyUrls[0])) {
+  console.error('FAIL: Synthetic check 9 decoy image URL should NOT have &label=');
+  failed++;
+}
+// (b) Valid badge image URL with empty &label= must pass
+var validBadgeUrl = 'https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fvalid.json&style=flat-square&label=';
+if (!/&label=(&|$)/.test(validBadgeUrl)) {
+  console.error('FAIL: Synthetic check 9 valid badge image URL failed empty &label= regex');
+  failed++;
+}
+// (c) Non-empty &label=SomeText must fail
+var labeledBadgeUrl = 'https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Flabeled.json&style=flat-square&label=SomeText';
+if (/&label=(&|$)/.test(labeledBadgeUrl)) {
+  console.error('FAIL: Synthetic check 9 non-empty &label=SomeText should not pass');
   failed++;
 }
 

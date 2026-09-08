@@ -5,10 +5,11 @@
  * Pin:
  *   1. The 14G row exists, references `par3-14g-229376-zen4`, and has
  *      `(pending)` in the workload cell.
- *   2. The 14G `Notes` cell contains Fenger / padded / next_pow2 /
- *      Node 22 / test/par3-fenger-padded-engine.js / test/par3-chunked-
- *      inputs.js. Missing any one would let a future edit silently drop
- *      a contract clause.
+ *   2. The 14G `Notes` cell contains Fenger / padded / <sup>[3]</sup>.
+ *      Footnote [3] independently contains the full technical contract:
+ *      Fenger, padded, next_pow2, Node 22, test/par3-fenger-padded-engine.js,
+ *      and test/par3-chunked-inputs.js. Missing any one would let a
+ *      future edit silently drop a contract clause.
  *   3. The footnote attributes 14G pending to Node 22, not to pow2 or
  *      V8 Buffer cap (those are different rows' causes).
  *   4. The live Zen4 badge JSON (feat/ci-benchmark-badge) and the local
@@ -150,6 +151,13 @@ if (!footnote3) {
     !/14 GiB[\s\S]{0,300}pending[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)/i.test(footnote3) &&
     !/14 GiB[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)[\s\S]{0,80}pending/i.test(footnote3));
 }
+
+// Self-test (cubic review PR #106): verify file header accurately documents Pin 2 split
+var selfContent = fs.readFileSync(__filename, 'utf8');
+check('Self-doc: header Pin 2 accurately reflects Notes cell contains Fenger/padded/<sup>[3]</sup>',
+  /Notes.*cell contains Fenger \/ padded \/ <sup>\[3\]<\/sup>/i.test(selfContent));
+check('Self-doc: header Pin 2 reflects footnote [3] contains technical clauses',
+  /Footnote \[3\] independently contains the full technical contract/i.test(selfContent));
 
 // Clause 4: live badge + sources.json both declare pending.
 var sourcesEntry = (sources.badges || []).find(function(b) { return b.id === BADGE_ID; });
