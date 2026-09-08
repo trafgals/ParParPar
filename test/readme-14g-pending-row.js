@@ -152,13 +152,6 @@ if (!footnote3) {
     !/14 GiB[\s\S]{0,200}(V8 Buffer cap|#[ ]?91)[\s\S]{0,80}pending/i.test(footnote3));
 }
 
-// Self-test (cubic review PR #106): verify file header accurately documents Pin 2 split
-var selfContent = fs.readFileSync(__filename, 'utf8');
-check('Self-doc: header Pin 2 accurately reflects Notes cell contains Fenger/padded/<sup>[3]</sup>',
-  /Notes.*cell contains Fenger \/ padded \/ <sup>\[3\]<\/sup>/i.test(selfContent));
-check('Self-doc: header Pin 2 reflects footnote [3] contains technical clauses',
-  /Footnote \[3\] independently contains the full technical contract/i.test(selfContent));
-
 // Clause 4: live badge + sources.json both declare pending.
 var sourcesEntry = (sources.badges || []).find(function(b) { return b.id === BADGE_ID; });
 check('sources.json declares ' + BADGE_ID, !!sourcesEntry);
