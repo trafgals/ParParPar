@@ -225,10 +225,32 @@ if (!badMatches || badMatches.length !== 2) {
   failed++;
 }
 
+// Rule 9: CI Runner badges must override shields.io label (&label=) to match Zen4 badge compact width.
+// The raw CI gist JSONs have label: "PAR2 ... (CI)" which swells the badge to 200+ px wide.
+// Appending &label= instructs shields.io to drop the label, rendering a compact value-only badge (55-73 px).
+var ciBadgeCount = 0;
+for (var i = 0; i < dataRows.length; i++) {
+  var row = dataRows[i];
+  var trimmed = row.replace(/^\| /, '').replace(/ \|$/, '');
+  var cells = trimmed.split(' | ');
+  var ciCell = cells[5] || '';
+  if (ciCell.indexOf('gist.githubusercontent.com') >= 0) {
+    ciBadgeCount++;
+    if (ciCell.indexOf('&label=') < 0) {
+      console.error('FAIL: row ' + (i + 1) + ' CI badge URL missing "&label=" override: "' + ciCell + '"');
+      failed++;
+    }
+  }
+}
+if (ciBadgeCount === 0) {
+  console.error('FAIL: expected at least one CI gist badge in the throughput table');
+  failed++;
+}
+
 if (failed > 0) {
   console.error('\nFAIL: ' + failed + ' benchmark layout contract violation(s)');
   process.exit(1);
 }
 
-console.log('PASS: table layout bounds (≤' + MAX_NOTES_LENGTH + ' chars/cell), ' + refList.length + ' footnote links verified, no unescaped HTML tags, row parser, pipe resilience, notes structure & math formatting confirmed');
+console.log('PASS: table layout bounds (≤' + MAX_NOTES_LENGTH + ' chars/cell), ' + refList.length + ' footnote links verified, no unescaped HTML tags, row parser, pipe resilience, notes structure, math formatting & CI badge width confirmed');
 process.exit(0);
