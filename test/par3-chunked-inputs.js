@@ -102,9 +102,15 @@ function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 		var baseRecs = extractRecBodies(fs.readFileSync(path.join(tmp, "base.par3")));
 		if (baseRecs.length === 0) { fail(legLabel + " no REC bodies in base archive"); cleanup(); return cb(); }
 
-		var pending = capSweep.length;
 		var allOk = true;
-		capSweep.forEach(function(cap) {
+		var capIdx = 0;
+		function runNextCap() {
+			if (capIdx >= capSweep.length) {
+				if (allOk) pass(legLabel + " chunked REC bodies == unchunked for caps " + JSON.stringify(capSweep));
+				cleanup();
+				return cb();
+			}
+			var cap = capSweep[capIdx++];
 			createWith(cap, inFile, path.join(tmp, "c" + cap), BLOCK_SIZE, RECOVERY, function(err2, eventData) {
 				var out = path.join(tmp, "c" + cap + ".par3");
 				if (err2) {
@@ -126,13 +132,10 @@ function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 						}
 					}
 				}
-				if (--pending === 0) {
-					if (allOk) pass(legLabel + " chunked REC bodies == unchunked for caps " + JSON.stringify(capSweep));
-					cleanup();
-					return cb();
-				}
+				runNextCap();
 			});
-		});
+		}
+		runNextCap();
 	});
 }
 

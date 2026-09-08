@@ -125,6 +125,7 @@ static struct {
 	std::unordered_map<CoeffCacheKey, gf64_t*, CoeffCacheKeyHash> map;
 	std::list<CoeffCacheKey> lru;
 } s_coeffCache;
+static std::mutex s_coeffCacheMutex;
 
 static inline void EnsureDispatch() {
 	if (!s_dispatch_initialized) {
@@ -283,6 +284,7 @@ static gf64_t* GetOrBuildCoeffMatrix(
 	size_t numInputs, size_t numRecovery,
 	uint64_t firstInput, uint64_t firstRecovery
 ) {
+	std::lock_guard<std::mutex> lock(s_coeffCacheMutex);
 	CoeffCacheKey key = { numInputs, numRecovery, firstInput, firstRecovery };
 
 	auto it = s_coeffCache.map.find(key);
