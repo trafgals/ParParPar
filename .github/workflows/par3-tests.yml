@@ -70,6 +70,12 @@ jobs:
         env:
           PAR3_SIMULATED_BUFFER_CAP: '1048576'
         timeout-minutes: 5
+      - name: Accumulate N-API regression
+        run: node test/par3-accumulate-napi-test.js
+        timeout-minutes: 5
+      - name: Memory bounded create regression
+        run: node test/par3-memory-bounded-create.js
+        timeout-minutes: 5
 
   test-wave9:
     name: Wave 9 Tests

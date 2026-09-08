@@ -141,16 +141,16 @@ var externalCap = process.env.PAR3_SIMULATED_BUFFER_CAP ? parseInt(process.env.P
 var capSweep1 = externalCap ? [externalCap] : [32768, 65536, 131072, 262144, 1048576, 50000 /* not-mult-of-blockSize */];
 var capSweep2 = externalCap ? [externalCap] : [1048576, 524288, 262144];
 
-// Leg 1: existing 4 MiB leg
+// Leg 1: existing 4 MiB leg (R=32, matvec/accumulate kernel exercises chunked recovery)
 runLeg(1024, 4096, 32, capSweep1, {
 	label: "4MiB",
-	assertMultiChunk: false
+	assertMultiChunk: true
 }, function() {
-	// Leg 2: new 14 MiB-class leg — exercises multi-chunk geometry at
-	// cap=1048576. RECOVERY=2048 keeps the ~14% recovery ratio.
+	// Leg 2: 14 MiB-class leg — exercises Fenger kernel with R=2048
+	// cubic review df1de4cb: Fenger is not in useChunkedCreate, so assertMultiChunk is false
 	runLeg(14336, 1024, 2048, capSweep2, {
 		label: "14MiB",
-		assertMultiChunk: true,
+		assertMultiChunk: false,
 		minChunks: 4
 	}, function() {
 		console.log("\n" + passed + " passed, " + failed + " failed");

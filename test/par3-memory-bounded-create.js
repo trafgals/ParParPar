@@ -183,12 +183,14 @@ function runTest() {
 						fail(tc.label + " content mismatch (recovery bytes not bit-identical)");
 						runNext();
 					} else {
-						// Verify that the generated chunked archive is valid and repairable
-						par3gen.verify(chunkedOut + ".par3", function(err3) {
+						// cubic review df1de4cb P3: check result.archiveOk in addition to err3
+						par3gen.verify(chunkedOut + ".par3", function(err3, result) {
 							if (err3) {
 								fail(tc.label + " verification failed: " + err3.message);
+							} else if (!result || !result.archiveOk) {
+								fail(tc.label + " verification failed (archiveOk=false)");
 							} else {
-								pass(tc.label + " bit-identical (" + unchunkedRecs.length + " recovery bytes, verified)");
+								pass(tc.label + " bit-identical (" + unchunkedRecs.length + " recovery bytes, verified archiveOk)");
 							}
 							runNext();
 						});
@@ -247,12 +249,13 @@ function runTest() {
 				console.log("  Final RSS:    " + (finalRss / 1048576).toFixed(1) + " MiB");
 				console.log("  Peak RSS Δ:   " + (peakRssDelta / 1048576).toFixed(1) + " MiB");
 
-				// cubic review 0c8cc30f P2: assert that peak RSS stays strictly bounded under budget
-				var maxAllowedRss = 350 * 1024 * 1024; // 350 MiB budget ceiling
-				if (peakRss > maxAllowedRss) {
-					fail("Peak RSS " + (peakRss / 1048576).toFixed(1) + " MiB exceeded budget ceiling of " + (maxAllowedRss / 1048576).toFixed(1) + " MiB");
+				// cubic review df1de4cb P2: assert that peak RSS delta stays strictly bounded relative to baseline
+				var maxAllowedDelta = 100 * 1024 * 1024; // 100 MiB delta budget
+				var maxAllowedRss = Math.max(512 * 1024 * 1024, initialRss + 150 * 1024 * 1024); // 512 MiB or baseline + 150 MiB margin
+				if (peakRssDelta > maxAllowedDelta || peakRss > maxAllowedRss) {
+					fail("Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB exceeded delta budget " + (maxAllowedDelta / 1048576).toFixed(1) + " MiB or ceiling " + (maxAllowedRss / 1048576).toFixed(1) + " MiB");
 				} else {
-					pass("cubic review 0c8cc30f P2: Peak RSS " + (peakRss / 1048576).toFixed(1) + " MiB strictly bounded under 350 MiB");
+					pass("cubic review df1de4cb P2: Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB strictly bounded (peak " + (peakRss / 1048576).toFixed(1) + " MiB)");
 				}
 				console.log("\n=================================");
 				console.log("Summary: " + passed + " passed, " + failed + " failed");

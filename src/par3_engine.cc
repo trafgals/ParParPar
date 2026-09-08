@@ -993,30 +993,62 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		r.accumulate = accumulate;
 		WorkerThread(r);
 	} else {
-		std::thread* workers = new std::thread[n_workers];
-		size_t active = 0;
-
-		while (base < numRecovery) {
-			size_t end = base + chunk;
-			if (end > numRecovery) end = numRecovery;
+		std::thread* workers = nullptr;
+		try {
+			workers = new std::thread[n_workers];
+		} catch (...) {
+			// Fall back to single-threaded if allocating worker array fails
 			WorkerRange r;
-			r.out_start       = recovery + base * blockSize64;
-			r.num_out         = end - base;
+			r.out_start       = recovery;
+			r.num_out         = numRecovery;
 			r.total_num_out   = numRecovery;
 			r.in              = inputs;
 			r.num_in          = numInputs;
-			r.coeff_row_start = coeff + base * numInputs;
+			r.coeff_row_start = coeff;
 			r.block_size64    = blockSize64;
 			r.tile_size       = tileSize;
 			r.accumulate      = accumulate;
+			WorkerThread(r);
+			return;
+		}
 
-			new (&workers[active]) std::thread(WorkerThread, r);
-			active++;
-			base = end;
+		size_t active = 0;
+
+		// cubic review df1de4cb P1: if worker creation throws (e.g. std::system_error),
+		// join all already-started workers before re-throwing so bounce buffers are not accessed
+		try {
+			while (base < numRecovery) {
+				size_t end = base + chunk;
+				if (end > numRecovery) end = numRecovery;
+				WorkerRange r;
+				r.out_start       = recovery + base * blockSize64;
+				r.num_out         = end - base;
+				r.total_num_out   = numRecovery;
+				r.in              = inputs;
+				r.num_in          = numInputs;
+				r.coeff_row_start = coeff + base * numInputs;
+				r.block_size64    = blockSize64;
+				r.tile_size       = tileSize;
+				r.accumulate      = accumulate;
+
+				new (&workers[active]) std::thread(WorkerThread, r);
+				active++;
+				base = end;
+			}
+		} catch (...) {
+			for (size_t i = 0; i < active; i++) {
+				if (workers[i].joinable()) {
+					workers[i].join();
+				}
+			}
+			delete[] workers;
+			throw;
 		}
 
 		for (size_t i = 0; i < active; i++) {
-			workers[i].join();
+			if (workers[i].joinable()) {
+				workers[i].join();
+			}
 		}
 
 		delete[] workers;
