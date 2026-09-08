@@ -24,6 +24,8 @@
 #if defined(_MSC_VER)
 #include <malloc.h>
 #endif
+#include <new>
+#include <exception>
 
 #include "gf64_global.h"
 #include "par3_engine.h"
