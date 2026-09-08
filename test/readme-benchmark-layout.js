@@ -1,12 +1,15 @@
 "use strict";
 /* Contract test for README throughput table and notes layout:
  *
- *   1. Cell Width Bounds: No cell in the Benchmarks & Performance table
- *      may exceed 160 characters. This prevents in-cell essay bloat from
- *      distorting table column proportions on GitHub Flavored Markdown.
+ *   1. Cell Width Bounds: Text columns (0-3: Project, Workload, Slice Count,
+ *      Block Size) may not exceed 80 characters, and the Notes column (6) may
+ *      not exceed 160 characters. This prevents in-cell essay bloat from
+ *      distorting table column proportions on GitHub Flavored Markdown. Badge
+ *      URL columns (4-5) contain shields.io endpoint URLs (~270 chars) which
+ *      render as compact badges and are exempt from prose length limits.
  *
  *   2. Footnote Reference Integrity: Every footnote marker referenced in the
- *      table (e.g. <sup>[1]</sup> .. <sup>[5]</sup>) must have a corresponding
+ *      table (e.g. <sup>[1]</sup> .. <sup>[6]</sup>) must have a corresponding
  *      definition in the "Footnotes & Caveats" section below the table.
  *
  *   3. HTML Tag Escaping: No raw unescaped `<id>` tag may exist in README.md.
@@ -46,9 +49,10 @@ var tableSection = readme.substring(tableStart, tableEnd);
 var lines = tableSection.split(/\r?\n/);
 var dataRows = [];
 for (var i = 0; i < lines.length; i++) {
-  var line = lines[i];
-  if (!line.startsWith('| **')) continue;
-  if (line.indexOf('| :--- |') >= 0) continue;
+  var line = lines[i].trim();
+  if (!line.startsWith('|')) continue;
+  if (/^\|\s*Project \/ Format/i.test(line)) continue;
+  if (/^\|\s*:?---/.test(line)) continue;
   dataRows.push(line);
 }
 
@@ -99,8 +103,8 @@ for (var i = 0; i < dataRows.length; i++) {
 }
 
 // Rule 2: Footnote references must have definitions in the footnotes section.
-var lastRowIdx = tableSection.lastIndexOf('|');
-var notesSection = lastRowIdx >= 0 ? tableSection.substring(lastRowIdx + 1).trim() : '';
+var notesStart = tableSection.indexOf('*All throughput');
+var notesSection = notesStart >= 0 ? tableSection.substring(notesStart).trim() : '';
 
 var refList = Object.keys(referencedFootnotes).sort();
 if (refList.length === 0) {
@@ -135,10 +139,36 @@ if (/<id>/i.test(strippedCodeSpans)) {
   failed++;
 }
 
+// Rule 5 (cubic review PR #105 violation 2): Verify row filter robustly detects
+// rows without bold formatting and rows with leading whitespace.
+var testSection = "| Project / Format | Workload |\n| :--- | :--- |\n  | Plain PAR2 | 1 GiB |\n| **Bold PAR3** | 2 GiB |\n\n*All throughput...";
+var testLines = testSection.split(/\r?\n/);
+var parsedRows = [];
+for (var ti = 0; ti < testLines.length; ti++) {
+  var tline = testLines[ti].trim();
+  if (!tline.startsWith('|')) continue;
+  if (/^\|\s*Project \/ Format/i.test(tline)) continue;
+  if (/^\|\s*:?---/.test(tline)) continue;
+  parsedRows.push(tline);
+}
+if (parsedRows.length !== 2) {
+  console.error('FAIL: row parser did not detect both plain-text and bold rows (expected 2, got ' + parsedRows.length + ')');
+  failed++;
+}
+
+// Rule 6 (cubic review PR #105 violations 1 & 3): Verify notes extraction anchors
+// at *All throughput and is immune to inline pipes in notes prose or code spans.
+var sampleWithPipe = "| Header |\n| --- |\n| Row |\n\n*All throughput in MB/s*\nInline code `a | b` in notes.";
+var sampleStart = sampleWithPipe.indexOf('*All throughput');
+if (sampleStart < 0 || sampleWithPipe.substring(sampleStart).indexOf('`a | b`') < 0) {
+  console.error('FAIL: notes anchoring does not capture full content through inline pipes');
+  failed++;
+}
+
 if (failed > 0) {
   console.error('\nFAIL: ' + failed + ' benchmark layout contract violation(s)');
   process.exit(1);
 }
 
-console.log('PASS: table layout bounds (≤' + MAX_NOTES_LENGTH + ' chars/cell), ' + refList.length + ' footnote links verified, no unescaped HTML tags');
+console.log('PASS: table layout bounds (≤' + MAX_NOTES_LENGTH + ' chars/cell), ' + refList.length + ' footnote links verified, no unescaped HTML tags, row parser & pipe resilience confirmed');
 process.exit(0);

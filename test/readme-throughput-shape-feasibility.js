@@ -61,9 +61,10 @@ var tableSection = readme.substring(tableStart, tableEnd);
 var lines = tableSection.split(/\r?\n/);
 var dataRows = [];
 for (var i = 0; i < lines.length; i++) {
-	var line = lines[i];
-	if (!line.startsWith('| **')) continue;
-	if (line.indexOf('| :--- |') >= 0) continue;
+	var line = lines[i].trim();
+	if (!line.startsWith('|')) continue;
+	if (/^\|\s*Project \/ Format/i.test(line)) continue;
+	if (/^\|\s*:?---/.test(line)) continue;
 	dataRows.push(line);
 }
 
@@ -222,10 +223,14 @@ function trackFetch(label, r) {
 	// AND a 64G reference AND a shared cause phrase. Cross-sentence
 	// attributions are fine (the natural way to write about two rows
 	// with different causes) — only SAME-sentence lumping is wrong.
-	var lastRowIdx = tableSection.lastIndexOf('|');
-	var footnote = lastRowIdx >= 0 ? tableSection.substring(lastRowIdx + 1).trim() : '';
-	if (!footnote || !/All throughput/i.test(footnote)) {
-		console.error('FAIL: could not locate table footnote (expected notes containing "All throughput" in the table section)');
+	// Locate the structured notes & caveats section following the table.
+	// We anchor on '*All throughput', which marks the beginning of the
+	// post-table notes block (where caveats [5] and [6] define the 32G
+	// and 64G shape requirements).
+	var notesStart = tableSection.indexOf('*All throughput');
+	var footnote = notesStart >= 0 ? tableSection.substring(notesStart).trim() : '';
+	if (!footnote) {
+		console.error('FAIL: could not locate table notes (expected text starting with "*All throughput")');
 		failed++;
 	} else {
 		if (!/32 GiB|32G/.test(footnote)) {

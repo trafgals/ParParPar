@@ -61,9 +61,10 @@ var tableSection = readme.substring(tableStart, tableEnd);
 var dataRows = [];
 var lines = tableSection.split(/\r?\n/);
 for (var i = 0; i < lines.length; i++) {
-  var line = lines[i];
-  if (!line.startsWith('| **')) continue;
-  if (line.indexOf('| :--- |') >= 0) continue;
+  var line = lines[i].trim();
+  if (!line.startsWith('|')) continue;
+  if (/^\|\s*Project \/ Format/i.test(line)) continue;
+  if (/^\|\s*:?---/.test(line)) continue;
   dataRows.push(line);
 }
 
@@ -187,10 +188,14 @@ function trackFetch(label, r) {
   // The P3 finding was: the 16 GiB row is blocked by the V8 Buffer cap
   // (#91), and the 10 GiB/262k row is blocked by the pow2 contract (#87).
   // A correct footnote must distinguish them.
-  var lastRowIdx = tableSection.lastIndexOf('|');
-  var footnote = lastRowIdx >= 0 ? tableSection.substring(lastRowIdx + 1).trim() : '';
-  if (!footnote || !/All throughput/i.test(footnote)) {
-    console.error('FAIL: could not locate table footnote (expected notes containing "All throughput" in the table section)');
+  // Locate the structured notes & caveats section following the table.
+  // We anchor on '*All throughput', which marks the beginning of the
+  // post-table notes and caveats block (where per-row caveats and
+  // shape notes live).
+  var notesStart = tableSection.indexOf('*All throughput');
+  var footnote = notesStart >= 0 ? tableSection.substring(notesStart).trim() : '';
+  if (!footnote) {
+    console.error('FAIL: could not locate table notes (expected text starting with "*All throughput")');
     failed++;
     // Skip rule-2 evaluations; just report failures.
     console.error('\nFAIL: ' + failed + ' pending-row footnote contract violation(s)');
