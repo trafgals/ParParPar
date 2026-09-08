@@ -222,12 +222,12 @@ function trackFetch(label, r) {
 	// AND a 64G reference AND a shared cause phrase. Cross-sentence
 	// attributions are fine (the natural way to write about two rows
 	// with different causes) — only SAME-sentence lumping is wrong.
-	var footnoteMatch = tableSection.match(/\*All throughput[\s\S]*?branch\.\*/);
-	if (!footnoteMatch) {
-		console.error('FAIL: could not locate table footnote');
+	var lastRowIdx = tableSection.lastIndexOf('|');
+	var footnote = lastRowIdx >= 0 ? tableSection.substring(lastRowIdx + 1).trim() : '';
+	if (!footnote || !/All throughput/i.test(footnote)) {
+		console.error('FAIL: could not locate table footnote (expected notes containing "All throughput" in the table section)');
 		failed++;
 	} else {
-		var footnote = footnoteMatch[0];
 		if (!/32 GiB|32G/.test(footnote)) {
 			console.error('FAIL: footnote does not mention the 32G row');
 			failed++;

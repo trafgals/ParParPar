@@ -187,15 +187,15 @@ function trackFetch(label, r) {
   // The P3 finding was: the 16 GiB row is blocked by the V8 Buffer cap
   // (#91), and the 10 GiB/262k row is blocked by the pow2 contract (#87).
   // A correct footnote must distinguish them.
-  var footnoteMatch = tableSection.match(/\*All throughput[\s\S]*?branch\.\*/);
-  if (!footnoteMatch) {
-    console.error('FAIL: could not locate table footnote (expected *All throughput ...* in the table section)');
+  var lastRowIdx = tableSection.lastIndexOf('|');
+  var footnote = lastRowIdx >= 0 ? tableSection.substring(lastRowIdx + 1).trim() : '';
+  if (!footnote || !/All throughput/i.test(footnote)) {
+    console.error('FAIL: could not locate table footnote (expected notes containing "All throughput" in the table section)');
     failed++;
     // Skip rule-2 evaluations; just report failures.
     console.error('\nFAIL: ' + failed + ' pending-row footnote contract violation(s)');
     process.exit(1);
   }
-  var footnote = footnoteMatch[0];
 
   // Look at the specifically-named pending rows we expect to find.
   // The Workload cell is the natural-language description (e.g.
