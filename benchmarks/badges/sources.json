@@ -86,7 +86,7 @@
       "label": "",
       "message": "361MB/s",
       "color": "brightgreen",
-      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Chunked create path (PR #108) breaks the 64 GiB memory wall: input pool capped at 64 MiB and reset between batches, so the working set stays bounded regardless of source size. 2 runs per-run 366.5 / 356.4, median 361.46, stdev 7.14 (1.9%). Peak RSS 272.26 MiB. Wall-clock 454 s end-to-end (source 178 s + create 273 s)."
+      "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Chunked create path (PR #108) breaks the 64 GiB memory wall: input pool capped at 64 MiB and reset between batches, so the working set stays bounded regardless of source size. 2 runs per-run 366.5 / 356.4, median 361.46, stdev 7.14 (1.9%). Peak RSS 272.26 MiB. Wall-clock 272 s end-to-end (source read 88 s + recovery compute 184 s; run 2)."
     }
   ]
 }
