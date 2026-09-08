@@ -321,13 +321,19 @@ function runTest() {
 				});
 			};
 
+			// cubic review 710c0747 P3: guard completion with finished flag so next() runs only once
+			var finished = false;
 			var timeout = setTimeout(function() {
+				if (finished) return;
+				finished = true;
 				fs.stat = origStat;
-				fail("cubic review 41b8069e P1: fileInfo hung on non-file (BufferPool corrupted by double-put)");
+				fail("cubic review 710c0747 P3: fileInfo hung on non-file (BufferPool corrupted by double-put)");
 				next();
 			}, 3000);
 
 			par3gen.fileInfo([testFile], false, false, 2, function(err, info) {
+				if (finished) return;
+				finished = true;
 				clearTimeout(timeout);
 				fs.stat = origStat;
 				if (err && err.message && err.message.indexOf("is not a valid file") !== -1) {
