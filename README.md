@@ -65,7 +65,6 @@ ParParPar delivers high-throughput $\text{GF}(2^{64})$ Cauchy-matrix recovery an
 - **Run Protocol**: Short workloads (≤2 s/run, e.g. PAR2 1G/1k, 1G/32k): 5–8 back-to-back runs, median, no warmup. Long workloads (>10 s/run, e.g. PAR3 1G/131k, 1G/262k): 3 measured runs + 1 warmup-discarded run (V8 JIT + buffer-pool warmup). Memory-wall probes (4G/65k, 32G/524k, 64G/1048k): 1 warmup + 1 measured run (see `bench-reports/zen4-{32g,64g}-2026-08-28/`). Repair and matrix solve rows: 3-run median.
 - **CI Runner**: Automated monthly benchmark runs on GitHub Actions shared runners (`ubuntu-latest`).
 - **Badge Infrastructure**: Zen4 badges are served from the `feat/ci-benchmark-badge` branch as endpoint JSONs (`benchmarks/badges/<id>.json`). CI badges are served from public gist [de34e89a](https://gist.github.com/trafgals/de34e89a8dda313fba9565f56ba7767b). Badges are regenerated via `scripts/update-benchmark-badges.js` from `benchmarks/badges/sources.json` on the badge branch.
-- **Note on 10 GiB Shape**: The `sources.json` file retains a `par3-10g-262144-zen4` entry for external dashboard stability, but that row is absent from this table because its 40 KiB block size is not a power of 2 (`lib/par3gen.js:1270` rejects non-pow2 block sizes; the create engine requires pow2 block sizes for Toeplitz/Cauchy matrix layouts). To use 10 GiB PAR3, use 64 KiB blocks (10 GiB ÷ 64 KiB = 163840 slices — not a power of 2) or 80 KiB blocks (131072 slices — but 80 KiB is itself non-pow2), or fall back to PAR2 for arbitrary block sizes.
 
 ---
 
