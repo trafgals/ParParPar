@@ -165,10 +165,34 @@ if (sampleStart < 0 || sampleWithPipe.substring(sampleStart).indexOf('`a | b`') 
   failed++;
 }
 
+// Rule 7 (cubic review PR #105 comment 3956869698): Verify that Rule 2/3 intentionally
+// scan the whole notes section (intro + Footnotes & Caveats + Benchmarking Methodology).
+// Assert that:
+//   (a) notesSection spans across both "#### Footnotes & Caveats" and "#### Benchmarking Methodology & Environment"
+//   (b) synthetic single-sentence lumping (the P3 regression) is caught by the Rule 3 regex
+//   (c) the structured section format cleanly separates 16 GiB and 10 GiB causes without triggering false lumping
+var caveatPos = notesSection.indexOf('#### Footnotes & Caveats');
+var methodPos = notesSection.indexOf('#### Benchmarking Methodology & Environment');
+if (caveatPos < 0 || methodPos < 0 || caveatPos >= methodPos) {
+  console.error('FAIL: post-table notes structure invalid; expected Footnotes & Caveats before Methodology');
+  failed++;
+}
+
+var syntheticLumped = "*All throughput*\n16 GiB and 10 GiB/262k rows remain pending (V8 4 GiB Buffer cap blocks the larger shapes — see #91)";
+var lumpRegex = /16 GiB[\s\S]{0,80}10 GiB[\s\S]{0,200}(V8|Buffer cap|#[ ]?91)/i;
+if (!lumpRegex.test(syntheticLumped)) {
+  console.error('FAIL: Rule 3 synthetic lumping pattern failed to flag single-sentence cause conflation');
+  failed++;
+}
+if (lumpRegex.test(notesSection)) {
+  console.error('FAIL: post-table notes section unexpectedly triggered Rule 3 lumping detection');
+  failed++;
+}
+
 if (failed > 0) {
   console.error('\nFAIL: ' + failed + ' benchmark layout contract violation(s)');
   process.exit(1);
 }
 
-console.log('PASS: table layout bounds (≤' + MAX_NOTES_LENGTH + ' chars/cell), ' + refList.length + ' footnote links verified, no unescaped HTML tags, row parser & pipe resilience confirmed');
+console.log('PASS: table layout bounds (≤' + MAX_NOTES_LENGTH + ' chars/cell), ' + refList.length + ' footnote links verified, no unescaped HTML tags, row parser, pipe resilience & notes structure confirmed');
 process.exit(0);

@@ -56,7 +56,9 @@ if (!tableEndMatch) {
   process.exit(1);
 }
 var tableEnd = tableStart + tableEndMatch.index;
-// The footnote is the italicized paragraph BETWEEN the last data row and the `---`.
+// The tableSection spans from the table header through the last data row,
+// the intro note, "#### Footnotes & Caveats", and "#### Benchmarking Methodology & Environment",
+// ending at the `---` section break.
 var tableSection = readme.substring(tableStart, tableEnd);
 var dataRows = [];
 var lines = tableSection.split(/\r?\n/);
@@ -182,16 +184,24 @@ function trackFetch(label, r) {
     }
   }
 
-  // Rule 2: the table-level footnote must NOT lump together pending rows
-  // with different causes under a single shared cause.
+  // Rule 2: the table notes must NOT lump together pending rows with
+  // different causes under a single shared cause.
   //
-  // The P3 finding was: the 16 GiB row is blocked by the V8 Buffer cap
-  // (#91), and the 10 GiB/262k row is blocked by the pow2 contract (#87).
-  // A correct footnote must distinguish them.
-  // Locate the structured notes & caveats section following the table.
-  // We anchor on '*All throughput', which marks the beginning of the
-  // post-table notes and caveats block (where per-row caveats and
-  // shape notes live).
+  // Architectural design & contract rationale (cubic review PR #105 comment 3956869698):
+  // Originally, the throughput table had a single monolithic italicized paragraph
+  // directly beneath it. PR #105 refactored that monolithic paragraph into
+  // structured sections: an intro line (*All throughput...*), per-shape numbered
+  // caveats under "#### Footnotes & Caveats", and architecture/shape notes under
+  // "#### Benchmarking Methodology & Environment" (e.g. Note on 10 GiB Shape).
+  //
+  // Because per-shape caveats (such as 16 GiB and 10 GiB) now reside in their
+  // respective structured footnote/methodology entries rather than an inline
+  // paragraph immediately adjacent to the table, Rule 2/3 now intentionally
+  // scan the whole notes section (from '*All throughput' to the '---' delimiter).
+  //
+  // This extraction anchors on '*All throughput' (the beginning of the post-table
+  // notes block) instead of lastIndexOf('|'), preventing truncation from any
+  // inline pipes within long notes or code spans.
   var notesStart = tableSection.indexOf('*All throughput');
   var footnote = notesStart >= 0 ? tableSection.substring(notesStart).trim() : '';
   if (!footnote) {
@@ -244,15 +254,16 @@ function trackFetch(label, r) {
     }
   }
 
-  // Rule 3: a single sentence in the footnote must NOT attribute two
+  // Rule 3: a single sentence in the notes must NOT attribute two
   // differently-caused pending rows to the same cause. We use a simple
-  // test: the footnote should not contain "X and Y rows remain `pending`
+  // test: the notes should not contain "X and Y rows remain `pending`
   // (causeA — see #NNN)" when the actual per-row causes for X and Y
   // are different. Concretely, we look for the original P3 form:
   //   "16 GiB and 10 GiB/262k rows remain `pending` (V8 4 GiB Buffer cap
   //    blocks the larger shapes — see #91)"
-  // which lumps both under the V8 Buffer cap. The post-#92 footnote uses
-  // two separate sentences, so the lumping pattern should not match.
+  // which lumps both under the V8 Buffer cap. The structured notes use
+  // separate entries, so the lumping pattern should not match.
+  // Rule 2/3 now intentionally scan the whole notes section to enforce this.
   //
   // Guard (cubic P2 #1, PR #102): only check lumping if at least one
   // pending row was actually found. Without this, the regex runs
