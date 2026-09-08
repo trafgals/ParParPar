@@ -87,6 +87,69 @@
       "message": "361MB/s",
       "color": "brightgreen",
       "detail": "PAR3 create, 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel (R=8 < FENGER_MIN_R=8192); native Windows. Chunked create path (PR #108) breaks the 64 GiB memory wall: input pool capped at 64 MiB and reset between batches, so the working set stays bounded regardless of source size. 2 runs per-run 366.5 / 356.4, median 361.46, stdev 7.14 (1.9%). Peak RSS 272.26 MiB. Wall-clock 272 s end-to-end (source read 88 s + recovery compute 184 s; run 2)."
+    },
+    {
+      "id": "par3-1g-1k-rss-zen4",
+      "label": "",
+      "message": "468MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 1 GiB / 1024 slices (1 MiB), R=8, matvec Cauchy kernel. 5 runs, max peakRssHuman 467.83 MiB (single-buffer matvec path keeps the full input resident; bounded by V8 32-bit compressed-pointer heap range)."
+    },
+    {
+      "id": "par3-1g-32k-rss-zen4",
+      "label": "",
+      "message": "262MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 1 GiB / 32768 slices (32 KiB blocks), R=8, Barycentric kernel. 4 runs, max peakRssHuman 262.05 MiB (chunked create path: input pool capped at 64 MiB)."
+    },
+    {
+      "id": "par3-1g-131072-rss-zen4",
+      "label": "",
+      "message": "207MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 1 GiB / 131072 slices (8 KiB blocks), R=8, Barycentric kernel. 4 runs, max peakRssHuman 207.08 MiB (chunked create path)."
+    },
+    {
+      "id": "par3-1g-262144-rss-zen4",
+      "label": "",
+      "message": "193MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 1 GiB / 262144 slices (4 KiB blocks), R=8, Barycentric kernel. 4 runs, max peakRssHuman 192.90 MiB (chunked create path)."
+    },
+    {
+      "id": "par3-4g-65536-rss-zen4",
+      "label": "",
+      "message": "302MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 4 GiB / 65536 slices (64 KiB blocks), R=8, Barycentric kernel. 2 runs, max peakRssHuman 301.73 MiB (chunked create path: peak RSS bounded regardless of source size)."
+    },
+    {
+      "id": "par3-14g-229376-rss-zen4",
+      "label": "",
+      "message": "283MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 14 GiB / 229376 slices (64 KiB blocks), R=32768, Fenger kernel (padded). 2 runs, max peakRssHuman 283.37 MiB (chunked create path)."
+    },
+    {
+      "id": "par3-16g-262144-rss-zen4",
+      "label": "",
+      "message": "283MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 16 GiB / 262144 slices (64 KiB blocks), R=8, Barycentric kernel. 2 runs, max peakRssHuman 282.60 MiB (chunked create path; PR #108 breaks the previous 32 GiB RSS cliff)."
+    },
+    {
+      "id": "par3-32g-524288-rss-zen4",
+      "label": "",
+      "message": "281MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 32 GiB / 524288 slices (64 KiB blocks), R=8, Barycentric kernel. 2 runs, max peakRssHuman 280.55 MiB (chunked create path; PR #108 bounds peak RSS at working-set size)."
+    },
+    {
+      "id": "par3-64g-1048576-rss-zen4",
+      "label": "",
+      "message": "272MiB",
+      "color": "blue",
+      "detail": "Peak RSS for PAR3 create 64 GiB / 1048576 slices (64 KiB blocks), R=8, Barycentric kernel. 2 runs, max peakRssHuman 272.26 MiB (chunked create path; PR #108 breaks the 64 GiB memory wall — pre-#108 the alloc pool was 64 GiB + 64 KiB and the bench was swap-bound)."
     }
   ]
 }
