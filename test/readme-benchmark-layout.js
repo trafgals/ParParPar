@@ -195,12 +195,22 @@ if (lumpRegex.test(notesSection)) {
 // because GitHub's markdown pipeline unescapes \_ and KaTeX rejects '_' in text mode with
 // "KaTeX parse error: '_' allowed only in math mode". Code identifiers belong in markdown
 // code spans (backticks).
-var noCodeReadme = readme.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
-var mathRe = /\$([^$\n]+)\$/g;
-var mMatch;
+// We restrict the scan to tableSection (the benchmark table and notes block) and strip
+// markdown code blocks and backtick code spans first so code examples aren't scanned.
+var noCodeTableSection = tableSection.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
 var mathSpans = [];
-while ((mMatch = mathRe.exec(noCodeReadme)) !== null) {
-  mathSpans.push(mMatch[1]);
+// 1. Display math: $$ ... $$
+var displayMathRe = /\$\$([\s\S]*?)\$\$/g;
+var dm;
+while ((dm = displayMathRe.exec(noCodeTableSection)) !== null) {
+  mathSpans.push(dm[1]);
+}
+// 2. Inline math: $ ... $ (strip display math first so $$ delimiters are not mis-parsed)
+var inlineSection = noCodeTableSection.replace(/\$\$[\s\S]*?\$\$/g, '');
+var inlineMathRe = /\$([^$\n]+)\$/g;
+var im;
+while ((im = inlineMathRe.exec(inlineSection)) !== null) {
+  mathSpans.push(im[1]);
 }
 
 for (var mi = 0; mi < mathSpans.length; mi++) {
@@ -217,7 +227,7 @@ for (var mi = 0; mi < mathSpans.length; mi++) {
   }
 }
 
-// Synthetic check: verify Rule 8 catches math containing \text{..._...}
+// Synthetic check 8a: verify Rule 8 catches math containing \text{..._...}
 var badSample = 'Sample with $N < \\text{BARY_MIN}=10$ and $R < \\text{FENGER\\_MIN_R}$';
 var badMatches = badSample.match(/\\text\{[^}]*\\?_[^}]*\}/g);
 if (!badMatches || badMatches.length !== 2) {
@@ -225,9 +235,18 @@ if (!badMatches || badMatches.length !== 2) {
   failed++;
 }
 
+// Synthetic check 8b (cubic review on PR #106 violation 2): verify Rule 8 catches raw uppercase macro identifiers in math
+var badMacroSample = 'Sample with $R < FENGER_MIN_R$';
+var badMacroMatches = badMacroSample.match(/[A-Z]{2,}_[A-Z0-9_]*/);
+if (!badMacroMatches) {
+  console.error('FAIL: Rule 8 synthetic test failed to catch raw uppercase macro identifier inside math');
+  failed++;
+}
+
 // Rule 9: CI Runner badges must override shields.io label (&label=) to match Zen4 badge compact width.
 // The raw CI gist JSONs have label: "PAR2 ... (CI)" which swells the badge to 200+ px wide.
 // Appending &label= instructs shields.io to drop the label, rendering a compact value-only badge (55-73 px).
+// Cubic review PR #106: ensure &label= has an empty value (not &label=SomeText).
 var ciBadgeCount = 0;
 for (var i = 0; i < dataRows.length; i++) {
   var row = dataRows[i];
@@ -236,14 +255,21 @@ for (var i = 0; i < dataRows.length; i++) {
   var ciCell = cells[5] || '';
   if (ciCell.indexOf('gist.githubusercontent.com') >= 0) {
     ciBadgeCount++;
-    if (ciCell.indexOf('&label=') < 0) {
-      console.error('FAIL: row ' + (i + 1) + ' CI badge URL missing "&label=" override: "' + ciCell + '"');
+    if (!/&label=(&|\)|$)/.test(ciCell)) {
+      console.error('FAIL: row ' + (i + 1) + ' CI badge URL does not have an empty "&label=" override: "' + ciCell + '"');
       failed++;
     }
   }
 }
 if (ciBadgeCount === 0) {
   console.error('FAIL: expected at least one CI gist badge in the throughput table');
+  failed++;
+}
+
+// Synthetic check 9: verify Rule 9 rejects &label=SomeText but accepts &label=
+if (!/&label=(&|\)|$)/.test('https://img.shields.io/endpoint?url=...&label=)') ||
+    /&label=(&|\)|$)/.test('https://img.shields.io/endpoint?url=...&label=SomeText)')) {
+  console.error('FAIL: Rule 9 empty &label= regex failed synthetic validation');
   failed++;
 }
 
