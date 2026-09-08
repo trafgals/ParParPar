@@ -152,6 +152,13 @@ runCase(1024, 512, 128, 0x10000, 66400,
 	}
 	check(threw, 'numInputs=2^63 rejected cleanly (no pad-loop wrap / hang)');
 })();
+// 14 GiB-shape kernel parity (issue #59 D3): N=229376 → next_pow2=262144
+// (always-pad boundary). Disjoint ranges are CRITICAL — firstInput=0 /
+// firstRecovery=0 would trigger the overlap guard and pin the Cauchy
+// fallback instead of Fenger.
+runCase(229376, 32768, 64, 0x10000, 0x1000000,
+	'14G/64KiB/R=32768 padded shape (N=229376 → next_pow2=262144, R=32768 pow2, disjoint input/recovery ranges)',
+	binding.compute_recovery_barycentric); // barycentric O(N log^2 N) at scale; parity against the Cauchy reference is asserted in test/par3-barycentric-parity.js.
 // NOTE: the P1 gate shape (N=131072/R=4096 bit-exact vs Cauchy) is a
 // bench item (gf64/test/bench_gf64_subquadratic gate_shape), not a unit
 // test — the padded route at N=2^18+1 pads to 2^19 points and takes

@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.16.0'
       - name: Build native addon
         run: npm install
       - name: Native addon load gate
@@ -62,6 +62,15 @@ jobs:
         # dropped after verifying locally (cubic review f44ead49 P3).
         run: node test/par3-golden.js
 
+      - name: Chunked-input regression (single-call)
+        run: node test/par3-chunked-inputs.js
+        timeout-minutes: 5
+      - name: Chunked-input regression (multi-chunk via simulated cap)
+        run: node test/par3-chunked-inputs.js
+        env:
+          PAR3_SIMULATED_BUFFER_CAP: '1048576'
+        timeout-minutes: 5
+
   test-wave9:
     name: Wave 9 Tests
     runs-on: ubuntu-latest
@@ -70,7 +79,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.16.0'
       - name: Build and verify
         run: |
           npm install
@@ -84,7 +93,7 @@ jobs:
       # windows-2025 pin requires node-gyp ^12.4.0 (see .npmrc); see https://github.com/trafgals/ParParPar/issues/5
       fail-fast: false
       matrix:
-        node-version: [20, 22]
+        node-version: [22]
         os: [ubuntu-latest, windows-2025]
     steps:
       - uses: actions/checkout@v4
