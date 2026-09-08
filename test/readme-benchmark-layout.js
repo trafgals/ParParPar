@@ -189,10 +189,46 @@ if (lumpRegex.test(notesSection)) {
   failed++;
 }
 
+// Rule 8: KaTeX / LaTeX math formatting integrity (issue: '_' allowed only in math mode).
+// Code constants and identifiers containing underscores (e.g. BARY_MIN_INPUTS_DEFAULT,
+// FENGER_MIN_R, next_pow2) must NOT be placed inside LaTeX math spans ($...$) with \text{},
+// because GitHub's markdown pipeline unescapes \_ and KaTeX rejects '_' in text mode with
+// "KaTeX parse error: '_' allowed only in math mode". Code identifiers belong in markdown
+// code spans (backticks).
+var noCodeReadme = readme.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
+var mathRe = /\$([^$\n]+)\$/g;
+var mMatch;
+var mathSpans = [];
+while ((mMatch = mathRe.exec(noCodeReadme)) !== null) {
+  mathSpans.push(mMatch[1]);
+}
+
+for (var mi = 0; mi < mathSpans.length; mi++) {
+  var span = mathSpans[mi];
+  // Check for \text{...} with underscores (both escaped and unescaped)
+  if (/\\text\{[^}]*_[^}]*\}/.test(span) || /\\text\{[^}]*\\_[^}]*\}/.test(span)) {
+    console.error('FAIL: math span contains \\text{} with underscore (triggers KaTeX "\'_\' allowed only in math mode"): "$' + span + '$"');
+    failed++;
+  }
+  // Check for multi-letter uppercase code identifiers with underscores inside math
+  if (/[A-Z]{2,}_[A-Z0-9_]*/.test(span)) {
+    console.error('FAIL: math span contains uppercase code identifier with underscore (use markdown backticks instead): "$' + span + '$"');
+    failed++;
+  }
+}
+
+// Synthetic check: verify Rule 8 catches math containing \text{..._...}
+var badSample = 'Sample with $N < \\text{BARY_MIN}=10$ and $R < \\text{FENGER\\_MIN_R}$';
+var badMatches = badSample.match(/\\text\{[^}]*\\?_[^}]*\}/g);
+if (!badMatches || badMatches.length !== 2) {
+  console.error('FAIL: Rule 8 synthetic test failed to catch bad \\text{} with underscore patterns');
+  failed++;
+}
+
 if (failed > 0) {
   console.error('\nFAIL: ' + failed + ' benchmark layout contract violation(s)');
   process.exit(1);
 }
 
-console.log('PASS: table layout bounds (≤' + MAX_NOTES_LENGTH + ' chars/cell), ' + refList.length + ' footnote links verified, no unescaped HTML tags, row parser, pipe resilience & notes structure confirmed');
+console.log('PASS: table layout bounds (≤' + MAX_NOTES_LENGTH + ' chars/cell), ' + refList.length + ' footnote links verified, no unescaped HTML tags, row parser, pipe resilience, notes structure & math formatting confirmed');
 process.exit(0);

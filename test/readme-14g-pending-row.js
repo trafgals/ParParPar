@@ -98,8 +98,11 @@ check('14G workload cell flags (pending)',
   /pending/i.test(workload),
   'workload="' + workload + '"');
 
-// Clause 2: notes cell names all six contract clauses.
+// Clause 2: notes cell and corresponding footnote [3] name all six contract clauses.
 var notes = fourteenGRow.cells[6];
+var notesStart = tableSection.indexOf('*All throughput');
+var footnote = notesStart >= 0 ? tableSection.substring(notesStart) : '';
+var notesAndFootnote = notes + '\n' + footnote;
 var contractClauses = [
   { name: 'Fenger (kernel identity at R >= FENGER_MIN_R)', re: /\bFenger\b/i },
   { name: 'padded (engine always-pad policy at non-pow2 N)', re: /\bpadded?\b/i },
@@ -109,16 +112,14 @@ var contractClauses = [
   { name: 'test/par3-chunked-inputs.js (multi-chunk pipeline regression)', re: /test\/par3-chunked-inputs\.js/ }
 ];
 contractClauses.forEach(function(c) {
-  check('14G notes cell contains "' + c.name + '"', c.re.test(notes));
+  check('14G notes & footnote [3] contains "' + c.name + '"', c.re.test(notesAndFootnote));
 });
 
 // Clause 3: footnote attributes 14G pending to Node 22, NOT to pow2
 // or V8 Buffer cap (those are different rows' causes).
-var footnoteMatch = tableSection.match(/\*All throughput[\s\S]*?branch\.\*/);
-if (!footnoteMatch) {
+if (!footnote) {
   check('14G footnote presence', false, 'could not locate table footnote');
 } else {
-  var footnote = footnoteMatch[0];
   check('14G footnote mentions the 14G/229376 row', /(14 GiB|14GB|229,?376)/i.test(footnote));
   // Positive attribution: pending to Node 22, NOT to V8 Buffer cap
   // (which is the 16G row's cause). Don't accept "V8 Buffer cap" as
