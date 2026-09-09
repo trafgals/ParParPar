@@ -3183,8 +3183,10 @@ static napi_value XorBuffers_NAPI(napi_env env, napi_callback_info info) {
 	// chunk). Throw on mismatch so the JS caller fixes the contract instead
 	// of producing a corrupted archive.
 	if (dstLen != srcLen) {
-		napi_throw_range_error(env, NULL,
+		char msg[160];
+		snprintf(msg, sizeof(msg),
 			"xor_buffers: dst.length (%zu) must equal src.length (%zu)", dstLen, srcLen);
+		napi_throw_range_error(env, NULL, msg);
 		return NULL;
 	}
 	size_t words = dstLen / 8;
