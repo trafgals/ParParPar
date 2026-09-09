@@ -1262,8 +1262,8 @@ static napi_status get_uint64_from_value(napi_env env, napi_value val, uint64_t*
 
 static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
-	size_t argc = 8;
-	napi_value args[8];
+	size_t argc = 9;
+	napi_value args[9];
 
 	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 	if(status != napi_ok) {
@@ -1367,6 +1367,15 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 		}
 	}
 
+	bool accumulate = false;
+	if(argc >= 9) {
+		status = napi_get_value_bool(env, args[8], &accumulate);
+		if(status != napi_ok) {
+			napi_throw_type_error(env, NULL, "accumulate must be a boolean");
+			return NULL;
+		}
+	}
+
 	// Validation
 	if(numInputs <= 0) {
 		napi_throw_range_error(env, NULL, "numInputs must be positive");
@@ -1403,7 +1412,8 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 		(gf64_t*)aligned_outputs, (size_t)numRecovery,
 		blockSize64,
 		firstInput, firstRecovery,
-		(int)numThreads
+		(int)numThreads,
+		accumulate
 	);
 
 	if (needs_inputs_temp) {
@@ -1429,8 +1439,8 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 // pattern, not this NAPI binding.
 static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
-	size_t argc = 8;
-	napi_value args[8];
+	size_t argc = 9;
+	napi_value args[9];
 
 	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 	if(status != napi_ok) {
@@ -1525,6 +1535,15 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 		status = napi_get_value_int32(env, args[7], &numThreads);
 		if(status != napi_ok) {
 			napi_throw_type_error(env, NULL, "numThreads must be an integer");
+			return NULL;
+		}
+	}
+
+	bool accumulate = false;
+	if(argc >= 9) {
+		status = napi_get_value_bool(env, args[8], &accumulate);
+		if(status != napi_ok) {
+			napi_throw_type_error(env, NULL, "accumulate must be a boolean");
 			return NULL;
 		}
 	}
@@ -1566,12 +1585,13 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 #endif
 	}
 
-GF64Controller::ComputeRecoveryBlocksFull(
+	GF64Controller::ComputeRecoveryBlocksFull(
 		(gf64_t*)aligned_inputs, (size_t)numInputs,
 		(gf64_t*)aligned_outputs, (size_t)numRecovery,
 		blockSize64,
 		firstInput, firstRecovery,
-		(int)numThreads
+		(int)numThreads,
+		accumulate
 	);
 
 	// v2: per-stage kernel timing. PAR3_PROFILE must be set in the parent
@@ -1612,8 +1632,8 @@ GF64Controller::ComputeRecoveryBlocksFull(
 // the recovery-side entry that avoids the O(N²) matrix-build cost.
 static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
-	size_t argc = 8;
-	napi_value args[8];
+	size_t argc = 9;
+	napi_value args[9];
 
 	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 	if(status != napi_ok) {
@@ -1712,6 +1732,15 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 		}
 	}
 
+	bool accumulate = false;
+	if(argc >= 9) {
+		status = napi_get_value_bool(env, args[8], &accumulate);
+		if(status != napi_ok) {
+			napi_throw_type_error(env, NULL, "accumulate must be a boolean");
+			return NULL;
+		}
+	}
+
 	if(numInputs <= 0) {
 		napi_throw_range_error(env, NULL, "numInputs must be positive");
 		return NULL;
@@ -1746,7 +1775,8 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 		(gf64_t*)aligned_outputs, (size_t)numRecovery,
 		blockSize64,
 		firstInput, firstRecovery,
-		(int)numThreads
+		(int)numThreads,
+		accumulate
 	);
 
 	if (needs_inputs_temp) {
@@ -3047,6 +3077,11 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "compute_recovery_full", compute_recovery_full_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set compute_recovery_full property");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "compute_recovery_accumulate", compute_recovery_full_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set compute_recovery_accumulate property");
 		return NULL;
 	}
 

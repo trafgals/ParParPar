@@ -179,5 +179,5 @@ runCreate('4', outThreaded, function(err1) {
 
 function finish() {
 	console.log('\n' + passed + ' passed, ' + failed + ' failed');
-	if (failed) process.exitCode = 1;
+	process.exit(failed === 0 ? 0 : 1);
 }

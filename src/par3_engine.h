@@ -24,7 +24,8 @@ public:
 		gf64_t* recovery, size_t numRecovery,
 		size_t blockSize64,
 		uint64_t firstInput, uint64_t firstRecovery,
-		int numThreads
+		int numThreads,
+		bool accumulate = false
 	);
 
 	/// Compute recovery blocks in a single pass over the full input.
@@ -45,7 +46,8 @@ public:
 		gf64_t* recovery, size_t numRecovery,
 		size_t blockSize64,
 		uint64_t firstInput, uint64_t firstRecovery,
-		int numThreads
+		int numThreads,
+		bool accumulate = false
 	);
 
 	/// v2-4: pre-computed coefficient matrix variant. Skips the matrix
@@ -58,7 +60,8 @@ public:
 		gf64_t* recovery, size_t numRecovery,
 		size_t blockSize64,
 		const gf64_t* coeff,
-		int numThreads
+		int numThreads,
+		bool accumulate = false
 	);
 
 	/// v2-4: standalone matrix build. Allocates a buffer of
@@ -195,7 +198,8 @@ public:
 		gf64_t* recovery, size_t numRecovery,
 		size_t blockSize64,
 		uint64_t firstInput, uint64_t firstRecovery,
-		int numThreads
+		int numThreads,
+		bool accumulate = false
 	);
 
 	/// Compute recovery blocks via the Fenger Toeplitz pipeline (issue #28).

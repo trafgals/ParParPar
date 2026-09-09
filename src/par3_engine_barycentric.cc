@@ -106,7 +106,8 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 	gf64_t* recovery, size_t numRecovery,
 	size_t blockSize64,
 	uint64_t firstInput, uint64_t firstRecovery,
-	int numThreads
+	int numThreads,
+	bool accumulate
 ) {
 	/*
 	 * Trivial-input short-circuit. Matches the engine convention (see
@@ -122,7 +123,7 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 		 * This entry can still be selected by the JS large-input gate, but
 		 * the Barycentric algorithm itself is reserved for larger R. */
 		ComputeRecoveryBlocks(inputs, numInputs, recovery, numRecovery,
-		                     blockSize64, firstInput, firstRecovery, 0);
+		                     blockSize64, firstInput, firstRecovery, numThreads, accumulate);
 		return;
 	}
 
@@ -216,7 +217,9 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 		 * prior contents).
 		 */
 		gf64_t* out_row = recovery + r * blockSize64;
-		std::memset(out_row, 0, blockSize64 * sizeof(gf64_t));
+		if (!accumulate) {
+			std::memset(out_row, 0, blockSize64 * sizeof(gf64_t));
+		}
 
 		for (size_t c = 0; c < numInputs; c++) {
 			const gf64_t coeff = coeffs[c];

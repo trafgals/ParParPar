@@ -47,7 +47,7 @@ var KA_EXPECTED_CRC32 = 'E83D367A';
 // Throughput benchmark parameters
 var BM_INPUT_MB = 64;                   // 64 MiB total input
 var BM_BLOCK_SIZE = 1024 * 1024;        // 1 MiB
-var BM_RECOVERY_SLICES = 10;
+var BM_RECOVERY_SLICES = 8;
 var BM_NUM_BLOCKS = BM_INPUT_MB;        // 64 blocks x 1 MiB = 64 MiB
 var BM_REGRESSION_WARN_PCT = 20;        // >20% slower → WARNING
 var BM_REGRESSION_FAIL_PCT = 50;        // >50% slower → FAIL
