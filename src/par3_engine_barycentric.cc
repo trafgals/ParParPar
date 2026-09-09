@@ -109,6 +109,7 @@ void GF64Controller::ComputeRecoveryBlocksBarycentric(
 	int numThreads,
 	bool accumulate
 ) {
+	ResetLastDecompositionPath();
 	/*
 	 * Trivial-input short-circuit. Matches the engine convention (see
 	 * ComputeRecoveryBlocks) — empty problems return without writing the

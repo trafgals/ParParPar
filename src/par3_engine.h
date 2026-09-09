@@ -68,10 +68,13 @@ public:
 	);
 
 	/// Returns the decomposition path used by the last (serialized) ComputeRecoveryBlocks-family call:
-	/// 0 = unset/early-return (sentinel; also returned if last computation used Barycentric/Fenger),
+	/// 0 = unset / early-return sentinel (also reset to 0 by Barycentric/Fenger calls),
 	/// 1 = single-thread, 2 = input-domain, 3 = output-domain.
-	/// Note: concurrent or non-routing calls yield a stale result.
+	/// Note: concurrent calls will report the latest completed path.
 	static int GetLastDecompositionPath();
+
+	/// Resets the recorded decomposition path to 0 (sentinel).
+	static void ResetLastDecompositionPath();
 
 	/// v2-4: standalone matrix build. Allocates a buffer of
 	/// numRecovery × numInputs gf64_t, fills it with the Cauchy

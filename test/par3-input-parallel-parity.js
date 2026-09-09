@@ -82,12 +82,16 @@ cases.forEach(function(testCase, idx) {
         var eq = refOut.equals(testOut);
         assert(eq, 'Case ' + idx + ': N=' + N + ' R=' + R + ' B=' + B + ' threads=' + t + ' bit-identical to serial');
 
-        // Cubic review P2: assert that the input-domain decomposition path (path 2) is actually exercised when t > R
+        // Cubic review P2 & P3: assert decomposition path matching all three preconditions:
+        // t > R, N >= t, and scratch <= 64 MiB
         var decompPath = addon.get_last_decomposition_path();
+        var fitsScratchCap = (t > 1) && ((R * B * (t - 1)) <= 64 * 1024 * 1024);
         if (t === 1) {
             assert(decompPath === 1, 'Case ' + idx + ' threads=' + t + ' used single-threaded path (1)');
-        } else if (t > R && N >= t) {
+        } else if (t > R && N >= t && fitsScratchCap) {
             assert(decompPath === 2, 'Case ' + idx + ' threads=' + t + ' actively exercised input-domain decomposition (2)');
+        } else {
+            assert(decompPath === 3, 'Case ' + idx + ' threads=' + t + ' used output-domain decomposition (3)');
         }
     });
 });
@@ -110,6 +114,22 @@ var capIn = Buffer.alloc(capN * capB);
 var capOut = Buffer.alloc(capR * capB);
 addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
 assert(addon.get_last_decomposition_path() === 3, 'Scratch > 64 MiB (120 MiB) safely falls back to output-domain decomposition (3)');
+
+// Cubic review P3: Test that Barycentric and Fenger reset decomposition path to 0 (sentinel)
+console.log('\nTesting non-routing kernel path reset (0 sentinel):');
+assert(addon.get_last_decomposition_path() === 3, 'Pre-condition: path is currently 3');
+addon.compute_recovery_fenger(Buffer.alloc(16 * 64), Buffer.alloc(2 * 64), 16, 2, 64, 0x1000, 0x2000, 0);
+assert(addon.get_last_decomposition_path() === 0, 'Fenger call resets decomposition path to 0 (sentinel)');
+
+// Test native xor_buffers
+console.log('\nTesting native xor_buffers:');
+assert(typeof addon.xor_buffers === 'function', 'xor_buffers exported as function');
+var xorA = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+var xorB = Buffer.from([16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
+var expectedXor = Buffer.alloc(16);
+for (var i = 0; i < 16; i++) expectedXor[i] = xorA[i] ^ xorB[i];
+addon.xor_buffers(xorA, xorB);
+assert(xorA.equals(expectedXor), 'xor_buffers produces bit-exact XOR result');
 
 console.log('\n---');
 console.log('RESULT: ' + passed + ' passed, ' + failed + ' failed');

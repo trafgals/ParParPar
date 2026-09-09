@@ -2984,6 +2984,49 @@ static napi_value GetLastDecompositionPath_NAPI(napi_env env, napi_callback_info
 	return result;
 }
 
+static napi_value XorBuffers_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 2;
+	napi_value args[2];
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if (status != napi_ok || argc < 2) {
+		napi_throw_type_error(env, NULL, "Requires dst and src Buffers");
+		return NULL;
+	}
+	uint8_t* dst = NULL;
+	size_t dstLen = 0;
+	status = napi_get_buffer_info(env, args[0], (void**)&dst, &dstLen);
+	if (status != napi_ok) {
+		napi_throw_type_error(env, NULL, "dst must be a Buffer");
+		return NULL;
+	}
+	uint8_t* src = NULL;
+	size_t srcLen = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&src, &srcLen);
+	if (status != napi_ok) {
+		napi_throw_type_error(env, NULL, "src must be a Buffer");
+		return NULL;
+	}
+	size_t len = dstLen < srcLen ? dstLen : srcLen;
+	size_t words = len / 8;
+	uint64_t* d64 = (uint64_t*)dst;
+	const uint64_t* s64 = (const uint64_t*)src;
+	size_t i = 0;
+	for (; i + 3 < words; i += 4) {
+		d64[i + 0] ^= s64[i + 0];
+		d64[i + 1] ^= s64[i + 1];
+		d64[i + 2] ^= s64[i + 2];
+		d64[i + 3] ^= s64[i + 3];
+	}
+	for (; i < words; i++) {
+		d64[i] ^= s64[i];
+	}
+	for (size_t b = words * 8; b < len; b++) {
+		dst[b] ^= src[b];
+	}
+	return NULL;
+}
+
 napi_value parpar_gf64_init_NAPI(napi_env env, napi_value exports) {
 	napi_status status;
 
@@ -3247,6 +3290,18 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "get_last_decomposition_path", get_last_decomp_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set get_last_decomposition_path property");
+		return NULL;
+	}
+
+	napi_value xor_buffers_fn;
+	status = napi_create_function(env, NULL, 0, XorBuffers_NAPI, NULL, &xor_buffers_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create xor_buffers function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "xor_buffers", xor_buffers_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set xor_buffers property");
 		return NULL;
 	}
 

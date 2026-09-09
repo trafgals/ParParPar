@@ -147,8 +147,12 @@ par3gen.create([inFile], path.join(tmp, "base"), {
                 }
                 fs.closeSync(fd3);
 
-                process.env.PAR3_FENGER_MIN_R = "16"; // force Fenger routing
+                // Cubic review P2: Force Fenger kernel routing and assert routing decision
+                process.env.PAR3_GF64_USE_FENGER = "1";
                 delete process.env.PAR3_MEMORY_LIMIT;
+
+                var routing = par3gen.decideRecoveryKernel(fengerBlocks, fengerRecovery, fengerBlockSize, require("../build/Release/parpar_gf64.node"));
+                assert(routing.kernel === "fenger", "decideRecoveryKernel selected fenger kernel (" + routing.reason + ")");
 
                 par3gen.create([fengerIn], path.join(tmp, "fenger_base"), {
                     blockSize: fengerBlockSize,
@@ -163,7 +167,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
                         recoverySlices: fengerRecovery
                     }, function(err6) {
                         delete process.env.PAR3_MEMORY_LIMIT;
-                        delete process.env.PAR3_FENGER_MIN_R;
+                        delete process.env.PAR3_GF64_USE_FENGER;
                         assert(!err6, "Fenger chunked create completed without error");
                         var fengerChunkRecs = extractRecBodies(fs.readFileSync(path.join(tmp, "fenger_chunked.par3")));
 

@@ -940,6 +940,10 @@ int GF64Controller::GetLastDecompositionPath() {
 	return s_last_decomposition_path.load();
 }
 
+void GF64Controller::ResetLastDecompositionPath() {
+	s_last_decomposition_path.store(0);
+}
+
 void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	const gf64_t* inputs, size_t numInputs,
 	gf64_t*       recovery, size_t numRecovery,
@@ -948,7 +952,10 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	int           numThreads,
 	bool          accumulate
 ) {
-	if (numInputs == 0 || numRecovery == 0 || !coeff) return;
+	if (numInputs == 0 || numRecovery == 0 || !coeff) {
+		ResetLastDecompositionPath();
+		return;
+	}
 
 	// --- 2. Per-workload dispatch (PD2 AVX-512 downclock heuristic) ---
 	gf64_apply_method(gf64_method_for_workload(numInputs, numRecovery, blockSize64));
@@ -990,12 +997,14 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	// Input-domain decomposition: partition numInputs across all numThreads workers.
 	// Thread 0 computes directly into `recovery`.
 	// Threads 1..T-1 compute into small temporary thread-local buffers and are XOR-reduced into `recovery`.
-	// Cubic review P1: Bounded scratch cap. If total scratch across all workers
-	// would exceed 64 MiB (e.g. huge blockSize or large R), fall back to
-	// output-domain decomposition where zero scratch buffers are needed.
+	// Cubic review P1 & P2: Bounded scratch cap with overflow-safe division.
+	// If total scratch across all (numThreads - 1) workers would exceed 64 MiB
+	// (e.g. huge blockSize or large R), fall back to output-domain decomposition.
 	constexpr size_t kMaxInputDecompScratchBytes = 64 * 1024 * 1024;
-	if ((size_t)numThreads > numRecovery && numInputs >= (size_t)numThreads &&
-	    (numRecovery * blockSize64 * sizeof(gf64_t)) <= kMaxInputDecompScratchBytes / (size_t)(numThreads - 1)) {
+	size_t maxPerWorkerBytes = (numThreads > 1) ? (kMaxInputDecompScratchBytes / (size_t)(numThreads - 1)) : 0;
+	size_t maxPerWorkerWords = maxPerWorkerBytes / sizeof(gf64_t);
+	bool scratch_fits = (numRecovery > 0 && blockSize64 <= maxPerWorkerWords / numRecovery);
+	if ((size_t)numThreads > numRecovery && numInputs >= (size_t)numThreads && scratch_fits) {
 		size_t n_workers = (size_t)numThreads;
 		size_t total_out_words = numRecovery * blockSize64;
 		size_t total_out_bytes = total_out_words * sizeof(gf64_t);
