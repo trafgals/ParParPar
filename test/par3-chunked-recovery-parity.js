@@ -42,6 +42,19 @@ function extractRecBodies(buf) {
     return Buffer.concat(out);
 }
 
+function extractDataBodies(buf) {
+    var out = [];
+    var off = 0;
+    while (off + 48 <= buf.length) {
+        if (buf.slice(off, off + 8).toString("latin1") !== "PAR3\u0000PKT") break;
+        var len = Number(buf.readBigUInt64LE(off + 24));
+        var type = buf.slice(off + 40, off + 48).toString("latin1");
+        if (type === "PAR DAT\u0000") out.push(buf.slice(off + 56, off + len));
+        off += len;
+    }
+    return Buffer.concat(out);
+}
+
 console.log("PAR3 Chunked Recovery End-to-End Parity Test");
 console.log("=============================================\n");
 
@@ -74,7 +87,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
     var baseRecs = extractRecBodies(fs.readFileSync(basePar3));
     assert(baseRecs.length === RECOVERY * (16 + BLOCK_SIZE), "Baseline generated " + RECOVERY + " recovery blocks");
 
-    // 2. Create with strict 128 KiB memory limit (forces 64 chunks of 32 blocks each)
+    // 2. Create with strict 128 KiB memory limit (forces chunked accumulation)
     process.env.PAR3_MEMORY_LIMIT = "131072"; // 128 KiB chunk budget
 
     par3gen.create([inFile], path.join(tmp, "chunked"), {
@@ -115,6 +128,13 @@ par3gen.create([inFile], path.join(tmp, "base"), {
 
                 assert(baseRecs2.equals(chunkedRecs2), "Unaligned chunked recovery packets are bit-identical to unaligned baseline");
 
+                // Cubic review P2: verify DATA packets match file size exactly without trailing garbage padding
+                var baseData2 = extractDataBodies(fs.readFileSync(path.join(tmp, "unaligned_base.par3")));
+                var chunkedData2 = extractDataBodies(fs.readFileSync(path.join(tmp, "unaligned_chunked.par3")));
+                assert(baseData2.length === UNALIGNED_SIZE, "Baseline DATA packets total length equals exact unaligned file size (" + UNALIGNED_SIZE + " bytes)");
+                assert(chunkedData2.length === UNALIGNED_SIZE, "Chunked DATA packets total length equals exact unaligned file size (" + UNALIGNED_SIZE + " bytes)");
+                assert(baseData2.equals(chunkedData2), "Unaligned chunked DATA packets are bit-identical to baseline");
+
                 // Leg 3 (Cubic review P1): Fenger chunked accumulation parity
                 console.log("\n=== Leg 3: Fenger chunked accumulation ===");
                 var fengerIn = path.join(tmp, "fenger_in.bin");
@@ -137,7 +157,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
                     assert(!err5, "Fenger baseline create completed without error");
                     var fengerBaseRecs = extractRecBodies(fs.readFileSync(path.join(tmp, "fenger_base.par3")));
 
-                    process.env.PAR3_MEMORY_LIMIT = "16384"; // 16 KiB limit forces 4 chunks
+                    process.env.PAR3_MEMORY_LIMIT = "49152"; // 48 KiB limit forces chunked accumulation (leaves 16 KiB input chunk after 32 KiB 2x recovery reserve)
                     par3gen.create([fengerIn], path.join(tmp, "fenger_chunked"), {
                         blockSize: fengerBlockSize,
                         recoverySlices: fengerRecovery

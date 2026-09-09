@@ -3240,8 +3240,14 @@ napi_value create_fn;
 
 	napi_value get_last_decomp_fn;
 	status = napi_create_function(env, NULL, 0, GetLastDecompositionPath_NAPI, NULL, &get_last_decomp_fn);
-	if(status == napi_ok) {
-		napi_set_named_property(env, exports, "get_last_decomposition_path", get_last_decomp_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create get_last_decomposition_path function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "get_last_decomposition_path", get_last_decomp_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set get_last_decomposition_path property");
+		return NULL;
 	}
 
 	return exports;

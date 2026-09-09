@@ -67,8 +67,10 @@ public:
 		bool accumulate = false
 	);
 
-	/// Returns the decomposition path used by the last ComputeRecoveryBlocks call:
+	/// Returns the decomposition path used by the last (serialized) ComputeRecoveryBlocks-family call:
+	/// 0 = unset/early-return (sentinel; also returned if last computation used Barycentric/Fenger),
 	/// 1 = single-thread, 2 = input-domain, 3 = output-domain.
+	/// Note: concurrent or non-routing calls yield a stale result.
 	static int GetLastDecompositionPath();
 
 	/// v2-4: standalone matrix build. Allocates a buffer of
