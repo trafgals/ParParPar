@@ -93,7 +93,10 @@ function runCase(N, R, blockSize, firstInput, firstRecovery, label, refFn) {
 			}
 		}
 	}
-	check(ok, label + ' (N=' + N + ', R=' + R + ', B=' + B + '): fenger == legacy Cauchy bit-exact');
+	var refName = (refFn === binding.compute_recovery_barycentric)
+		? 'fenger == barycentric (Cauchy parity covered at small shape in par3-barycentric-parity.js)'
+		: 'fenger == legacy Cauchy bit-exact';
+	check(ok, label + ' (N=' + N + ', R=' + R + ', B=' + B + '): ' + refName);
 }
 
 // Odd N (padded inputs), power-of-2 R.

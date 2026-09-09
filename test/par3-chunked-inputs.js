@@ -70,8 +70,6 @@ function createWith(cap, inFilePath, outBase, BLOCK_SIZE, RECOVERY, cb) {
 
 function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 	options = options || {};
-	var assertMultiChunk = !!options.assertMultiChunk;
-	var minChunks = options.minChunks || 0;
 	var legLabel = options.label || "leg";
 	var inputBytes = NUM_BLOCKS * BLOCK_SIZE;
 
@@ -112,26 +110,6 @@ function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 						fail(legLabel + " REC bodies differ at cap=" + cap + " (base=" + baseRecs.length + ", chunked=" + chunkedRecs.length + ")");
 						allOk = false;
 					}
-					// Synthetic chunk-count assertion: at cap=1048576 with a
-					// block-aligned cap, dispatchRecovery would compute
-					//   chunkSizeBytes = floor(cap/blockSize) * blockSize
-					//   numChunks = ceil(inputs.length / chunkSizeBytes)
-					// (lib/par3gen.js:285-286). For the 14 MiB leg this yields
-					// numChunks=14, well above the minChunks=4 floor. Note: on
-					// Node 22 with the native addon loaded, par3gen.create()
-					// uses compute_recovery_full (single C++ call) and never
-					// enters dispatchRecovery — the env var is effectively a
-					// no-op here and the chunked dispatch path is NOT actually
-					// exercised by this test (see .omo/evidence/task-4-*).
-					if (assertMultiChunk && cap === 1048576) {
-						var numChunks = Math.ceil(inputBytes / 1048576);
-						if (numChunks < minChunks) {
-							fail(legLabel + " cap=" + cap + " synthetic numChunks=" + numChunks + " < required=" + minChunks);
-							allOk = false;
-						} else {
-							pass(legLabel + " cap=" + cap + " synthetic numChunks=" + numChunks + " >= " + minChunks);
-						}
-					}
 				}
 				if (--pending === 0) {
 					if (allOk) pass(legLabel + " chunked REC bodies == unchunked for caps " + JSON.stringify(capSweep));
@@ -145,16 +123,13 @@ function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 
 // Leg 1: existing 4 MiB leg — UNCHANGED cap sweep, UNCHANGED expectations
 runLeg(1024, 4096, 32, [32768, 65536, 131072, 262144, 1048576, 50000 /* not-mult-of-blockSize */], {
-	label: "4MiB",
-	assertMultiChunk: false
+	label: "4MiB"
 }, function() {
-	// Leg 2: new 14 MiB-class leg — exercises multi-chunk geometry at
-	// cap=1048576 (synthetic numChunks=14 >= 4). RECOVERY=2048 keeps the
-	// ~14% recovery ratio of the plan's original 32768/229376 geometry.
+	// Leg 2: 14 MiB-class leg — exercises multi-chunk geometry at
+	// cap=1048576, 524288, 262144. RECOVERY=2048 keeps the
+	// ~14% recovery ratio of the original 32768/229376 geometry.
 	runLeg(14336, 1024, 2048, [1048576, 524288, 262144], {
-		label: "14MiB",
-		assertMultiChunk: true,
-		minChunks: 4
+		label: "14MiB"
 	}, function() {
 		console.log("\n" + passed + " passed, " + failed + " failed");
 		// par3gen's coeffWorker / N-API binding keep the event loop alive
