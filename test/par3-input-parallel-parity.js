@@ -131,6 +131,35 @@ for (var i = 0; i < 16; i++) expectedXor[i] = xorA[i] ^ xorB[i];
 addon.xor_buffers(xorA, xorB);
 assert(xorA.equals(expectedXor), 'xor_buffers produces bit-exact XOR result');
 
+// Cubic review P1 (round 4): xor_buffers length-mismatch contract
+//   P1 risk: silently truncating when dst.length !== src.length discards the tail
+//   of every chunk — chunked Fenger recovery becomes a partial-XOR reduction and
+//   the produced recovery packets are wrong. The contract must throw instead.
+console.log('\nTesting xor_buffers length-mismatch contract:');
+var xorShort = Buffer.from([1, 2, 3, 4]);      // 4 bytes
+var xorLong  = Buffer.from([5, 6, 7, 8, 9, 10]); // 6 bytes (dst longer than src)
+var threwLengthMismatch = false;
+try { addon.xor_buffers(xorShort, xorLong); }
+catch (e) {
+    threwLengthMismatch = true;
+    assert(/length/i.test(String(e && e.message || e)), 'xor_buffers length-mismatch error message mentions length');
+}
+assert(threwLengthMismatch, 'xor_buffers throws on dst.length !== src.length instead of silently truncating');
+
+// Also assert the symmetric case (src longer than dst) throws:
+var xorLongSrc = Buffer.from([5, 6, 7, 8, 9, 10]);
+var xorShortDst = Buffer.from([1, 2, 3, 4]);
+var threwLengthMismatch2 = false;
+try { addon.xor_buffers(xorLongSrc, xorShortDst); }
+catch (e) { threwLengthMismatch2 = true; }
+assert(threwLengthMismatch2, 'xor_buffers throws when src is longer than dst');
+
+// Equal lengths still works (round-trip the existing 16-byte case):
+var xorC = Buffer.alloc(8, 0xAA);
+var xorD = Buffer.alloc(8, 0x55);
+addon.xor_buffers(xorC, xorD);
+assert(xorC.equals(Buffer.alloc(8, 0xFF)), 'xor_buffers equal-length XOR produces 0xFF');
+
 console.log('\n---');
 console.log('RESULT: ' + passed + ' passed, ' + failed + ' failed');
 if (failed > 0) process.exit(1);

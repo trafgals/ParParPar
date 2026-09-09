@@ -3007,8 +3007,18 @@ static napi_value XorBuffers_NAPI(napi_env env, napi_callback_info info) {
 		napi_throw_type_error(env, NULL, "src must be a Buffer");
 		return NULL;
 	}
-	size_t len = dstLen < srcLen ? dstLen : srcLen;
-	size_t words = len / 8;
+	// Cubic review P1 (round 4): require equal-length buffers. The previous
+	// `len = dstLen < srcLen ? dstLen : srcLen` silently truncated the tail of
+	// every chunk, which on the chunked Fenger recovery path made the produced
+	// recovery packets wrong (the reduction only XORed the prefix of each
+	// chunk). Throw on mismatch so the JS caller fixes the contract instead
+	// of producing a corrupted archive.
+	if (dstLen != srcLen) {
+		napi_throw_range_error(env, NULL,
+			"xor_buffers: dst.length (%zu) must equal src.length (%zu)", dstLen, srcLen);
+		return NULL;
+	}
+	size_t words = dstLen / 8;
 	uint64_t* d64 = (uint64_t*)dst;
 	const uint64_t* s64 = (const uint64_t*)src;
 	size_t i = 0;
@@ -3021,7 +3031,7 @@ static napi_value XorBuffers_NAPI(napi_env env, napi_callback_info info) {
 	for (; i < words; i++) {
 		d64[i] ^= s64[i];
 	}
-	for (size_t b = words * 8; b < len; b++) {
+	for (size_t b = words * 8; b < dstLen; b++) {
 		dst[b] ^= src[b];
 	}
 	return NULL;

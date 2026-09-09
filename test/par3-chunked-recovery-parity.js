@@ -29,27 +29,20 @@ function assert(condition, msg) {
     }
 }
 
-function extractRecBodies(buf) {
+// Cubic review P3 (round 4): collapse the near-duplicate extractDataBodies
+//   and extractRecBodies parsers into a single parameterized helper. The two
+//   functions differed only by (a) the matched type string and (b) the body
+//   slice offset — exactly the kind of DRY violation that lets a parser fix
+//   land in one and not the other. Single source of truth: extractBodies(buf,
+//   type, bodyOffset).
+function extractBodies(buf, type, bodyOffset) {
     var out = [];
     var off = 0;
     while (off + 48 <= buf.length) {
         if (buf.slice(off, off + 8).toString("latin1") !== "PAR3\u0000PKT") break;
         var len = Number(buf.readBigUInt64LE(off + 24));
-        var type = buf.slice(off + 40, off + 48).toString("latin1");
-        if (type === "PAR REC\u0000") out.push(buf.slice(off + 48, off + len));
-        off += len;
-    }
-    return Buffer.concat(out);
-}
-
-function extractDataBodies(buf) {
-    var out = [];
-    var off = 0;
-    while (off + 48 <= buf.length) {
-        if (buf.slice(off, off + 8).toString("latin1") !== "PAR3\u0000PKT") break;
-        var len = Number(buf.readBigUInt64LE(off + 24));
-        var type = buf.slice(off + 40, off + 48).toString("latin1");
-        if (type === "PAR DAT\u0000") out.push(buf.slice(off + 56, off + len));
+        var t = buf.slice(off + 40, off + 48).toString("latin1");
+        if (t === type) out.push(buf.slice(off + bodyOffset, off + len));
         off += len;
     }
     return Buffer.concat(out);
@@ -84,7 +77,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
     recoverySlices: RECOVERY
 }, function(err1) {
     assert(!err1, "Baseline create completed without error");
-    var baseRecs = extractRecBodies(fs.readFileSync(basePar3));
+    var baseRecs = extractBodies(fs.readFileSync(basePar3), "PAR REC\u0000", 48);
     assert(baseRecs.length === RECOVERY * (16 + BLOCK_SIZE), "Baseline generated " + RECOVERY + " recovery blocks");
 
     // 2. Create with strict 128 KiB memory limit (forces chunked accumulation)
@@ -96,7 +89,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
     }, function(err2) {
         delete process.env.PAR3_MEMORY_LIMIT;
         assert(!err2, "Chunked create completed without error");
-        var chunkedRecs = extractRecBodies(fs.readFileSync(chunkedPar3));
+        var chunkedRecs = extractBodies(fs.readFileSync(chunkedPar3), "PAR REC\u0000", 48);
         assert(chunkedRecs.length === RECOVERY * (16 + BLOCK_SIZE), "Chunked generated " + RECOVERY + " recovery blocks");
 
         var eq = baseRecs.equals(chunkedRecs);
@@ -115,7 +108,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
             recoverySlices: 4
         }, function(err3) {
             assert(!err3, "Unaligned baseline create completed without error");
-            var baseRecs2 = extractRecBodies(fs.readFileSync(path.join(tmp, "unaligned_base.par3")));
+            var baseRecs2 = extractBodies(fs.readFileSync(path.join(tmp, "unaligned_base.par3")), "PAR REC\u0000", 48);
 
             process.env.PAR3_MEMORY_LIMIT = "16384"; // 16 KiB limit = 4 blocks per chunk
             par3gen.create([inFile2], path.join(tmp, "unaligned_chunked"), {
@@ -124,13 +117,13 @@ par3gen.create([inFile], path.join(tmp, "base"), {
             }, function(err4) {
                 delete process.env.PAR3_MEMORY_LIMIT;
                 assert(!err4, "Unaligned chunked create completed without error");
-                var chunkedRecs2 = extractRecBodies(fs.readFileSync(path.join(tmp, "unaligned_chunked.par3")));
+                var chunkedRecs2 = extractBodies(fs.readFileSync(path.join(tmp, "unaligned_chunked.par3")), "PAR REC\u0000", 48);
 
                 assert(baseRecs2.equals(chunkedRecs2), "Unaligned chunked recovery packets are bit-identical to unaligned baseline");
 
                 // Cubic review P2: verify DATA packets match file size exactly without trailing garbage padding
-                var baseData2 = extractDataBodies(fs.readFileSync(path.join(tmp, "unaligned_base.par3")));
-                var chunkedData2 = extractDataBodies(fs.readFileSync(path.join(tmp, "unaligned_chunked.par3")));
+                var baseData2 = extractBodies(fs.readFileSync(path.join(tmp, "unaligned_base.par3")), "PAR DAT\u0000", 56);
+                var chunkedData2 = extractBodies(fs.readFileSync(path.join(tmp, "unaligned_chunked.par3")), "PAR DAT\u0000", 56);
                 assert(baseData2.length === UNALIGNED_SIZE, "Baseline DATA packets total length equals exact unaligned file size (" + UNALIGNED_SIZE + " bytes)");
                 assert(chunkedData2.length === UNALIGNED_SIZE, "Chunked DATA packets total length equals exact unaligned file size (" + UNALIGNED_SIZE + " bytes)");
                 assert(baseData2.equals(chunkedData2), "Unaligned chunked DATA packets are bit-identical to baseline");
@@ -159,7 +152,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
                     recoverySlices: fengerRecovery
                 }, function(err5) {
                     assert(!err5, "Fenger baseline create completed without error");
-                    var fengerBaseRecs = extractRecBodies(fs.readFileSync(path.join(tmp, "fenger_base.par3")));
+                    var fengerBaseRecs = extractBodies(fs.readFileSync(path.join(tmp, "fenger_base.par3")), "PAR REC\u0000", 48);
 
                     process.env.PAR3_MEMORY_LIMIT = "49152"; // 48 KiB limit forces chunked accumulation (leaves 16 KiB input chunk after 32 KiB 2x recovery reserve)
                     par3gen.create([fengerIn], path.join(tmp, "fenger_chunked"), {
@@ -169,7 +162,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
                         delete process.env.PAR3_MEMORY_LIMIT;
                         delete process.env.PAR3_GF64_USE_FENGER;
                         assert(!err6, "Fenger chunked create completed without error");
-                        var fengerChunkRecs = extractRecBodies(fs.readFileSync(path.join(tmp, "fenger_chunked.par3")));
+                        var fengerChunkRecs = extractBodies(fs.readFileSync(path.join(tmp, "fenger_chunked.par3")), "PAR REC\u0000", 48);
 
                         assert(fengerBaseRecs.equals(fengerChunkRecs), "Fenger chunked recovery matches Fenger single-pass bit-identically");
 

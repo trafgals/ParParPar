@@ -19,11 +19,13 @@
 //      six buffer caps including a non-block-aligned cap (50000) to verify
 //      the chunkSizeBytes = floor(cap/blockSize)*blockSize alignment.
 //   2. 14 MiB-class leg (NUM_BLOCKS=14336, BLOCK_SIZE=1024, RECOVERY=2048)
-//      — exercises a multi-chunk geometry at cap=1048576
-//      (synthetic numChunks = ceil(14680064/1048576) = 14, well above
-//      the ≥ 4 minimum). Plan-specified BLOCK_SIZE=64 was invalid
-//      (par3gen.js:1267 enforces blockSize >= 1024), so BLOCK_SIZE is
-//      bumped to the 1024 minimum and NUM_BLOCKS scaled to keep the
+//      — exercises the multi-chunk geometry at cap=1048576 and asserts
+//      bit-equality of REC bodies across cap values 1048576/524288/262144.
+//      The original assertion that synthetic chunk count was >= 4 was
+//      dropped (cubic review round 3 P3) — what matters is bit-equality,
+//      not the chunk-count arithmetic. Plan-specified BLOCK_SIZE=64 was
+//      invalid (par3gen.js:1267 enforces blockSize >= 1024), so BLOCK_SIZE
+//      was bumped to the 1024 minimum and NUM_BLOCKS scaled to keep the
 //      ~14 MiB fixture while preserving the ~14% recovery ratio
 //      (32768/229376 ≈ 14.3%, RECOVERY/NUM_BLOCKS = 2048/14336 ≈ 14.3%).
 // ============================================================================
