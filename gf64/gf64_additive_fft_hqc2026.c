@@ -81,10 +81,63 @@
 #ifndef _WIN32
 /* POSIX: pthread_key_t-based TLS cache (see hqc_vtable_cache_t below). */
 #include <pthread.h>
+#else
+/* Win32: critical section for the global HQC cache + vindex registry. */
+#include <windows.h>
 #endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* ----- registry mutex -----
+ *
+ * The global `hqc_cache` (basis cache) and `hqc_vindex` (vindex registry)
+ * are touched by every worker thread spawned by `ComputeRecoveryBlocks`
+ * (std::async row-stealing workers) and the Fenger parallel path.
+ * Concurrent build/drop on the vindex registry without synchronization
+ * is a data race that corrupts `hqc_vindex_count` and the swap entries
+ * inside `hqc_vindex_drop`. The corruption manifests as a
+ * `double free or corruption (out)` from glibc's malloc on thread exit,
+ * when the per-thread `hqc_vtable_cache` destructor walks the corrupted
+ * registry and tries to `free()` a pointer that was already freed or
+ * never valid. Reproduces at ~20% per test run on `par3-chunked-inputs.js`
+ * with the 14 MiB leg (which exercises both the 4 MiB matvec kernel
+ * that populates `hqc_cache` and the Fenger chunks that don't, but
+ * trigger worker-thread exits that run the destructor). Verified via
+ * WSL Ubuntu 22.04 / Node 22.22.1 with `gdb -batch -ex bt` on the
+ * core file: the crash is `hqc_vtable_cache_destroy` -> `free()` ->
+ * `malloc_printerr("double free or corruption (out)")`.
+ *
+ * The fix: protect both registries with a single mutex. The contention
+ * is negligible vs. the kernel cost (cache lookup is a few pointer
+ * compares; the actual FFT is the dominant cost).
+ *
+ * POSIX: `pthread_mutex_t`. Win32: `CRITICAL_SECTION` (lighter than a
+ * mutex; recursive semantics match what we want — recursive callers
+ * would also deadlock under pthread_mutex_t, but no such callers exist).
+ */
+#ifdef _WIN32
+static CRITICAL_SECTION hqc_cache_mutex;
+static CRITICAL_SECTION hqc_vindex_mutex;
+static int hqc_mutexes_initialized = 0;
+static void hqc_locks_init(void) {
+    if (hqc_mutexes_initialized) return;
+    InitializeCriticalSection(&hqc_cache_mutex);
+    InitializeCriticalSection(&hqc_vindex_mutex);
+    hqc_mutexes_initialized = 1;
+}
+static void hqc_lock_cache(void) { hqc_locks_init(); EnterCriticalSection(&hqc_cache_mutex); }
+static void hqc_unlock_cache(void) { LeaveCriticalSection(&hqc_cache_mutex); }
+static void hqc_lock_vindex(void) { hqc_locks_init(); EnterCriticalSection(&hqc_vindex_mutex); }
+static void hqc_unlock_vindex(void) { LeaveCriticalSection(&hqc_vindex_mutex); }
+#else
+static pthread_mutex_t hqc_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t hqc_vindex_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void hqc_lock_cache(void) { pthread_mutex_lock(&hqc_cache_mutex); }
+static void hqc_unlock_cache(void) { pthread_mutex_unlock(&hqc_cache_mutex); }
+static void hqc_lock_vindex(void) { pthread_mutex_lock(&hqc_vindex_mutex); }
+static void hqc_unlock_vindex(void) { pthread_mutex_unlock(&hqc_vindex_mutex); }
+#endif
 
 HEDLEY_BEGIN_C_DECLS
 
@@ -297,6 +350,7 @@ static int hqc_vindex_count = 0;
 
 /* Drop (and free) the index entries for a v_table about to be freed. */
 static void hqc_vindex_drop(const gf64_t *v_table) {
+	hqc_lock_vindex();
 	for (int s = 0; s < hqc_vindex_count; s++) {
 		if (hqc_vindex[s].v_table != v_table) continue;
 		free(hqc_vindex[s].tab);
@@ -304,16 +358,19 @@ static void hqc_vindex_drop(const gf64_t *v_table) {
 		hqc_vindex_count--;
 		s--;
 	}
+	hqc_unlock_vindex();
 }
 
 static int hqc_vindex_build(const gf64_t *v_table, int n) {
 	if (hqc_vindex_count >= HQC_VINDEX_SLOTS) return -1;
+	hqc_lock_vindex();
+	if (hqc_vindex_count >= HQC_VINDEX_SLOTS) { hqc_unlock_vindex(); return -1; }
 	int log2size = 1;
 	while ((1 << log2size) < 2 * n) log2size++;
-	if (log2size > 30) return -1;
+	if (log2size > 30) { hqc_unlock_vindex(); return -1; }
 	const int size = 1 << log2size;
 	int *tab = (int *)malloc((size_t)size * sizeof(int));
-	if (tab == NULL) return -1;
+	if (tab == NULL) { hqc_unlock_vindex(); return -1; }
 	for (int i = 0; i < size; i++) tab[i] = -1;
 	for (int j = 1; j < n; j++) {
 		const gf64_t a = v_table[j];
@@ -325,29 +382,47 @@ static int hqc_vindex_build(const gf64_t *v_table, int n) {
 	hqc_vindex_t *v = &hqc_vindex[hqc_vindex_count++];
 	v->v_table = v_table; v->tab = tab;
 	v->log2size = log2size; v->mask = size - 1;
-	return hqc_vindex_count - 1;
+	int idx = hqc_vindex_count - 1;
+	hqc_unlock_vindex();
+	return idx;
 }
 
 /* Returns the index, or -1 (absent), or -2 (no index for this table). */
 static int hqc_vindex_lookup(const gf64_t *v_table, gf64_t a) {
+	hqc_lock_vindex();
 	for (int s = 0; s < hqc_vindex_count; s++) {
 		if (hqc_vindex[s].v_table != v_table) continue;
-		if (a == 0) return 0;
+		if (a == 0) { hqc_unlock_vindex(); return 0; }
 		const hqc_vindex_t *v = &hqc_vindex[s];
 		size_t h = (size_t)((uint64_t)(a * 0x9E3779B97F4A7C15ULL) >> (64 - v->log2size));
 		while (v->tab[h] != -1) {
-			if (v_table[v->tab[h]] == a) return v->tab[h];
+			if (v_table[v->tab[h]] == a) { int rv = v->tab[h]; hqc_unlock_vindex(); return rv; }
 			h = (h + 1) & v->mask;
 		}
+		hqc_unlock_vindex();
 		return -1;
 	}
+	hqc_unlock_vindex();
 	return -2;
 }
 static gf64_t *get_or_build_v_table(int n) {
     hqc_vtable_cache_t *hqc_vtable_cache = get_thread_vtable_cache();
+#ifdef _WIN32
+    /* Windows fallback: hqc_vtable_cache_global is a single shared array
+     * across all threads (no pthread_key_t). Protect the read+rebuild
+     * with the vtable cache mutex to match the POSIX TLS guarantee. */
+    hqc_lock_cache();
+#endif
     for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
-        if (hqc_vtable_cache[s].initialized && hqc_vtable_cache[s].n == n)
+        if (hqc_vtable_cache[s].initialized && hqc_vtable_cache[s].n == n) {
+#ifdef _WIN32
+            gf64_t *cached_v_table = hqc_vtable_cache[s].v_table;
+            hqc_unlock_cache();
+            return cached_v_table;
+#else
             return hqc_vtable_cache[s].v_table;
+#endif
+        }
     }
     int slot = -1;
     for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
@@ -362,7 +437,13 @@ static gf64_t *get_or_build_v_table(int n) {
     for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
     hqc_vindex_build(c->v_table, n);
     c->initialized = 1;
+#ifdef _WIN32
+    gf64_t *built_v_table = c->v_table;
+    hqc_unlock_cache();
+    return built_v_table;
+#else
     return c->v_table;
+#endif
 }
 
 /* Build X_basis[k * n + j] = coefficient of x^j in X_k(x).
@@ -392,94 +473,101 @@ static gf64_t *build_X_basis(int n,
 }
 
 static hqc_basis_cache_t *get_or_build_basis_cache(int n) {
-    for (int s = 0; s < HQC_CACHE_SLOTS; s++) {
-        if (hqc_cache[s].initialized && hqc_cache[s].n == n) return &hqc_cache[s];
-    }
-    int slot = -1;
-    for (int s = 0; s < HQC_CACHE_SLOTS; s++) {
-        if (!hqc_cache[s].initialized) { slot = s; break; }
-    }
-    if (slot < 0) slot = 0;
-    hqc_basis_cache_t *c = &hqc_cache[slot];
-    if (c->initialized) {
-    	hqc_vindex_drop(c->v_table);
-    	free(c->M); free(c->M_inv); free(c->v_table);
-    	c->initialized = 0;
-    }
+	hqc_lock_cache();
+	for (int s = 0; s < HQC_CACHE_SLOTS; s++) {
+		if (hqc_cache[s].initialized && hqc_cache[s].n == n) {
+			hqc_basis_cache_t *cached = &hqc_cache[s];
+			hqc_unlock_cache();
+			return cached;
+		}
+	}
+	int slot = -1;
+	for (int s = 0; s < HQC_CACHE_SLOTS; s++) {
+		if (!hqc_cache[s].initialized) { slot = s; break; }
+	}
+	if (slot < 0) slot = 0;
+	hqc_basis_cache_t *c = &hqc_cache[slot];
+	if (c->initialized) {
+		hqc_vindex_drop(c->v_table);
+		free(c->M); free(c->M_inv); free(c->v_table);
+		c->initialized = 0;
+	}
 
-    c->n = n;
-    c->M       = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
-    c->M_inv   = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
-    c->v_table = (gf64_t *)calloc((size_t)n, sizeof(gf64_t));
-    if (c->M == NULL || c->M_inv == NULL || c->v_table == NULL) abort();
+	c->n = n;
+	c->M       = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
+	c->M_inv   = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
+	c->v_table = (gf64_t *)calloc((size_t)n, sizeof(gf64_t));
+	if (c->M == NULL || c->M_inv == NULL || c->v_table == NULL) abort();
 
-    for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
-    hqc_vindex_build(c->v_table, n);
+	for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
+	hqc_vindex_build(c->v_table, n);
 
-    /* Allocate one-shot scratch for the cache build. build_X_basis needs
-     * 3n (cur, s_poly, new_cur) plus 2n for compute_sj's internal region. */
-    size_t build_scratch_words = (size_t)5 * n;
-    gf64_t *build_scratch = (gf64_t *)malloc(build_scratch_words * sizeof(gf64_t));
-    if (build_scratch == NULL) abort();
-    gf64_t *cur     = build_scratch;
-    gf64_t *s_poly  = build_scratch + n;
-    gf64_t *new_cur = build_scratch + 2 * n;
-    gf64_t *sj_reg  = build_scratch + 3 * n;  /* 2n region for compute_sj */
-    gf64_t *X = build_X_basis(n, cur, s_poly, new_cur, sj_reg);
-    for (int j = 0; j < n; j++)
-        for (int k = 0; k < n; k++)
-            c->M[j * n + k] = X[k * n + j];
-    free(X);
-    free(build_scratch);
+	/* Allocate one-shot scratch for the cache build. build_X_basis needs
+	 * 3n (cur, s_poly, new_cur) plus 2n for compute_sj's internal region. */
+	size_t build_scratch_words = (size_t)5 * n;
+	gf64_t *build_scratch = (gf64_t *)malloc(build_scratch_words * sizeof(gf64_t));
+	if (build_scratch == NULL) abort();
+	gf64_t *cur     = build_scratch;
+	gf64_t *s_poly  = build_scratch + n;
+	gf64_t *new_cur = build_scratch + 2 * n;
+	gf64_t *sj_reg  = build_scratch + 3 * n;  /* 2n region for compute_sj */
+	gf64_t *X = build_X_basis(n, cur, s_poly, new_cur, sj_reg);
+	for (int j = 0; j < n; j++)
+		for (int k = 0; k < n; k++)
+			c->M[j * n + k] = X[k * n + j];
+	free(X);
+	free(build_scratch);
 
-    /* Gauss-Jordan over GF(2^64): compute M_inv = M^{-1}.
-     * The change-of-basis relation (column k of M = monomial coeffs of X_k)
-     * means a = M · g for monomial coeffs a and novelpoly coeffs g,
-     * so solving for g gives g = M^{-1} · a. */
-    size_t aug_size = (size_t)(2 * n);
-    gf64_t *aug = (gf64_t *)calloc((size_t)n * aug_size, sizeof(gf64_t));
-    if (aug == NULL) abort();
+	/* Gauss-Jordan over GF(2^64): compute M_inv = M^{-1}.
+	 * The change-of-basis relation (column k of M = monomial coeffs of X_k)
+	 * means a = M · g for monomial coeffs a and novelpoly coeffs g,
+	 * so solving for g gives g = M^{-1} · a. */
+	size_t aug_size = (size_t)(2 * n);
+	gf64_t *aug = (gf64_t *)calloc((size_t)n * aug_size, sizeof(gf64_t));
+	if (aug == NULL) abort();
 
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) aug[i * aug_size + j] = c->M[i * n + j];
-        for (int j = 0; j < n; j++) aug[i * aug_size + (n + j)] = (i == j) ? 1 : 0;
-    }
-    for (int col = 0; col < n; col++) {
-        int pivot = -1;
-        for (int r = col; r < n; r++) {
-            if (aug[r * aug_size + col] != 0) { pivot = r; break; }
-        }
-        if (pivot < 0) {
-            hqc_vindex_drop(c->v_table);
-            free(aug); free(c->M); free(c->M_inv); free(c->v_table);
-            c->initialized = 0;
-            return NULL;
-        }
-        if (pivot != col) {
-            for (size_t j = 0; j < aug_size; j++) {
-                gf64_t tmp = aug[col * aug_size + j];
-                aug[col * aug_size + j] = aug[pivot * aug_size + j];
-                aug[pivot * aug_size + j] = tmp;
-            }
-        }
-        gf64_t pv_inv = gf64_inverse(aug[col * aug_size + col]);
-        for (size_t j = 0; j < aug_size; j++)
-            aug[col * aug_size + j] = gf64_mul_reference(aug[col * aug_size + j], pv_inv);
-        for (int r = 0; r < n; r++) {
-            if (r == col) continue;
-            gf64_t factor = aug[r * aug_size + col];
-            if (factor == 0) continue;
-            for (size_t j = 0; j < aug_size; j++)
-                aug[r * aug_size + j] ^= gf64_mul_reference(factor, aug[col * aug_size + j]);
-        }
-    }
-    for (int i = 0; i < n; i++)
-        for (int j = 0; j < n; j++)
-            c->M_inv[i * n + j] = aug[i * aug_size + ((size_t)n + (size_t)j)];
-    free(aug);
+	for (int i = 0; i < n; i++) {
+		for (int j = 0; j < n; j++) aug[i * aug_size + j] = c->M[i * n + j];
+		for (int j = 0; j < n; j++) aug[i * aug_size + (n + j)] = (i == j) ? 1 : 0;
+	}
+	for (int col = 0; col < n; col++) {
+		int pivot = -1;
+		for (int r = col; r < n; r++) {
+			if (aug[r * aug_size + col] != 0) { pivot = r; break; }
+		}
+		if (pivot < 0) {
+			hqc_vindex_drop(c->v_table);
+			free(aug); free(c->M); free(c->M_inv); free(c->v_table);
+			c->initialized = 0;
+			hqc_unlock_cache();
+			return NULL;
+		}
+		if (pivot != col) {
+			for (size_t j = 0; j < aug_size; j++) {
+				gf64_t tmp = aug[col * aug_size + j];
+				aug[col * aug_size + j] = aug[pivot * aug_size + j];
+				aug[pivot * aug_size + j] = tmp;
+			}
+		}
+		gf64_t pv_inv = gf64_inverse(aug[col * aug_size + col]);
+		for (size_t j = 0; j < aug_size; j++)
+			aug[col * aug_size + j] = gf64_mul_reference(aug[col * aug_size + j], pv_inv);
+		for (int r = 0; r < n; r++) {
+			if (r == col) continue;
+			gf64_t factor = aug[r * aug_size + col];
+			if (factor == 0) continue;
+			for (size_t j = 0; j < aug_size; j++)
+				aug[r * aug_size + j] ^= gf64_mul_reference(factor, aug[col * aug_size + j]);
+		}
+	}
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < n; j++)
+			c->M_inv[i * n + j] = aug[i * aug_size + ((size_t)n + (size_t)j)];
+	free(aug);
 
-    c->initialized = 1;
-    return c;
+	c->initialized = 1;
+	hqc_unlock_cache();
+	return c;
 }
 
 /* monomial → novelpoly.
