@@ -155,11 +155,23 @@ addon.compute_recovery_full(trapIn, refOut, 16, 4, 64, 0, 16, 0, false);
 var corruptedIn = Buffer.from(trapIn);
 corruptedIn[9 * 64 + 3] ^= 0x01;
 
+// 1. Single pass on corrupted input
+var singleCorruptedOut = Buffer.alloc(4 * 64);
+addon.compute_recovery_full(corruptedIn, singleCorruptedOut, 16, 4, 64, 0, 16, 0, false);
+
+// 2. Chunked accumulation on corrupted input
 var trapOut = Buffer.alloc(4 * 64);
 addon.compute_recovery_full(corruptedIn.subarray(0, 8 * 64), trapOut, 8, 4, 64, 0, 16, 0, false);
 addon.compute_recovery_full(corruptedIn.subarray(8 * 64, 16 * 64), trapOut, 8, 4, 64, 8, 16, 0, true);
 
-assert(!refOut.equals(trapOut), 'Negative trap: flipped bit in chunk 1 correctly fails equality check');
+// 3. Flawed accumulation (simulate accumulate=false on chunk 2 - overwrites prior chunk)
+var flawedOut = Buffer.alloc(4 * 64);
+addon.compute_recovery_full(corruptedIn.subarray(0, 8 * 64), flawedOut, 8, 4, 64, 0, 16, 0, false);
+addon.compute_recovery_full(corruptedIn.subarray(8 * 64, 16 * 64), flawedOut, 8, 4, 64, 8, 16, 0, false);
+
+assert(!refOut.equals(singleCorruptedOut), 'Clean reference differs from corrupted input recovery');
+assert(trapOut.equals(singleCorruptedOut), 'Discriminatory: Chunked accumulation on corrupted input equals single-pass on same corrupted input');
+assert(!trapOut.equals(flawedOut), 'Discriminatory: Failure to accumulate (overwriting chunk 1) fails equality');
 
 console.log('\n---');
 console.log('RESULT: ' + passed + ' passed, ' + failed + ' failed');

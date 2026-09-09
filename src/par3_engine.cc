@@ -934,6 +934,12 @@ void GF64Controller::ComputeRecoveryBlocks(
 // caller can overlap the matrix build with other work (e.g. file read).
 // The caller is responsible for freeing the coeff buffer after the call.
 // ============================================================================
+static std::atomic<int> s_last_decomposition_path{0};
+
+int GF64Controller::GetLastDecompositionPath() {
+	return s_last_decomposition_path.load();
+}
+
 void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	const gf64_t* inputs, size_t numInputs,
 	gf64_t*       recovery, size_t numRecovery,
@@ -964,6 +970,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 
 	// Case 1: Single thread
 	if (numThreads == 1) {
+		s_last_decomposition_path.store(1);
 		WorkerRange r;
 		r.out_start = recovery;
 		r.num_out = numRecovery;
@@ -983,7 +990,12 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	// Input-domain decomposition: partition numInputs across all numThreads workers.
 	// Thread 0 computes directly into `recovery`.
 	// Threads 1..T-1 compute into small temporary thread-local buffers and are XOR-reduced into `recovery`.
-	if ((size_t)numThreads > numRecovery && numInputs >= (size_t)numThreads) {
+	// Cubic review P1: Bounded scratch cap. If total scratch across all workers
+	// would exceed 64 MiB (e.g. huge blockSize or large R), fall back to
+	// output-domain decomposition where zero scratch buffers are needed.
+	constexpr size_t kMaxInputDecompScratchBytes = 64 * 1024 * 1024;
+	if ((size_t)numThreads > numRecovery && numInputs >= (size_t)numThreads &&
+	    (numRecovery * blockSize64 * sizeof(gf64_t)) <= kMaxInputDecompScratchBytes / (size_t)(numThreads - 1)) {
 		size_t n_workers = (size_t)numThreads;
 		size_t total_out_words = numRecovery * blockSize64;
 		size_t total_out_bytes = total_out_words * sizeof(gf64_t);
@@ -1002,6 +1014,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		}
 
 		if (alloc_ok) {
+			s_last_decomposition_path.store(2);
 			std::vector<std::thread> workers;
 			workers.reserve(n_workers);
 
@@ -1051,6 +1064,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	}
 
 	// Case 3: Output-domain decomposition (standard path when numThreads <= numRecovery)
+	s_last_decomposition_path.store(3);
 	if ((size_t)numThreads > numRecovery) numThreads = (int)numRecovery;
 	size_t n_workers = (size_t)numThreads;
 	size_t chunk = (numRecovery + n_workers - 1) / n_workers;

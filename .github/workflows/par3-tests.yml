@@ -62,13 +62,24 @@ jobs:
         # dropped after verifying locally (cubic review f44ead49 P3).
         run: node test/par3-golden.js
 
-      - name: Chunked-input regression (single-call)
+      - name: Chunked-input regression
         run: node test/par3-chunked-inputs.js
         timeout-minutes: 5
-      - name: Chunked-input regression (multi-chunk via simulated cap)
-        run: node test/par3-chunked-inputs.js
-        env:
-          PAR3_SIMULATED_BUFFER_CAP: '1048576'
+
+      - name: Chunked-recovery parity test
+        run: node test/par3-chunked-recovery-parity.js
+        timeout-minutes: 5
+
+      - name: Native accumulate binding parity test
+        run: node test/par3-accumulate-binding-parity.js
+        timeout-minutes: 5
+
+      - name: Input-parallel parity test
+        run: node test/par3-input-parallel-parity.js
+        timeout-minutes: 5
+
+      - name: Fenger threaded parity test
+        run: node test/par3-fenger-threaded-parity.js
         timeout-minutes: 5
 
   test-wave9:

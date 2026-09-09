@@ -74,7 +74,7 @@ par3gen.create([inFile], path.join(tmp, "base"), {
     var baseRecs = extractRecBodies(fs.readFileSync(basePar3));
     assert(baseRecs.length === RECOVERY * (16 + BLOCK_SIZE), "Baseline generated " + RECOVERY + " recovery blocks");
 
-    // 2. Create with strict 256 KiB memory limit (forces 64 chunks of 32 blocks each)
+    // 2. Create with strict 128 KiB memory limit (forces 64 chunks of 32 blocks each)
     process.env.PAR3_MEMORY_LIMIT = "131072"; // 128 KiB chunk budget
 
     par3gen.create([inFile], path.join(tmp, "chunked"), {
@@ -115,20 +115,54 @@ par3gen.create([inFile], path.join(tmp, "base"), {
 
                 assert(baseRecs2.equals(chunkedRecs2), "Unaligned chunked recovery packets are bit-identical to unaligned baseline");
 
-                // Cleanup
-                try {
-                    fs.unlinkSync(inFile);
-                    fs.unlinkSync(inFile2);
-                    fs.unlinkSync(basePar3);
-                    fs.unlinkSync(chunkedPar3);
-                    fs.unlinkSync(path.join(tmp, "unaligned_base.par3"));
-                    fs.unlinkSync(path.join(tmp, "unaligned_chunked.par3"));
-                    fs.rmdirSync(tmp);
-                } catch (e) {}
+                // Leg 3 (Cubic review P1): Fenger chunked accumulation parity
+                console.log("\n=== Leg 3: Fenger chunked accumulation ===");
+                var fengerIn = path.join(tmp, "fenger_in.bin");
+                var fengerBlocks = 64;
+                var fengerBlockSize = 1024;
+                var fengerRecovery = 16;
+                var fd3 = fs.openSync(fengerIn, "w");
+                for (var i = 0; i < fengerBlocks; i++) {
+                    fs.writeSync(fd3, crypto.randomBytes(fengerBlockSize));
+                }
+                fs.closeSync(fd3);
 
-                console.log("\n---");
-                console.log("RESULT: " + passed + " passed, " + failed + " failed");
-                process.exit(failed === 0 ? 0 : 1);
+                process.env.PAR3_FENGER_MIN_R = "16"; // force Fenger routing
+                delete process.env.PAR3_MEMORY_LIMIT;
+
+                par3gen.create([fengerIn], path.join(tmp, "fenger_base"), {
+                    blockSize: fengerBlockSize,
+                    recoverySlices: fengerRecovery
+                }, function(err5) {
+                    assert(!err5, "Fenger baseline create completed without error");
+                    var fengerBaseRecs = extractRecBodies(fs.readFileSync(path.join(tmp, "fenger_base.par3")));
+
+                    process.env.PAR3_MEMORY_LIMIT = "16384"; // 16 KiB limit forces 4 chunks
+                    par3gen.create([fengerIn], path.join(tmp, "fenger_chunked"), {
+                        blockSize: fengerBlockSize,
+                        recoverySlices: fengerRecovery
+                    }, function(err6) {
+                        delete process.env.PAR3_MEMORY_LIMIT;
+                        delete process.env.PAR3_FENGER_MIN_R;
+                        assert(!err6, "Fenger chunked create completed without error");
+                        var fengerChunkRecs = extractRecBodies(fs.readFileSync(path.join(tmp, "fenger_chunked.par3")));
+
+                        assert(fengerBaseRecs.equals(fengerChunkRecs), "Fenger chunked recovery matches Fenger single-pass bit-identically");
+
+                        // Cleanup
+                        try {
+                            fs.readdirSync(tmp).forEach(function(f) { fs.unlinkSync(path.join(tmp, f)); });
+                            fs.rmdirSync(tmp);
+                        } catch (e) {}
+
+                        console.log("\n---");
+                        console.log("RESULT: " + passed + " passed, " + failed + " failed");
+                        process.exitCode = failed === 0 ? 0 : 1;
+                        if (typeof par3gen.shutdownHashPool === 'function') {
+                            par3gen.shutdownHashPool();
+                        }
+                    });
+                });
             });
         });
     });

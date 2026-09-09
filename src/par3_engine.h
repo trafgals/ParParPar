@@ -19,6 +19,7 @@ public:
 	/// @param firstInput   First input exponent for Cauchy matrix construction
 	/// @param firstRecovery First recovery exponent for Cauchy matrix construction
 	/// @param numThreads   Number of threads for parallel computation (0 = auto)
+	/// @param accumulate   If true, XOR-accumulate into recovery instead of zero-initializing
 	static void ComputeRecoveryBlocks(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,
@@ -41,6 +42,7 @@ public:
 	/// @param firstInput   First input exponent for Cauchy matrix construction
 	/// @param firstRecovery First recovery exponent for Cauchy matrix construction
 	/// @param numThreads   Number of threads for parallel computation (0 = auto)
+	/// @param accumulate   If true, XOR-accumulate into recovery instead of zero-initializing
 	static void ComputeRecoveryBlocksFull(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,
@@ -55,6 +57,7 @@ public:
 	/// caller can overlap the matrix build with other work (e.g. file
 	/// read). The coeff buffer is owned by the caller and must outlive
 	/// this call. Layout: numRecovery rows × numInputs columns, row-major.
+	/// @param accumulate   If true, XOR-accumulate into recovery instead of zero-initializing
 	static void ComputeRecoveryBlocksWithCoeff(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,
@@ -63,6 +66,10 @@ public:
 		int numThreads,
 		bool accumulate = false
 	);
+
+	/// Returns the decomposition path used by the last ComputeRecoveryBlocks call:
+	/// 1 = single-thread, 2 = input-domain, 3 = output-domain.
+	static int GetLastDecompositionPath();
 
 	/// v2-4: standalone matrix build. Allocates a buffer of
 	/// numRecovery × numInputs gf64_t, fills it with the Cauchy
@@ -193,6 +200,7 @@ public:
 	/// @param firstInput    First input exponent for the interpolation grid
 	/// @param firstRecovery First recovery exponent for the evaluation grid
 	/// @param numThreads    Number of threads (0 = auto, currently single-threaded in T9)
+	/// @param accumulate    If true, XOR-accumulate into recovery instead of zero-initializing
 	static void ComputeRecoveryBlocksBarycentric(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,

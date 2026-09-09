@@ -2977,6 +2977,13 @@ static napi_value MulArr_NAPI(napi_env env, napi_callback_info info) {
 	return NULL;
 }
 
+static napi_value GetLastDecompositionPath_NAPI(napi_env env, napi_callback_info info) {
+	int path = GF64Controller::GetLastDecompositionPath();
+	napi_value result;
+	napi_create_int32(env, path, &result);
+	return result;
+}
+
 napi_value parpar_gf64_init_NAPI(napi_env env, napi_value exports) {
 	napi_status status;
 
@@ -3229,6 +3236,12 @@ napi_value create_fn;
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set isAlignedBuffer property");
 		return NULL;
+	}
+
+	napi_value get_last_decomp_fn;
+	status = napi_create_function(env, NULL, 0, GetLastDecompositionPath_NAPI, NULL, &get_last_decomp_fn);
+	if(status == napi_ok) {
+		napi_set_named_property(env, exports, "get_last_decomposition_path", get_last_decomp_fn);
 	}
 
 	return exports;

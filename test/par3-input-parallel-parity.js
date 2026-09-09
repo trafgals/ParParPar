@@ -77,8 +77,34 @@ cases.forEach(function(testCase, idx) {
 
         var eq = refOut.equals(testOut);
         assert(eq, 'Case ' + idx + ': N=' + N + ' R=' + R + ' B=' + B + ' threads=' + t + ' bit-identical to serial');
+
+        // Cubic review P2: assert that the input-domain decomposition path (path 2) is actually exercised when t > R
+        var decompPath = addon.get_last_decomposition_path();
+        if (t === 1) {
+            assert(decompPath === 1, 'Case ' + idx + ' threads=' + t + ' used single-threaded path (1)');
+        } else if (t > R && N >= t) {
+            assert(decompPath === 2, 'Case ' + idx + ' threads=' + t + ' actively exercised input-domain decomposition (2)');
+        }
     });
 });
+
+// Cubic review P1: Test that oversized scratch (>64 MiB) safely falls back to output-domain decomposition (path 3)
+console.log('\nTesting bounded scratch fallback (>64 MiB):');
+var hugeB = 8 * 1024 * 1024; // 8 MiB per block
+var hugeR = 2; // total_out = 16 MiB; across 15 worker threads scratch would be 15 * 16 = 240 MiB > 64 MiB
+var hugeN = 16;
+var hugeIn = Buffer.alloc(hugeN * 64); // small block size call to test decomposition path logic
+addon.compute_recovery_full(hugeIn, Buffer.alloc(hugeR * 64), hugeN, hugeR, 64, 0, hugeN, 16, false);
+assert(addon.get_last_decomposition_path() === 2, 'Small scratch uses input-domain decomposition (2)');
+
+// Now test with 8 recovery x 1 MiB block x 16 threads: total_out = 8 MiB, 15 scratch bufs = 120 MiB > 64 MiB cap
+var capR = 8;
+var capB = 1024 * 1024; // 1 MiB
+var capN = 16;
+var capIn = Buffer.alloc(capN * capB);
+var capOut = Buffer.alloc(capR * capB);
+addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
+assert(addon.get_last_decomposition_path() === 3, 'Scratch > 64 MiB (120 MiB) safely falls back to output-domain decomposition (3)');
 
 console.log('\n---');
 console.log('RESULT: ' + passed + ' passed, ' + failed + ' failed');
