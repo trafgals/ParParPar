@@ -1064,7 +1064,7 @@ to native-Windows rebuilds — see §10.4.
 - **Acceptance workload: the magic shape** — 16 GiB @ 4 KiB blocks →
   N = 2²², R = 2¹⁹ (12.5%): zero padding, Fenger direct, the shape #59's
   gates are defined on.
-- **Current reference numbers** (native Windows, Zen4 7800X3D, Node 20.19,
+- **Current reference numbers** (native Windows, Zen4 7800X3D, Node 22.16.0,
   MSVC/AVX-512, 3-run median):
   - 1 GiB / 1 MiB blocks create: **15.5 s / 66.1 MB/s** (`test/bench/b1-baseline.js`; ≈1024 slices — the 1M-slice geometry is a different bench, `par3-create-bench.js --slices=1000000`)
   - 1G/10K create: **27.3 MB/s** — JS-pipeline-bound; the B1 streaming
