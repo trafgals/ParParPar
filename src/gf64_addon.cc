@@ -1930,12 +1930,17 @@ static napi_value ComputeRecoveryAccumulate_NAPI(napi_env env, napi_callback_inf
 
 	// cubic review 0c8cc30f P1: catch bad_alloc and exceptions to prevent Node abort and avoid leaking bounce buffers
 	try {
-		GF64Controller::AccumulateRecoveryChunk(
+		// PR #111 unified all chunked accumulation through the `accumulate=true`
+		// 9th-arg variant of ComputeRecoveryBlocksFull. PR #108 had a dedicated
+		// AccumulateRecoveryChunk helper that was redundant with this overload;
+		// the merge takes PR #111's API, so we route through the unified entry.
+		GF64Controller::ComputeRecoveryBlocksFull(
 			(const gf64_t*)aligned_inputs, (size_t)numInputs,
 			(gf64_t*)aligned_outputs, (size_t)numRecovery,
 			blockSize64,
 			firstInput, firstRecovery,
-			(int)numThreads
+			(int)numThreads,
+			true /* accumulate=true: XOR-accumulate into output */
 		);
 	} catch (const std::bad_alloc&) {
 		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
