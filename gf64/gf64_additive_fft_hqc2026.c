@@ -425,9 +425,36 @@ typedef struct {
 	int log2size;
 	int mask;
 } hqc_vindex_t;
-#define HQC_VINDEX_SLOTS (HQC_VTABLE_CACHE_SLOTS + HQC_CACHE_SLOTS)
-static hqc_vindex_t hqc_vindex[HQC_VINDEX_SLOTS];
+/* The vindex registry used to be a fixed-size array of HQC_VTABLE_CACHE_SLOTS
+ * + HQC_CACHE_SLOTS = 32 entries — sized to match the SINGLE global vtable
+ * cache + the global basis cache. Once per-thread vtable caches were
+ * introduced, each thread could register up to HQC_VTABLE_CACHE_SLOTS
+ * entries of its own, and the fixed 32-entry cap caused the registry
+ * to fill after ~2 workers (16+16) and `hqc_vindex_build` to fall back
+ * to the O(n) linear scan in `compute_index_for` — a real perf cliff.
+ *
+ * Now grown dynamically via realloc() when the cap is hit. The initial
+ * cap (32) keeps the steady-state cost at the original value; growth
+ * is rare (only happens when more than 32 unique v_tables are alive
+ * simultaneously across all threads). The registry's `tab` allocations
+ * are kept by the registry itself; on `realloc`, the `v_table` pointers
+ * are still valid (they're owned by the per-thread caches), so the
+ * realloc is safe. */
+#define HQC_VINDEX_INITIAL_SLOTS (HQC_VTABLE_CACHE_SLOTS + HQC_CACHE_SLOTS)
+static hqc_vindex_t *hqc_vindex = NULL;   /* lazily malloc'd on first build */
+static int hqc_vindex_capacity = 0;
 static int hqc_vindex_count = 0;
+
+/* Grow the registry to fit `needed` entries. Caller must hold hqc_vindex_mutex. */
+static int hqc_vindex_grow_locked(int needed) {
+	int new_cap = hqc_vindex_capacity > 0 ? hqc_vindex_capacity : HQC_VINDEX_INITIAL_SLOTS;
+	while (new_cap < needed) new_cap *= 2;
+	hqc_vindex_t *new_arr = (hqc_vindex_t *)realloc(hqc_vindex, (size_t)new_cap * sizeof(hqc_vindex_t));
+	if (new_arr == NULL) return -1;
+	hqc_vindex = new_arr;
+	hqc_vindex_capacity = new_cap;
+	return 0;
+}
 
 /* Drop (and free) the index entries for a v_table about to be freed. */
 static void hqc_vindex_drop(const gf64_t *v_table) {
@@ -446,8 +473,15 @@ static int hqc_vindex_build(const gf64_t *v_table, int n) {
 	hqc_lock_vindex();
 	/* Capacity check lives INSIDE the lock — the slot count is mutated
 	 * by hqc_vindex_drop under the same mutex, so an outside check
-	 * races with concurrent drops. */
-	if (hqc_vindex_count >= HQC_VINDEX_SLOTS) { hqc_unlock_vindex(); return -1; }
+	 * races with concurrent drops. Grow dynamically on overflow rather
+	 * than returning -1 (which forces every subsequent butterfly to fall
+	 * back to the O(n) linear scan). */
+	if (hqc_vindex_count >= hqc_vindex_capacity) {
+		if (hqc_vindex_grow_locked(hqc_vindex_count + 1) != 0) {
+			hqc_unlock_vindex();
+			return -1;
+		}
+	}
 	int log2size = 1;
 	while ((1 << log2size) < 2 * n) log2size++;
 	if (log2size > 30) { hqc_unlock_vindex(); return -1; }
