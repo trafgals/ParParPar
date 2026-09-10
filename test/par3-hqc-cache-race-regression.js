@@ -7,20 +7,35 @@
 // Pins the fix for a data race in the global `hqc_cache` + `hqc_vindex`
 // registries inside gf64/gf64_additive_fft_hqc2026.c.
 //
-// The race: every worker thread spawned by `ComputeRecoveryBlocks`
-// (std::async row-stealing workers in master PR #108, std::thread
-// workers in PR #111's input-domain decomposition, and any future
-// parallel path that touches HQC addFFT) races on the global
-// `hqc_cache[s].initialized` flag and on `hqc_vindex_count` inside
-// `hqc_vindex_build/drop`. Concurrent reads+writes produce torn state.
+// Where the HQC path is exercised
+// --------------------------------
+// The HQC additive-FFT pipeline (`basisCvt_recursive` → `get_or_build_basis_cache`)
+// is called from `gf64_add_fft` and `gf64_poly_mul_internal`, which are
+// reached from Fenger's MPE (`gf64_fenger_execute` → `gf64_poly_mul`).
+// MATVEC (`ComputeRecoveryBlocks` → `WorkerThread` → `gf64_region_muladd_arr`)
+// uses Cauchy inverses + scalar muladd, NOT HQC addFFT. So a regression
+// test that uses small shapes (where matvec is feasible) silently misses
+// the registry entirely.
 //
-// Symptom: glibc's malloc detects the corruption on the FIRST subsequent
-// free() of an invalid chunk pointer. Most commonly this manifests as
-// `double free or corruption (out)` from the per-thread
-// `hqc_vtable_cache` destructor on pthread_exit, when the destructor
-// walks the corrupted `hqc_vindex` registry to drop entries.
+// To force the HQC path the test calls `compute_recovery_fenger` directly
+// with PAR3_GF64_USE_FENGER=1, bypassing the cost-model gate. Each call
+// spawns Fenger's std::thread workers, each of which builds an entry
+// in `hqc_cache` + `hqc_vindex`. With many concurrent creates on small
+// shapes, the race window in the (now mutex-protected) registry
+// shrinks the effective rate at which the unfixed code crashes.
 //
-// Reproducer: ~20% per-run crash on `par3-chunked-inputs.js` (master
+// The race
+// --------
+// Worker threads spawned by `ComputeRecoveryBlocks` (std::async row-
+// stealing in PR #108; std::thread workers in PR #111) race on the
+// global `hqc_cache[s].initialized` flag and on `hqc_vindex_count`
+// inside `hqc_vindex_build/drop`. Concurrent reads+writes produce torn
+// state. The corruption manifests as an invalid chunk pointer being
+// freed, which glibc's malloc detects on the FIRST subsequent free() —
+// typically the per-thread `hqc_vtable_cache` destructor on pthread_exit,
+// when the destructor walks the corrupted `hqc_vindex` registry.
+//
+// Reproducer: ~20-50% per-run crash on `par3-chunked-inputs.js` (master
 // and PR #111 alike — pre-existing race, NOT introduced by PR #111),
 // traced via gdb on a WSL Ubuntu / Node 22.22.1 core dump:
 //
@@ -34,15 +49,11 @@
 // Win32 CRITICAL_SECTION initialized via InitOnceExecuteOnce) — added
 // at the top of gf64/gf64_additive_fft_hqc2026.c.
 //
-// This regression test exercises the race path with high concurrency:
-// 5 outer x 8 concurrent = 40 total creates, each one forces the
-// Barycentric Cauchy matvec kernel (matvec-infeasible on this shape,
-// Barycentric selected) which routes through HQC addFFT and populates
-// the hqc_cache + hqc_vindex globals across multiple worker threads.
-//
-// Pre-fix: ~50-100% per-run SIGABRT crash (gated by glibc's malloc
-// detection timing). Post-fix: 0% per-run crash, no leaks.
+// Pre-fix: ~50-100% per-run crash on Linux (gated by glibc's malloc
+// detection timing). Post-fix: 0% per-run crash.
 // ============================================================================
+
+process.env.PAR3_GF64_USE_FENGER = "1";   // force Fenger; HQC path
 
 var fs = require("fs");
 var path = require("path");
@@ -61,13 +72,13 @@ function assertMsg(cond, msg) {
 console.log("PAR3 HQC cache data-race regression test");
 console.log("==========================================\n");
 
-// Shape:
-//   N=512 R=32 B=8192 -> matvec=128 MB infeasible (128 MiB cap), fenger not pow2
-//   -> Barycentric selected (which routes through HQC addFFT for the
-//      small-shape Cauchy fall-through via ComputeRecoveryBlocks).
-// 4 MiB input = 512 blocks * 8192 bytes.
-var BLOCK_SIZE = 8192;
-var NUM_BLOCKS = 512;
+// Fenger shape: N=2048, R=32, B=1024 -> 2 MiB input, 64 KiB output.
+// R is a power of 2 (eligible for Fenger); cost model prefers Barycentric
+// but PAR3_GF64_USE_FENGER=1 forces Fenger. The kernel walks the HQC
+// addFFT code path (basisCvt_recursive -> get_or_build_basis_cache ->
+// hqc_cache + hqc_vindex).
+var BLOCK_SIZE = 1024;
+var NUM_BLOCKS = 2048;
 var RECOVERY = 32;
 var REPS = 8;          // 8 concurrent creates
 var OUTER_LOOPS = 5;   // repeat 5x to push repro rate to ~100% pre-fix
@@ -79,7 +90,7 @@ var buf = crypto.randomBytes(BLOCK_SIZE);
 for (var i = 0; i < NUM_BLOCKS; i++) fs.writeSync(fd, buf, 0, BLOCK_SIZE);
 fs.closeSync(fd);
 
-console.log("Running " + OUTER_LOOPS + " outer x " + REPS + " concurrent = " + (OUTER_LOOPS * REPS) + " total creates...");
+console.log("Running " + OUTER_LOOPS + " outer x " + REPS + " concurrent = " + (OUTER_LOOPS * REPS) + " total creates (Fenger-forced)...");
 var loopIdx = 0;
 var doneLoops = 0;
 var errored = 0;

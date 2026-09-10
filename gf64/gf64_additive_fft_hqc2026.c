@@ -344,7 +344,16 @@ typedef struct {
  * destructor runs once per thread when the slot is non-NULL at
  * exit; FlsSetValue stores; FlsGetValue loads; FlsFree releases
  * the slot itself.)
+ *
+ * FLS initialization is done once via InitOnceExecuteOnce — same
+ * primitive that guards the hqc_cache_mutex / hqc_vindex_mutex init.
+ * The earlier "InterlockedCompareExchange + spin" pattern had a hole:
+ * if FlsAlloc itself fails (returns FLS_OUT_OF_INDEXES), the spin
+ * loop would spin forever on a non-recoverable error. InitOnce's
+ * callback pattern lets us abort() on FlsAlloc failure explicitly
+ * rather than hang the caller thread.
  */
+static INIT_ONCE hqc_vtable_cache_fls_init_once = INIT_ONCE_STATIC_INIT;
 static DWORD hqc_vtable_cache_fls_index = FLS_OUT_OF_INDEXES;
 static void WINAPI hqc_vtable_cache_destroy_win32(PVOID arg) {
     hqc_vtable_cache_t *cache = (hqc_vtable_cache_t *)arg;
@@ -357,21 +366,25 @@ static void WINAPI hqc_vtable_cache_destroy_win32(PVOID arg) {
     }
     free(cache);
 }
-static hqc_vtable_cache_t *get_thread_vtable_cache(void) {
-    /* FlsAlloc is global-init-thread-safe but expensive — guard with
-     * an InterlockedCompareExchange flag so we only allocate once. */
-    static volatile LONG fls_initialized = 0;
-    LONG prev = InterlockedCompareExchange(&fls_initialized, 1, 0);
-    if (prev == 0) {
-        /* First caller wins; allocate the FLS slot with the destructor
-         * callback so each thread's cache is freed on exit. */
-        hqc_vtable_cache_fls_index = FlsAlloc(hqc_vtable_cache_destroy_win32);
-    } else {
-        /* Spin briefly for the alloc to land on the first caller. */
-        while (hqc_vtable_cache_fls_index == FLS_OUT_OF_INDEXES) {
-            YieldProcessor();
-        }
+static BOOL CALLBACK hqc_vtable_cache_fls_initonce_callback(PINIT_ONCE init_once, PVOID param, PVOID *context) {
+    (void)init_once; (void)param; (void)context;
+    DWORD idx = FlsAlloc(hqc_vtable_cache_destroy_win32);
+    if (idx == FLS_OUT_OF_INDEXES) {
+        /* FlsAlloc failed — almost certainly out-of-memory. There's
+         * no recovery path that would produce a useful vtable cache,
+         * and the alternative (FLS_OUT_OF_INDEXES sentinel spinning
+         * forever) is worse than abort. */
+        abort();
     }
+    hqc_vtable_cache_fls_index = idx;
+    return TRUE;
+}
+static hqc_vtable_cache_t *get_thread_vtable_cache(void) {
+    /* InitOnceExecuteOnce guarantees exactly-one init across all threads
+     * and surfaces the FlsAlloc failure via abort() (see callback). */
+    InitOnceExecuteOnce(&hqc_vtable_cache_fls_init_once,
+                        hqc_vtable_cache_fls_initonce_callback,
+                        NULL, NULL);
     hqc_vtable_cache_t *cache =
         (hqc_vtable_cache_t *)FlsGetValue(hqc_vtable_cache_fls_index);
     if (!cache) {
