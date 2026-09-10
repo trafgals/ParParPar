@@ -92,6 +92,7 @@
 #endif
 #include <windows.h>
 #include <synchapi.h>
+#include <fibersapi.h>
 #else
 /* POSIX: pthread_key_t-based TLS cache (see hqc_vtable_cache_t below). */
 #include <pthread.h>
@@ -328,7 +329,23 @@ typedef struct {
  * the slot value is freed via the pfnDestructor callback on thread
  * exit.) */
 #ifdef _WIN32
-static DWORD hqc_vtable_cache_tls_index = TLS_OUT_OF_INDEXES;
+/* Fiber-Local Storage (FLS) on Windows. FLS is the right primitive here
+ * (not TlsAlloc) because it accepts a per-thread destructor callback
+ * (PFLS_CALLBACK_FUNCTION) that runs when the thread exits. POSIX's
+ * pthread_key_create + destructor is the analogous API. Both paths
+ * produce a thread-local hqc_vtable_cache_t with the same semantics:
+ * independent per thread, auto-freed on thread exit, no global
+ * mutation from concurrent callers. The Win32 fallback was previously
+ * a process-global static array — unsafe under concurrent callers
+ * because the lock was released before the cached pointer was used.
+ *
+ * (See https://learn.microsoft.com/en-us/windows/win32/api/fibersapi/nf-fibersapi-flsalloc
+ * for the FLS contract — FlsAlloc returns an INDEX (DWORD); the
+ * destructor runs once per thread when the slot is non-NULL at
+ * exit; FlsSetValue stores; FlsGetValue loads; FlsFree releases
+ * the slot itself.)
+ */
+static DWORD hqc_vtable_cache_fls_index = FLS_OUT_OF_INDEXES;
 static void WINAPI hqc_vtable_cache_destroy_win32(PVOID arg) {
     hqc_vtable_cache_t *cache = (hqc_vtable_cache_t *)arg;
     if (!cache) return;
@@ -341,27 +358,27 @@ static void WINAPI hqc_vtable_cache_destroy_win32(PVOID arg) {
     free(cache);
 }
 static hqc_vtable_cache_t *get_thread_vtable_cache(void) {
-    /* TlsAlloc is global-init-thread-safe but expensive — guard with
-     * a once-flag so we only allocate once across all threads. */
-    static volatile LONG tls_initialized = 0;
-    LONG prev = InterlockedCompareExchange(&tls_initialized, 1, 0);
+    /* FlsAlloc is global-init-thread-safe but expensive — guard with
+     * an InterlockedCompareExchange flag so we only allocate once. */
+    static volatile LONG fls_initialized = 0;
+    LONG prev = InterlockedCompareExchange(&fls_initialized, 1, 0);
     if (prev == 0) {
-        /* First caller wins; allocate the TLS index. TlsAlloc's
-         * synchronization is sufficient for one-time creation. */
-        hqc_vtable_cache_tls_index = TlsAlloc();
+        /* First caller wins; allocate the FLS slot with the destructor
+         * callback so each thread's cache is freed on exit. */
+        hqc_vtable_cache_fls_index = FlsAlloc(hqc_vtable_cache_destroy_win32);
     } else {
         /* Spin briefly for the alloc to land on the first caller. */
-        while (hqc_vtable_cache_tls_index == TLS_OUT_OF_INDEXES) {
+        while (hqc_vtable_cache_fls_index == FLS_OUT_OF_INDEXES) {
             YieldProcessor();
         }
     }
     hqc_vtable_cache_t *cache =
-        (hqc_vtable_cache_t *)TlsGetValue(hqc_vtable_cache_tls_index);
+        (hqc_vtable_cache_t *)FlsGetValue(hqc_vtable_cache_fls_index);
     if (!cache) {
         cache = (hqc_vtable_cache_t *)calloc(HQC_VTABLE_CACHE_SLOTS,
                                              sizeof(hqc_vtable_cache_t));
         if (!cache) abort();
-        if (!TlsSetValue(hqc_vtable_cache_tls_index, (PVOID)cache))
+        if (!FlsSetValue(hqc_vtable_cache_fls_index, (PVOID)cache))
             abort();
     }
     return cache;

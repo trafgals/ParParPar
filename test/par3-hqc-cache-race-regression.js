@@ -2,14 +2,46 @@
 "use strict";
 
 // ============================================================================
-// PAR3 HQC additive-FFT cache data-race regression test (FAST variant)
+// PAR3 HQC additive-FFT cache data-race regression test
 // ----------------------------------------------------------------------------
-// Same fix verification as test/par3-hqc-cache-race-regression.js, but with
-// a smaller fixture (4 MiB instead of 32 MiB) and higher concurrency so the
-// loop completes in <30s on slow CI hosts while still reproducing the race.
+// Pins the fix for a data race in the global `hqc_cache` + `hqc_vindex`
+// registries inside gf64/gf64_additive_fft_hqc2026.c.
 //
-// Pre-fix: ~50-100% per-run crash on Linux (gated by glibc's malloc
-// detection timing). Post-fix: 0% per-run crash.
+// The race: every worker thread spawned by `ComputeRecoveryBlocks`
+// (std::async row-stealing workers in master PR #108, std::thread
+// workers in PR #111's input-domain decomposition, and any future
+// parallel path that touches HQC addFFT) races on the global
+// `hqc_cache[s].initialized` flag and on `hqc_vindex_count` inside
+// `hqc_vindex_build/drop`. Concurrent reads+writes produce torn state.
+//
+// Symptom: glibc's malloc detects the corruption on the FIRST subsequent
+// free() of an invalid chunk pointer. Most commonly this manifests as
+// `double free or corruption (out)` from the per-thread
+// `hqc_vtable_cache` destructor on pthread_exit, when the destructor
+// walks the corrupted `hqc_vindex` registry to drop entries.
+//
+// Reproducer: ~20% per-run crash on `par3-chunked-inputs.js` (master
+// and PR #111 alike — pre-existing race, NOT introduced by PR #111),
+// traced via gdb on a WSL Ubuntu / Node 22.22.1 core dump:
+//
+//   #0  __GI_abort ()
+//   #7  malloc_printerr ("double free or corruption (out)")
+//   #8  _int_free_merge_chunk (size=10481008)
+//   #10 hqc_vtable_cache_destroy () from parpar_gf64.node
+//   #11 __GI___nptl_deallocate_tsd ()
+//
+// Fix: protect both registries with a mutex (POSIX pthread_mutex_t;
+// Win32 CRITICAL_SECTION initialized via InitOnceExecuteOnce) — added
+// at the top of gf64/gf64_additive_fft_hqc2026.c.
+//
+// This regression test exercises the race path with high concurrency:
+// 5 outer x 8 concurrent = 40 total creates, each one forces the
+// Barycentric Cauchy matvec kernel (matvec-infeasible on this shape,
+// Barycentric selected) which routes through HQC addFFT and populates
+// the hqc_cache + hqc_vindex globals across multiple worker threads.
+//
+// Pre-fix: ~50-100% per-run SIGABRT crash (gated by glibc's malloc
+// detection timing). Post-fix: 0% per-run crash, no leaks.
 // ============================================================================
 
 var fs = require("fs");
@@ -26,8 +58,8 @@ function assertMsg(cond, msg) {
     console.error("  FAIL: " + msg); failed++; process.exitCode = 1;
 }
 
-console.log("PAR3 HQC cache data-race regression test (fast)");
-console.log("=================================================\n");
+console.log("PAR3 HQC cache data-race regression test");
+console.log("==========================================\n");
 
 // Shape:
 //   N=512 R=32 B=8192 -> matvec=128 MB infeasible (128 MiB cap), fenger not pow2
