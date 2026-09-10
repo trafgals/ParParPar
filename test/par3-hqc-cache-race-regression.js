@@ -12,7 +12,6 @@
 // detection timing). Post-fix: 0% per-run crash.
 // ============================================================================
 
-var assert = require("node:assert");
 var fs = require("fs");
 var path = require("path");
 var os = require("os");
@@ -22,7 +21,7 @@ var par3gen = require("../lib/par3gen.js");
 
 var passed = 0;
 var failed = 0;
-function assert(cond, msg) {
+function assertMsg(cond, msg) {
     if (cond) { console.log("  PASS: " + msg); passed++; return; }
     console.error("  FAIL: " + msg); failed++; process.exitCode = 1;
 }
@@ -81,7 +80,7 @@ function runOneOuter() {
                     // race-induced corruption (the latter manifests
                     // as a non-zero process exit, which Node reports
                     // to our caller via process.exitCode).
-                    assert(errored === 0, "no create errors across " + (OUTER_LOOPS * REPS) + " concurrent creates (errored=" + errored + ")");
+                    assertMsg(errored === 0, "no create errors across " + (OUTER_LOOPS * REPS) + " concurrent creates (errored=" + errored + ")");
                     if (failed > 0) process.exit(1);
                 }
             }

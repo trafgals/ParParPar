@@ -78,12 +78,23 @@
 #include "gf64_cantor_basis.h"
 
 #include <assert.h>
-#ifndef _WIN32
+#ifdef _WIN32
+/* WIN32_WINNT 0x0600 (Vista) is required for INIT_ONCE / InitOnceExecuteOnce
+ * (declared in <synchapi.h>). The addon already targets Vista+ via Node 22's
+ * Node-API headers, so this only affects the gf64 build which previously
+ * defaulted to a lower WINVER. Defining it explicitly here avoids relying
+ * on the toolchain default. */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#ifndef WINVER
+#define WINVER 0x0600
+#endif
+#include <windows.h>
+#include <synchapi.h>
+#else
 /* POSIX: pthread_key_t-based TLS cache (see hqc_vtable_cache_t below). */
 #include <pthread.h>
-#else
-/* Win32: critical section for the global HQC cache + vindex registry. */
-#include <windows.h>
 #endif
 #include <stdint.h>
 #include <stdlib.h>
@@ -119,16 +130,28 @@
 #ifdef _WIN32
 static CRITICAL_SECTION hqc_cache_mutex;
 static CRITICAL_SECTION hqc_vindex_mutex;
-static int hqc_mutexes_initialized = 0;
-static void hqc_locks_init(void) {
-    if (hqc_mutexes_initialized) return;
+/* Use the SDK's static-init constant (INIT_ONCE_STATIC_INIT expands to
+ * {0} in <synchapi.h>). InitOnceExecuteOnce guarantees exactly-one
+ * initialization across all threads on Windows Vista+; the addon already
+ * targets Vista+ via Node 22's Node-API headers. Safer than the lazy-
+ * init-flag pattern which has a TOCTOU window where two threads could
+ * both pass the check and double-init the critical sections. */
+static INIT_ONCE hqc_mutexes_init_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK hqc_mutexes_initonce_callback(PINIT_ONCE init_once, PVOID param, PVOID *context) {
+    (void)init_once; (void)param; (void)context;
     InitializeCriticalSection(&hqc_cache_mutex);
     InitializeCriticalSection(&hqc_vindex_mutex);
-    hqc_mutexes_initialized = 1;
+    return TRUE;
 }
-static void hqc_lock_cache(void) { hqc_locks_init(); EnterCriticalSection(&hqc_cache_mutex); }
+static void hqc_lock_cache(void) {
+    InitOnceExecuteOnce(&hqc_mutexes_init_once, hqc_mutexes_initonce_callback, NULL, NULL);
+    EnterCriticalSection(&hqc_cache_mutex);
+}
 static void hqc_unlock_cache(void) { LeaveCriticalSection(&hqc_cache_mutex); }
-static void hqc_lock_vindex(void) { hqc_locks_init(); EnterCriticalSection(&hqc_vindex_mutex); }
+static void hqc_lock_vindex(void) {
+    InitOnceExecuteOnce(&hqc_mutexes_init_once, hqc_mutexes_initonce_callback, NULL, NULL);
+    EnterCriticalSection(&hqc_vindex_mutex);
+}
 static void hqc_unlock_vindex(void) { LeaveCriticalSection(&hqc_vindex_mutex); }
 #else
 static pthread_mutex_t hqc_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -295,12 +318,53 @@ typedef struct {
  * Windows (MSVC) fallback: a process-global static array. The OMP path
  * is gated by GF64_OPENMP_PARALLEL_PREPARE, which is POSIX-only in
  * binding.gyp, so on Windows this cache is single-threaded and the
- * shared-slot layout is race-free. pthread_key_t is unavailable on
- * MSVC, so we don't include <pthread.h> or wire the TLS path. */
+ * shared-slot layout is race-free. On POSIX we use pthread_key_t; on Win32
+ * we use TlsAlloc (the Win32 equivalent — per-thread storage with a
+ * per-thread destructor). Both paths produce a thread-local
+ * hqc_vtable_cache_t with the same semantics: independent per thread,
+ * auto-freed on thread exit, no global mutation from concurrent
+ * callers. (See https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-tlsalloc
+ * for the Windows TLS contract — TlsAlloc returns a DWORD index, and
+ * the slot value is freed via the pfnDestructor callback on thread
+ * exit.) */
 #ifdef _WIN32
-static hqc_vtable_cache_t hqc_vtable_cache_global[HQC_VTABLE_CACHE_SLOTS];
+static DWORD hqc_vtable_cache_tls_index = TLS_OUT_OF_INDEXES;
+static void WINAPI hqc_vtable_cache_destroy_win32(PVOID arg) {
+    hqc_vtable_cache_t *cache = (hqc_vtable_cache_t *)arg;
+    if (!cache) return;
+    for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
+        if (cache[s].initialized) {
+            hqc_vindex_drop(cache[s].v_table);
+            free(cache[s].v_table);
+        }
+    }
+    free(cache);
+}
 static hqc_vtable_cache_t *get_thread_vtable_cache(void) {
-    return hqc_vtable_cache_global;
+    /* TlsAlloc is global-init-thread-safe but expensive — guard with
+     * a once-flag so we only allocate once across all threads. */
+    static volatile LONG tls_initialized = 0;
+    LONG prev = InterlockedCompareExchange(&tls_initialized, 1, 0);
+    if (prev == 0) {
+        /* First caller wins; allocate the TLS index. TlsAlloc's
+         * synchronization is sufficient for one-time creation. */
+        hqc_vtable_cache_tls_index = TlsAlloc();
+    } else {
+        /* Spin briefly for the alloc to land on the first caller. */
+        while (hqc_vtable_cache_tls_index == TLS_OUT_OF_INDEXES) {
+            YieldProcessor();
+        }
+    }
+    hqc_vtable_cache_t *cache =
+        (hqc_vtable_cache_t *)TlsGetValue(hqc_vtable_cache_tls_index);
+    if (!cache) {
+        cache = (hqc_vtable_cache_t *)calloc(HQC_VTABLE_CACHE_SLOTS,
+                                             sizeof(hqc_vtable_cache_t));
+        if (!cache) abort();
+        if (!TlsSetValue(hqc_vtable_cache_tls_index, (PVOID)cache))
+            abort();
+    }
+    return cache;
 }
 #else
 static pthread_key_t  hqc_vtable_cache_key;
@@ -362,8 +426,10 @@ static void hqc_vindex_drop(const gf64_t *v_table) {
 }
 
 static int hqc_vindex_build(const gf64_t *v_table, int n) {
-	if (hqc_vindex_count >= HQC_VINDEX_SLOTS) return -1;
 	hqc_lock_vindex();
+	/* Capacity check lives INSIDE the lock — the slot count is mutated
+	 * by hqc_vindex_drop under the same mutex, so an outside check
+	 * races with concurrent drops. */
 	if (hqc_vindex_count >= HQC_VINDEX_SLOTS) { hqc_unlock_vindex(); return -1; }
 	int log2size = 1;
 	while ((1 << log2size) < 2 * n) log2size++;
@@ -407,22 +473,13 @@ static int hqc_vindex_lookup(const gf64_t *v_table, gf64_t a) {
 }
 static gf64_t *get_or_build_v_table(int n) {
     hqc_vtable_cache_t *hqc_vtable_cache = get_thread_vtable_cache();
-#ifdef _WIN32
-    /* Windows fallback: hqc_vtable_cache_global is a single shared array
-     * across all threads (no pthread_key_t). Protect the read+rebuild
-     * with the vtable cache mutex to match the POSIX TLS guarantee. */
-    hqc_lock_cache();
-#endif
+    /* Per-thread cache (POSIX pthread_key_t, Win32 TlsAlloc) — no shared
+     * mutation across threads, so no global lock is needed here. The
+     * global hqc_vindex registry IS still touched (via hqc_vindex_build
+     * below), and that one IS protected by hqc_vindex_mutex. */
     for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
-        if (hqc_vtable_cache[s].initialized && hqc_vtable_cache[s].n == n) {
-#ifdef _WIN32
-            gf64_t *cached_v_table = hqc_vtable_cache[s].v_table;
-            hqc_unlock_cache();
-            return cached_v_table;
-#else
+        if (hqc_vtable_cache[s].initialized && hqc_vtable_cache[s].n == n)
             return hqc_vtable_cache[s].v_table;
-#endif
-        }
     }
     int slot = -1;
     for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
@@ -437,13 +494,7 @@ static gf64_t *get_or_build_v_table(int n) {
     for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
     hqc_vindex_build(c->v_table, n);
     c->initialized = 1;
-#ifdef _WIN32
-    gf64_t *built_v_table = c->v_table;
-    hqc_unlock_cache();
-    return built_v_table;
-#else
     return c->v_table;
-#endif
 }
 
 /* Build X_basis[k * n + j] = coefficient of x^j in X_k(x).
