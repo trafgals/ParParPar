@@ -78,13 +78,90 @@
 #include "gf64_cantor_basis.h"
 
 #include <assert.h>
-#ifndef _WIN32
+#ifdef _WIN32
+/* WIN32_WINNT 0x0600 (Vista) is required for INIT_ONCE / InitOnceExecuteOnce
+ * (declared in <synchapi.h>). The addon already targets Vista+ via Node 22's
+ * Node-API headers, so this only affects the gf64 build which previously
+ * defaulted to a lower WINVER. Defining it explicitly here avoids relying
+ * on the toolchain default. */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#ifndef WINVER
+#define WINVER 0x0600
+#endif
+#include <windows.h>
+#include <synchapi.h>
+#include <fibersapi.h>
+#else
 /* POSIX: pthread_key_t-based TLS cache (see hqc_vtable_cache_t below). */
 #include <pthread.h>
 #endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* ----- registry mutex -----
+ *
+ * The global `hqc_cache` (basis cache) and `hqc_vindex` (vindex registry)
+ * are touched by every worker thread spawned by `ComputeRecoveryBlocks`
+ * (std::async row-stealing workers) and the Fenger parallel path.
+ * Concurrent build/drop on the vindex registry without synchronization
+ * is a data race that corrupts `hqc_vindex_count` and the swap entries
+ * inside `hqc_vindex_drop`. The corruption manifests as a
+ * `double free or corruption (out)` from glibc's malloc on thread exit,
+ * when the per-thread `hqc_vtable_cache` destructor walks the corrupted
+ * registry and tries to `free()` a pointer that was already freed or
+ * never valid. Reproduces at ~20% per test run on `par3-chunked-inputs.js`
+ * with the 14 MiB leg (which exercises both the 4 MiB matvec kernel
+ * that populates `hqc_cache` and the Fenger chunks that don't, but
+ * trigger worker-thread exits that run the destructor). Verified via
+ * WSL Ubuntu 22.04 / Node 22.22.1 with `gdb -batch -ex bt` on the
+ * core file: the crash is `hqc_vtable_cache_destroy` -> `free()` ->
+ * `malloc_printerr("double free or corruption (out)")`.
+ *
+ * The fix: protect both registries with a single mutex. The contention
+ * is negligible vs. the kernel cost (cache lookup is a few pointer
+ * compares; the actual FFT is the dominant cost).
+ *
+ * POSIX: `pthread_mutex_t`. Win32: `CRITICAL_SECTION` (lighter than a
+ * mutex; recursive semantics match what we want — recursive callers
+ * would also deadlock under pthread_mutex_t, but no such callers exist).
+ */
+#ifdef _WIN32
+static CRITICAL_SECTION hqc_cache_mutex;
+static CRITICAL_SECTION hqc_vindex_mutex;
+/* Use the SDK's static-init constant (INIT_ONCE_STATIC_INIT expands to
+ * {0} in <synchapi.h>). InitOnceExecuteOnce guarantees exactly-one
+ * initialization across all threads on Windows Vista+; the addon already
+ * targets Vista+ via Node 22's Node-API headers. Safer than the lazy-
+ * init-flag pattern which has a TOCTOU window where two threads could
+ * both pass the check and double-init the critical sections. */
+static INIT_ONCE hqc_mutexes_init_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK hqc_mutexes_initonce_callback(PINIT_ONCE init_once, PVOID param, PVOID *context) {
+    (void)init_once; (void)param; (void)context;
+    InitializeCriticalSection(&hqc_cache_mutex);
+    InitializeCriticalSection(&hqc_vindex_mutex);
+    return TRUE;
+}
+static void hqc_lock_cache(void) {
+    InitOnceExecuteOnce(&hqc_mutexes_init_once, hqc_mutexes_initonce_callback, NULL, NULL);
+    EnterCriticalSection(&hqc_cache_mutex);
+}
+static void hqc_unlock_cache(void) { LeaveCriticalSection(&hqc_cache_mutex); }
+static void hqc_lock_vindex(void) {
+    InitOnceExecuteOnce(&hqc_mutexes_init_once, hqc_mutexes_initonce_callback, NULL, NULL);
+    EnterCriticalSection(&hqc_vindex_mutex);
+}
+static void hqc_unlock_vindex(void) { LeaveCriticalSection(&hqc_vindex_mutex); }
+#else
+static pthread_mutex_t hqc_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t hqc_vindex_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void hqc_lock_cache(void) { pthread_mutex_lock(&hqc_cache_mutex); }
+static void hqc_unlock_cache(void) { pthread_mutex_unlock(&hqc_cache_mutex); }
+static void hqc_lock_vindex(void) { pthread_mutex_lock(&hqc_vindex_mutex); }
+static void hqc_unlock_vindex(void) { pthread_mutex_unlock(&hqc_vindex_mutex); }
+#endif
 
 HEDLEY_BEGIN_C_DECLS
 
@@ -242,12 +319,82 @@ typedef struct {
  * Windows (MSVC) fallback: a process-global static array. The OMP path
  * is gated by GF64_OPENMP_PARALLEL_PREPARE, which is POSIX-only in
  * binding.gyp, so on Windows this cache is single-threaded and the
- * shared-slot layout is race-free. pthread_key_t is unavailable on
- * MSVC, so we don't include <pthread.h> or wire the TLS path. */
+ * shared-slot layout is race-free. On POSIX we use pthread_key_t; on Win32
+ * we use TlsAlloc (the Win32 equivalent — per-thread storage with a
+ * per-thread destructor). Both paths produce a thread-local
+ * hqc_vtable_cache_t with the same semantics: independent per thread,
+ * auto-freed on thread exit, no global mutation from concurrent
+ * callers. (See https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-tlsalloc
+ * for the Windows TLS contract — TlsAlloc returns a DWORD index, and
+ * the slot value is freed via the pfnDestructor callback on thread
+ * exit.) */
 #ifdef _WIN32
-static hqc_vtable_cache_t hqc_vtable_cache_global[HQC_VTABLE_CACHE_SLOTS];
+/* Fiber-Local Storage (FLS) on Windows. FLS is the right primitive here
+ * (not TlsAlloc) because it accepts a per-thread destructor callback
+ * (PFLS_CALLBACK_FUNCTION) that runs when the thread exits. POSIX's
+ * pthread_key_create + destructor is the analogous API. Both paths
+ * produce a thread-local hqc_vtable_cache_t with the same semantics:
+ * independent per thread, auto-freed on thread exit, no global
+ * mutation from concurrent callers. The Win32 fallback was previously
+ * a process-global static array — unsafe under concurrent callers
+ * because the lock was released before the cached pointer was used.
+ *
+ * (See https://learn.microsoft.com/en-us/windows/win32/api/fibersapi/nf-fibersapi-flsalloc
+ * for the FLS contract — FlsAlloc returns an INDEX (DWORD); the
+ * destructor runs once per thread when the slot is non-NULL at
+ * exit; FlsSetValue stores; FlsGetValue loads; FlsFree releases
+ * the slot itself.)
+ *
+ * FLS initialization is done once via InitOnceExecuteOnce — same
+ * primitive that guards the hqc_cache_mutex / hqc_vindex_mutex init.
+ * The earlier "InterlockedCompareExchange + spin" pattern had a hole:
+ * if FlsAlloc itself fails (returns FLS_OUT_OF_INDEXES), the spin
+ * loop would spin forever on a non-recoverable error. InitOnce's
+ * callback pattern lets us abort() on FlsAlloc failure explicitly
+ * rather than hang the caller thread.
+ */
+static INIT_ONCE hqc_vtable_cache_fls_init_once = INIT_ONCE_STATIC_INIT;
+static DWORD hqc_vtable_cache_fls_index = FLS_OUT_OF_INDEXES;
+static void WINAPI hqc_vtable_cache_destroy_win32(PVOID arg) {
+    hqc_vtable_cache_t *cache = (hqc_vtable_cache_t *)arg;
+    if (!cache) return;
+    for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
+        if (cache[s].initialized) {
+            hqc_vindex_drop(cache[s].v_table);
+            free(cache[s].v_table);
+        }
+    }
+    free(cache);
+}
+static BOOL CALLBACK hqc_vtable_cache_fls_initonce_callback(PINIT_ONCE init_once, PVOID param, PVOID *context) {
+    (void)init_once; (void)param; (void)context;
+    DWORD idx = FlsAlloc(hqc_vtable_cache_destroy_win32);
+    if (idx == FLS_OUT_OF_INDEXES) {
+        /* FlsAlloc failed — almost certainly out-of-memory. There's
+         * no recovery path that would produce a useful vtable cache,
+         * and the alternative (FLS_OUT_OF_INDEXES sentinel spinning
+         * forever) is worse than abort. */
+        abort();
+    }
+    hqc_vtable_cache_fls_index = idx;
+    return TRUE;
+}
 static hqc_vtable_cache_t *get_thread_vtable_cache(void) {
-    return hqc_vtable_cache_global;
+    /* InitOnceExecuteOnce guarantees exactly-one init across all threads
+     * and surfaces the FlsAlloc failure via abort() (see callback). */
+    InitOnceExecuteOnce(&hqc_vtable_cache_fls_init_once,
+                        hqc_vtable_cache_fls_initonce_callback,
+                        NULL, NULL);
+    hqc_vtable_cache_t *cache =
+        (hqc_vtable_cache_t *)FlsGetValue(hqc_vtable_cache_fls_index);
+    if (!cache) {
+        cache = (hqc_vtable_cache_t *)calloc(HQC_VTABLE_CACHE_SLOTS,
+                                             sizeof(hqc_vtable_cache_t));
+        if (!cache) abort();
+        if (!FlsSetValue(hqc_vtable_cache_fls_index, (PVOID)cache))
+            abort();
+    }
+    return cache;
 }
 #else
 static pthread_key_t  hqc_vtable_cache_key;
@@ -291,12 +438,40 @@ typedef struct {
 	int log2size;
 	int mask;
 } hqc_vindex_t;
-#define HQC_VINDEX_SLOTS (HQC_VTABLE_CACHE_SLOTS + HQC_CACHE_SLOTS)
-static hqc_vindex_t hqc_vindex[HQC_VINDEX_SLOTS];
+/* The vindex registry used to be a fixed-size array of HQC_VTABLE_CACHE_SLOTS
+ * + HQC_CACHE_SLOTS = 32 entries — sized to match the SINGLE global vtable
+ * cache + the global basis cache. Once per-thread vtable caches were
+ * introduced, each thread could register up to HQC_VTABLE_CACHE_SLOTS
+ * entries of its own, and the fixed 32-entry cap caused the registry
+ * to fill after ~2 workers (16+16) and `hqc_vindex_build` to fall back
+ * to the O(n) linear scan in `compute_index_for` — a real perf cliff.
+ *
+ * Now grown dynamically via realloc() when the cap is hit. The initial
+ * cap (32) keeps the steady-state cost at the original value; growth
+ * is rare (only happens when more than 32 unique v_tables are alive
+ * simultaneously across all threads). The registry's `tab` allocations
+ * are kept by the registry itself; on `realloc`, the `v_table` pointers
+ * are still valid (they're owned by the per-thread caches), so the
+ * realloc is safe. */
+#define HQC_VINDEX_INITIAL_SLOTS (HQC_VTABLE_CACHE_SLOTS + HQC_CACHE_SLOTS)
+static hqc_vindex_t *hqc_vindex = NULL;   /* lazily malloc'd on first build */
+static int hqc_vindex_capacity = 0;
 static int hqc_vindex_count = 0;
+
+/* Grow the registry to fit `needed` entries. Caller must hold hqc_vindex_mutex. */
+static int hqc_vindex_grow_locked(int needed) {
+	int new_cap = hqc_vindex_capacity > 0 ? hqc_vindex_capacity : HQC_VINDEX_INITIAL_SLOTS;
+	while (new_cap < needed) new_cap *= 2;
+	hqc_vindex_t *new_arr = (hqc_vindex_t *)realloc(hqc_vindex, (size_t)new_cap * sizeof(hqc_vindex_t));
+	if (new_arr == NULL) return -1;
+	hqc_vindex = new_arr;
+	hqc_vindex_capacity = new_cap;
+	return 0;
+}
 
 /* Drop (and free) the index entries for a v_table about to be freed. */
 static void hqc_vindex_drop(const gf64_t *v_table) {
+	hqc_lock_vindex();
 	for (int s = 0; s < hqc_vindex_count; s++) {
 		if (hqc_vindex[s].v_table != v_table) continue;
 		free(hqc_vindex[s].tab);
@@ -304,16 +479,28 @@ static void hqc_vindex_drop(const gf64_t *v_table) {
 		hqc_vindex_count--;
 		s--;
 	}
+	hqc_unlock_vindex();
 }
 
 static int hqc_vindex_build(const gf64_t *v_table, int n) {
-	if (hqc_vindex_count >= HQC_VINDEX_SLOTS) return -1;
+	hqc_lock_vindex();
+	/* Capacity check lives INSIDE the lock — the slot count is mutated
+	 * by hqc_vindex_drop under the same mutex, so an outside check
+	 * races with concurrent drops. Grow dynamically on overflow rather
+	 * than returning -1 (which forces every subsequent butterfly to fall
+	 * back to the O(n) linear scan). */
+	if (hqc_vindex_count >= hqc_vindex_capacity) {
+		if (hqc_vindex_grow_locked(hqc_vindex_count + 1) != 0) {
+			hqc_unlock_vindex();
+			return -1;
+		}
+	}
 	int log2size = 1;
 	while ((1 << log2size) < 2 * n) log2size++;
-	if (log2size > 30) return -1;
+	if (log2size > 30) { hqc_unlock_vindex(); return -1; }
 	const int size = 1 << log2size;
 	int *tab = (int *)malloc((size_t)size * sizeof(int));
-	if (tab == NULL) return -1;
+	if (tab == NULL) { hqc_unlock_vindex(); return -1; }
 	for (int i = 0; i < size; i++) tab[i] = -1;
 	for (int j = 1; j < n; j++) {
 		const gf64_t a = v_table[j];
@@ -325,26 +512,35 @@ static int hqc_vindex_build(const gf64_t *v_table, int n) {
 	hqc_vindex_t *v = &hqc_vindex[hqc_vindex_count++];
 	v->v_table = v_table; v->tab = tab;
 	v->log2size = log2size; v->mask = size - 1;
-	return hqc_vindex_count - 1;
+	int idx = hqc_vindex_count - 1;
+	hqc_unlock_vindex();
+	return idx;
 }
 
 /* Returns the index, or -1 (absent), or -2 (no index for this table). */
 static int hqc_vindex_lookup(const gf64_t *v_table, gf64_t a) {
+	hqc_lock_vindex();
 	for (int s = 0; s < hqc_vindex_count; s++) {
 		if (hqc_vindex[s].v_table != v_table) continue;
-		if (a == 0) return 0;
+		if (a == 0) { hqc_unlock_vindex(); return 0; }
 		const hqc_vindex_t *v = &hqc_vindex[s];
 		size_t h = (size_t)((uint64_t)(a * 0x9E3779B97F4A7C15ULL) >> (64 - v->log2size));
 		while (v->tab[h] != -1) {
-			if (v_table[v->tab[h]] == a) return v->tab[h];
+			if (v_table[v->tab[h]] == a) { int rv = v->tab[h]; hqc_unlock_vindex(); return rv; }
 			h = (h + 1) & v->mask;
 		}
+		hqc_unlock_vindex();
 		return -1;
 	}
+	hqc_unlock_vindex();
 	return -2;
 }
 static gf64_t *get_or_build_v_table(int n) {
     hqc_vtable_cache_t *hqc_vtable_cache = get_thread_vtable_cache();
+    /* Per-thread cache (POSIX pthread_key_t, Win32 TlsAlloc) — no shared
+     * mutation across threads, so no global lock is needed here. The
+     * global hqc_vindex registry IS still touched (via hqc_vindex_build
+     * below), and that one IS protected by hqc_vindex_mutex. */
     for (int s = 0; s < HQC_VTABLE_CACHE_SLOTS; s++) {
         if (hqc_vtable_cache[s].initialized && hqc_vtable_cache[s].n == n)
             return hqc_vtable_cache[s].v_table;
@@ -392,94 +588,101 @@ static gf64_t *build_X_basis(int n,
 }
 
 static hqc_basis_cache_t *get_or_build_basis_cache(int n) {
-    for (int s = 0; s < HQC_CACHE_SLOTS; s++) {
-        if (hqc_cache[s].initialized && hqc_cache[s].n == n) return &hqc_cache[s];
-    }
-    int slot = -1;
-    for (int s = 0; s < HQC_CACHE_SLOTS; s++) {
-        if (!hqc_cache[s].initialized) { slot = s; break; }
-    }
-    if (slot < 0) slot = 0;
-    hqc_basis_cache_t *c = &hqc_cache[slot];
-    if (c->initialized) {
-    	hqc_vindex_drop(c->v_table);
-    	free(c->M); free(c->M_inv); free(c->v_table);
-    	c->initialized = 0;
-    }
+	hqc_lock_cache();
+	for (int s = 0; s < HQC_CACHE_SLOTS; s++) {
+		if (hqc_cache[s].initialized && hqc_cache[s].n == n) {
+			hqc_basis_cache_t *cached = &hqc_cache[s];
+			hqc_unlock_cache();
+			return cached;
+		}
+	}
+	int slot = -1;
+	for (int s = 0; s < HQC_CACHE_SLOTS; s++) {
+		if (!hqc_cache[s].initialized) { slot = s; break; }
+	}
+	if (slot < 0) slot = 0;
+	hqc_basis_cache_t *c = &hqc_cache[slot];
+	if (c->initialized) {
+		hqc_vindex_drop(c->v_table);
+		free(c->M); free(c->M_inv); free(c->v_table);
+		c->initialized = 0;
+	}
 
-    c->n = n;
-    c->M       = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
-    c->M_inv   = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
-    c->v_table = (gf64_t *)calloc((size_t)n, sizeof(gf64_t));
-    if (c->M == NULL || c->M_inv == NULL || c->v_table == NULL) abort();
+	c->n = n;
+	c->M       = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
+	c->M_inv   = (gf64_t *)calloc((size_t)n * n, sizeof(gf64_t));
+	c->v_table = (gf64_t *)calloc((size_t)n, sizeof(gf64_t));
+	if (c->M == NULL || c->M_inv == NULL || c->v_table == NULL) abort();
 
-    for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
-    hqc_vindex_build(c->v_table, n);
+	for (int j = 0; j < n; j++) c->v_table[j] = compute_v_j(j);
+	hqc_vindex_build(c->v_table, n);
 
-    /* Allocate one-shot scratch for the cache build. build_X_basis needs
-     * 3n (cur, s_poly, new_cur) plus 2n for compute_sj's internal region. */
-    size_t build_scratch_words = (size_t)5 * n;
-    gf64_t *build_scratch = (gf64_t *)malloc(build_scratch_words * sizeof(gf64_t));
-    if (build_scratch == NULL) abort();
-    gf64_t *cur     = build_scratch;
-    gf64_t *s_poly  = build_scratch + n;
-    gf64_t *new_cur = build_scratch + 2 * n;
-    gf64_t *sj_reg  = build_scratch + 3 * n;  /* 2n region for compute_sj */
-    gf64_t *X = build_X_basis(n, cur, s_poly, new_cur, sj_reg);
-    for (int j = 0; j < n; j++)
-        for (int k = 0; k < n; k++)
-            c->M[j * n + k] = X[k * n + j];
-    free(X);
-    free(build_scratch);
+	/* Allocate one-shot scratch for the cache build. build_X_basis needs
+	 * 3n (cur, s_poly, new_cur) plus 2n for compute_sj's internal region. */
+	size_t build_scratch_words = (size_t)5 * n;
+	gf64_t *build_scratch = (gf64_t *)malloc(build_scratch_words * sizeof(gf64_t));
+	if (build_scratch == NULL) abort();
+	gf64_t *cur     = build_scratch;
+	gf64_t *s_poly  = build_scratch + n;
+	gf64_t *new_cur = build_scratch + 2 * n;
+	gf64_t *sj_reg  = build_scratch + 3 * n;  /* 2n region for compute_sj */
+	gf64_t *X = build_X_basis(n, cur, s_poly, new_cur, sj_reg);
+	for (int j = 0; j < n; j++)
+		for (int k = 0; k < n; k++)
+			c->M[j * n + k] = X[k * n + j];
+	free(X);
+	free(build_scratch);
 
-    /* Gauss-Jordan over GF(2^64): compute M_inv = M^{-1}.
-     * The change-of-basis relation (column k of M = monomial coeffs of X_k)
-     * means a = M · g for monomial coeffs a and novelpoly coeffs g,
-     * so solving for g gives g = M^{-1} · a. */
-    size_t aug_size = (size_t)(2 * n);
-    gf64_t *aug = (gf64_t *)calloc((size_t)n * aug_size, sizeof(gf64_t));
-    if (aug == NULL) abort();
+	/* Gauss-Jordan over GF(2^64): compute M_inv = M^{-1}.
+	 * The change-of-basis relation (column k of M = monomial coeffs of X_k)
+	 * means a = M · g for monomial coeffs a and novelpoly coeffs g,
+	 * so solving for g gives g = M^{-1} · a. */
+	size_t aug_size = (size_t)(2 * n);
+	gf64_t *aug = (gf64_t *)calloc((size_t)n * aug_size, sizeof(gf64_t));
+	if (aug == NULL) abort();
 
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) aug[i * aug_size + j] = c->M[i * n + j];
-        for (int j = 0; j < n; j++) aug[i * aug_size + (n + j)] = (i == j) ? 1 : 0;
-    }
-    for (int col = 0; col < n; col++) {
-        int pivot = -1;
-        for (int r = col; r < n; r++) {
-            if (aug[r * aug_size + col] != 0) { pivot = r; break; }
-        }
-        if (pivot < 0) {
-            hqc_vindex_drop(c->v_table);
-            free(aug); free(c->M); free(c->M_inv); free(c->v_table);
-            c->initialized = 0;
-            return NULL;
-        }
-        if (pivot != col) {
-            for (size_t j = 0; j < aug_size; j++) {
-                gf64_t tmp = aug[col * aug_size + j];
-                aug[col * aug_size + j] = aug[pivot * aug_size + j];
-                aug[pivot * aug_size + j] = tmp;
-            }
-        }
-        gf64_t pv_inv = gf64_inverse(aug[col * aug_size + col]);
-        for (size_t j = 0; j < aug_size; j++)
-            aug[col * aug_size + j] = gf64_mul_reference(aug[col * aug_size + j], pv_inv);
-        for (int r = 0; r < n; r++) {
-            if (r == col) continue;
-            gf64_t factor = aug[r * aug_size + col];
-            if (factor == 0) continue;
-            for (size_t j = 0; j < aug_size; j++)
-                aug[r * aug_size + j] ^= gf64_mul_reference(factor, aug[col * aug_size + j]);
-        }
-    }
-    for (int i = 0; i < n; i++)
-        for (int j = 0; j < n; j++)
-            c->M_inv[i * n + j] = aug[i * aug_size + ((size_t)n + (size_t)j)];
-    free(aug);
+	for (int i = 0; i < n; i++) {
+		for (int j = 0; j < n; j++) aug[i * aug_size + j] = c->M[i * n + j];
+		for (int j = 0; j < n; j++) aug[i * aug_size + (n + j)] = (i == j) ? 1 : 0;
+	}
+	for (int col = 0; col < n; col++) {
+		int pivot = -1;
+		for (int r = col; r < n; r++) {
+			if (aug[r * aug_size + col] != 0) { pivot = r; break; }
+		}
+		if (pivot < 0) {
+			hqc_vindex_drop(c->v_table);
+			free(aug); free(c->M); free(c->M_inv); free(c->v_table);
+			c->initialized = 0;
+			hqc_unlock_cache();
+			return NULL;
+		}
+		if (pivot != col) {
+			for (size_t j = 0; j < aug_size; j++) {
+				gf64_t tmp = aug[col * aug_size + j];
+				aug[col * aug_size + j] = aug[pivot * aug_size + j];
+				aug[pivot * aug_size + j] = tmp;
+			}
+		}
+		gf64_t pv_inv = gf64_inverse(aug[col * aug_size + col]);
+		for (size_t j = 0; j < aug_size; j++)
+			aug[col * aug_size + j] = gf64_mul_reference(aug[col * aug_size + j], pv_inv);
+		for (int r = 0; r < n; r++) {
+			if (r == col) continue;
+			gf64_t factor = aug[r * aug_size + col];
+			if (factor == 0) continue;
+			for (size_t j = 0; j < aug_size; j++)
+				aug[r * aug_size + j] ^= gf64_mul_reference(factor, aug[col * aug_size + j]);
+		}
+	}
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < n; j++)
+			c->M_inv[i * n + j] = aug[i * aug_size + ((size_t)n + (size_t)j)];
+	free(aug);
 
-    c->initialized = 1;
-    return c;
+	c->initialized = 1;
+	hqc_unlock_cache();
+	return c;
 }
 
 /* monomial → novelpoly.

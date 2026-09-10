@@ -179,5 +179,10 @@ runCreate('4', outThreaded, function(err1) {
 
 function finish() {
 	console.log('\n' + passed + ' passed, ' + failed + ' failed');
-	if (failed) process.exitCode = 1;
+	process.exitCode = failed === 0 ? 0 : 1;
+	// Cubic review finding: let stdout drain naturally instead of process.exit().
+	// Shut down the hasher worker pool so the Node event loop exits cleanly.
+	if (typeof par3gen.shutdownHashPool === 'function') {
+		par3gen.shutdownHashPool();
+	}
 }

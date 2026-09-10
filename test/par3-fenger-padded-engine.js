@@ -93,7 +93,10 @@ function runCase(N, R, blockSize, firstInput, firstRecovery, label, refFn) {
 			}
 		}
 	}
-	check(ok, label + ' (N=' + N + ', R=' + R + ', B=' + B + '): fenger == legacy Cauchy bit-exact');
+	var refName = (refFn === binding.compute_recovery_barycentric)
+		? 'fenger == barycentric (Cauchy parity covered at small shape in par3-barycentric-parity.js)'
+		: 'fenger == legacy Cauchy bit-exact';
+	check(ok, label + ' (N=' + N + ', R=' + R + ', B=' + B + '): ' + refName);
 }
 
 // Odd N (padded inputs), power-of-2 R.
@@ -158,7 +161,7 @@ runCase(1024, 512, 128, 0x10000, 66400,
 // fallback instead of Fenger.
 runCase(229376, 32768, 64, 0x10000, 0x1000000,
 	'14G/64KiB/R=32768 padded shape (N=229376 → next_pow2=262144, R=32768 pow2, disjoint input/recovery ranges)',
-	binding.compute_recovery_barycentric); // cubic review 0c8cc30f P2: cross-checks Fenger against Barycentric at scale (both O(N log^2 N)); Cauchy parity (compute_recovery_full) at this large shape is omitted due to O(N*R) compute cost.
+	binding.compute_recovery_barycentric); // barycentric O(N log^2 N) at scale; parity against the Cauchy reference is asserted in test/par3-barycentric-parity.js.
 // NOTE: the P1 gate shape (N=131072/R=4096 bit-exact vs Cauchy) is a
 // bench item (gf64/test/bench_gf64_subquadratic gate_shape), not a unit
 // test — the padded route at N=2^18+1 pads to 2^19 points and takes

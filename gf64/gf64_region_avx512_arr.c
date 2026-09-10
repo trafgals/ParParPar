@@ -235,16 +235,14 @@ void gf64_region_mul_avx512_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HEDLE
 		size_t blocks = len / 8;
 		for (size_t b = 0; b < blocks; b++) {
 			/* Call 1: out[i+0..i+3] = clmul(in[i+0..i+3], c0) */
-			__m512i in_lo = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
-			                                  0, (int64_t)in[i + 1], 0, (int64_t)in[i + 0]);
+			__m512i in_lo = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i);
 			__m512i prod_lo = _mm512_clmulepi64_epi128(in_lo, coeff_broadcast, 0x00);
 			__m512i lo_v, hi_v;
 			gf64_split_prod_512(prod_lo, &lo_v, &hi_v);
 			_mm512_mask_storeu_epi64(out + i, (__mmask8)0x0F, gf64_reduce_512(lo_v, hi_v));
 
 			/* Call 2: out[i+4..i+7] = clmul(in[i+4..i+7], c0) */
-			__m512i in_hi = _mm512_set_epi64(0, (int64_t)in[i + 7], 0, (int64_t)in[i + 6],
-			                                  0, (int64_t)in[i + 5], 0, (int64_t)in[i + 4]);
+			__m512i in_hi = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i + 4);
 			__m512i prod_hi = _mm512_clmulepi64_epi128(in_hi, coeff_broadcast, 0x00);
 			gf64_split_prod_512(prod_hi, &lo_v, &hi_v);
 			_mm512_mask_storeu_epi64(out + i + 4, (__mmask8)0x0F, gf64_reduce_512(lo_v, hi_v));
@@ -335,35 +333,27 @@ void gf64_region_muladd_avx512_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HE
 			 * clmul are independent (different input ZMMs, same coeff
 			 * broadcast), so the OOO engine can keep all 8 in flight. */
 			/* Stream 0 */
-			__m512i in_0a = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
-			                                 0, (int64_t)in[i + 1], 0, (int64_t)in[i + 0]);
+			__m512i in_0a = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i);
 			__m512i prod_0a = _mm512_clmulepi64_epi128(in_0a, coeff_broadcast, 0x00);
-			__m512i in_0b = _mm512_set_epi64(0, (int64_t)in[i + 19], 0, (int64_t)in[i + 18],
-			                                 0, (int64_t)in[i + 17], 0, (int64_t)in[i + 16]);
+			__m512i in_0b = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i + 16);
 			__m512i prod_0b = _mm512_clmulepi64_epi128(in_0b, coeff_broadcast, 0x00);
 
 			/* Stream 1 */
-			__m512i in_1a = _mm512_set_epi64(0, (int64_t)in[i + 7], 0, (int64_t)in[i + 6],
-			                                 0, (int64_t)in[i + 5], 0, (int64_t)in[i + 4]);
+			__m512i in_1a = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i + 4);
 			__m512i prod_1a = _mm512_clmulepi64_epi128(in_1a, coeff_broadcast, 0x00);
-			__m512i in_1b = _mm512_set_epi64(0, (int64_t)in[i + 23], 0, (int64_t)in[i + 22],
-			                                 0, (int64_t)in[i + 21], 0, (int64_t)in[i + 20]);
+			__m512i in_1b = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i + 20);
 			__m512i prod_1b = _mm512_clmulepi64_epi128(in_1b, coeff_broadcast, 0x00);
 
 			/* Stream 2 */
-			__m512i in_2a = _mm512_set_epi64(0, (int64_t)in[i + 11], 0, (int64_t)in[i + 10],
-			                                 0, (int64_t)in[i + 9], 0, (int64_t)in[i + 8]);
+			__m512i in_2a = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i + 8);
 			__m512i prod_2a = _mm512_clmulepi64_epi128(in_2a, coeff_broadcast, 0x00);
-			__m512i in_2b = _mm512_set_epi64(0, (int64_t)in[i + 27], 0, (int64_t)in[i + 26],
-			                                 0, (int64_t)in[i + 25], 0, (int64_t)in[i + 24]);
+			__m512i in_2b = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i + 24);
 			__m512i prod_2b = _mm512_clmulepi64_epi128(in_2b, coeff_broadcast, 0x00);
 
 			/* Stream 3 */
-			__m512i in_3a = _mm512_set_epi64(0, (int64_t)in[i + 15], 0, (int64_t)in[i + 14],
-			                                 0, (int64_t)in[i + 13], 0, (int64_t)in[i + 12]);
+			__m512i in_3a = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i + 12);
 			__m512i prod_3a = _mm512_clmulepi64_epi128(in_3a, coeff_broadcast, 0x00);
-			__m512i in_3b = _mm512_set_epi64(0, (int64_t)in[i + 31], 0, (int64_t)in[i + 30],
-			                                 0, (int64_t)in[i + 29], 0, (int64_t)in[i + 28]);
+			__m512i in_3b = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i + 28);
 			__m512i prod_3b = _mm512_clmulepi64_epi128(in_3b, coeff_broadcast, 0x00);
 
 			/* Prefetch input cache line for the NEXT outer iteration.
@@ -425,8 +415,7 @@ void gf64_region_muladd_avx512_arr(gf64_t *HEDLEY_RESTRICT out, const gf64_t *HE
 		size_t blocks = len / 4;
 		__m512i zero = _mm512_setzero_si512();
 		for (size_t b = 0; b < blocks; b++) {
-			__m512i in_vec = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
-			                                   0, (int64_t)in[i + 1], 0, (int64_t)in[i + 0]);
+			__m512i in_vec = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i);
 
 			__m512i acc_lo = _mm512_setzero_si512();
 			__m512i acc_hi = _mm512_setzero_si512();
@@ -528,8 +517,7 @@ void gf64_region_fused_output_muladd_avx512_arr(
 		 * the LOW 64-bit lane of each half, which must hold in_j. A consecutive
 		 * load would put in[i+1]/in[i+3] in the odd lanes and select the wrong
 		 * elements. Same layout as gf64_region_mul_avx512_arr. */
-		__m512i in_vec = _mm512_set_epi64(0, (int64_t)in[i + 3], 0, (int64_t)in[i + 2],
-		                                  0, (int64_t)in[i + 1], 0, (int64_t)in[i + 0]);
+		__m512i in_vec = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in + i);
 		for (size_t k = 0; k < K; k++) {
 			__m512i coeff_bc = _mm512_set1_epi64((int64_t)*coeff_block_starts[k]);
 			__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_bc, 0x00);
@@ -578,10 +566,7 @@ void gf64_region_2d_muladd_avx512_arr(
 		size_t i = 0;
 		size_t blocks = len / 4;
 		for (size_t b = 0; b < blocks; b++) {
-			/* See fused_output_muladd: interleave with zeros so each 128-bit
-			 * half is [in_j, 0] and the imm-0x00 VPCLMULQDQ selects in_j. */
-			__m512i in_vec = _mm512_set_epi64(0, (int64_t)in_blocks[g][i + 3], 0, (int64_t)in_blocks[g][i + 2],
-			                                  0, (int64_t)in_blocks[g][i + 1], 0, (int64_t)in_blocks[g][i + 0]);
+			__m512i in_vec = _mm512_maskz_expandloadu_epi64((__mmask8)0x55, in_blocks[g] + i);
 			for (size_t k = 0; k < K; k++) {
 				__m512i coeff_bc = _mm512_set1_epi64((int64_t)coeff_block_2d[k * K_stride + g]);
 				__m512i prod = _mm512_clmulepi64_epi128(in_vec, coeff_bc, 0x00);

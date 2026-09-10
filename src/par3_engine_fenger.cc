@@ -113,6 +113,7 @@ void GF64Controller::ComputeRecoveryBlocksFenger(
 	uint64_t firstInput, uint64_t firstRecovery,
 	int numThreads
 ) {
+	ResetLastDecompositionPath();
 	/* Trivial-input short-circuit, matching the engine convention. */
 	if (numInputs == 0 || numRecovery == 0 || blockSize64 == 0) {
 		return;

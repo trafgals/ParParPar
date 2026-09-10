@@ -1,4 +1,5 @@
 #include "par3_engine.h"
+#include "platform.h"
 
 #include "gf64_invert.h"
 
@@ -125,7 +126,6 @@ static struct {
 	std::unordered_map<CoeffCacheKey, gf64_t*, CoeffCacheKeyHash> map;
 	std::list<CoeffCacheKey> lru;
 } s_coeffCache;
-static std::mutex s_coeffCacheMutex;
 
 static inline void EnsureDispatch() {
 	if (!s_dispatch_initialized) {
@@ -284,7 +284,6 @@ static gf64_t* GetOrBuildCoeffMatrix(
 	size_t numInputs, size_t numRecovery,
 	uint64_t firstInput, uint64_t firstRecovery
 ) {
-	std::lock_guard<std::mutex> lock(s_coeffCacheMutex);
 	CoeffCacheKey key = { numInputs, numRecovery, firstInput, firstRecovery };
 
 	auto it = s_coeffCache.map.find(key);
@@ -566,8 +565,7 @@ static size_t AutotuneBlockSize() {
 
 // ============================================================================
 // Thread worker  —  drives MultiplyAccumulate on a contiguous range of
-// recovery blocks.  Each worker gets its own tmp buffer so there is zero
-// synchronisation outside the final output region (non-overlapping).
+// recovery blocks or input blocks.
 // ============================================================================
 struct WorkerRange {
 	gf64_t*       out_start;       // first recovery block of this worker
@@ -575,11 +573,25 @@ struct WorkerRange {
 	size_t        total_num_out;   // total recovery blocks across all workers
 	const gf64_t* in;
 	size_t        num_in;
-	const gf64_t* coeff_row_start; // coeffMatrix + outStart * numIn
+	const gf64_t* coeff_row_start; // coeffMatrix + outStart * coeff_stride
+	size_t        coeff_stride;    // row stride in coefficient matrix
 	size_t        block_size64;
 	size_t        tile_size;       // L3-aware input tile size (in blocks)
-	bool          accumulate;      // whether to XOR-accumulate without zeroing
+	bool          accumulate;      // accumulate into out_start rather than zeroing
 };
+
+static inline void xor_buffer(gf64_t* dst, const gf64_t* src, size_t count) {
+	size_t i = 0;
+	for (; i + 3 < count; i += 4) {
+		dst[i + 0] ^= src[i + 0];
+		dst[i + 1] ^= src[i + 1];
+		dst[i + 2] ^= src[i + 2];
+		dst[i + 3] ^= src[i + 3];
+	}
+	for (; i < count; i++) {
+		dst[i] ^= src[i];
+	}
+}
 
 // ============================================================================
 // WorkerThread  (Wave 3: 2D-blocked batching — K outputs × G inputs per call)
@@ -599,21 +611,6 @@ struct WorkerRange {
 // at 256 by ParseKGroupSizeEnv).
 // G = GetGroupSize()    (default 12; user-tunable via PAR3_GF64_GROUP, capped
 // at 256 by ParseGroupSizeEnv).
-//
-// K_stride = num_in: the engine's coefficient matrix is row-major
-// (num_out × num_in), so the K rows of a 2D tile starting at column j are
-// spaced num_in elements apart. The 2D kernel reads
-// `coeff_block_2d[k_local * K_stride + g_local]`, which equals
-// `coeff[(k_start + k_local) * num_in + (j + g_local)]` when
-// `coeff_block_2d = &coeff[k_start * num_in + j]` and `K_stride = num_in`.
-//
-// Per-output memset is folded back into the per-k lambda (like PA7) since
-// k is now outer again, restoring PA7's locality: the kernel reads K output
-// buffers fully, then K more, with no pre-pass required.
-//
-// The K and G pointer arrays are stack-allocated up to the 256-element cap;
-// for the (unreachable) case where either exceeds the stack cap, fall back to
-// heap vectors.
 // ============================================================================
 static void WorkerThread(const WorkerRange& range) {
 	EnsureDispatch();
@@ -621,31 +618,25 @@ static void WorkerThread(const WorkerRange& range) {
 	const size_t num_out = range.num_out;
 	const size_t total_num_out = range.total_num_out;
 	const size_t B = range.block_size64;
+	const size_t stride = range.coeff_stride;
 
 	if (total_num_out <= 32) {
-		// Small-R single-output shortcut: 1D muladd loop via the shared
-		// muladd_single_output helper. The 2D kernel's per-call setup
-		// (outs_ptr / in_blocks_ptr arrays, the K-tile outer loop, the Kk
-		// clamp) costs more than the work it saves when output count is
-		// small. Threshold is hardcoded at 32; matches issue #27
-		// §auxiliary guidance; no env gate.
+		// Small-R single-pass input stream: outer loop over inputs j,
+		// inner loop over outputs k.
+		// For small-R (total_num_out <= 32), all num_out output blocks stay
+		// warm in L2/L3 cache while each input block is streamed from DRAM
+		// exactly once. This eliminates the multi-pass input read traffic.
 		if (!range.accumulate) {
 			for (size_t k = 0; k < num_out; k++) {
 				memset(range.out_start + k * B, 0, B * sizeof(gf64_t));
 			}
 		}
-		if (num_out == 1) {
-			const gf64_t* row = range.coeff_row_start;
-			for (size_t j = 0; j < num_in; j++) {
-				gf64_region_muladd_arr(range.out_start, range.in + j * B, &row[j], B, 1);
-			}
-		} else {
-			// Inverted loop: read each input block once, update all num_out recovery blocks
-			for (size_t j = 0; j < num_in; j++) {
-				const gf64_t* in_blk = range.in + j * B;
-				for (size_t k = 0; k < num_out; k++) {
-					const gf64_t coeff = range.coeff_row_start[k * num_in + j];
-					gf64_region_muladd_arr(range.out_start + k * B, in_blk, &coeff, B, 1);
+		for (size_t j = 0; j < num_in; j++) {
+			const gf64_t* in_block = range.in + j * B;
+			for (size_t k = 0; k < num_out; k++) {
+				gf64_t c = range.coeff_row_start[k * stride + j];
+				if (c != 0) {
+					gf64_region_muladd_arr(range.out_start + k * B, in_block, &c, B, 1);
 				}
 			}
 		}
@@ -667,11 +658,6 @@ static void WorkerThread(const WorkerRange& range) {
 
 	auto process_out = [&](size_t k_start) {
 		const size_t Kk = std::min((size_t)K, num_out - k_start);
-		if (!range.accumulate) {
-			for (size_t k_local = 0; k_local < Kk; k_local++) {
-				memset(range.out_start + (k_start + k_local) * B, 0, B * sizeof(gf64_t));
-			}
-		}
 		gf64_t** outs_ptr = outs_stack;
 		if (Kk > MAX_STACK_K) {
 			outs_heap.resize(Kk);
@@ -679,10 +665,13 @@ static void WorkerThread(const WorkerRange& range) {
 		}
 		for (size_t k_local = 0; k_local < Kk; k_local++) {
 			outs_ptr[k_local] = range.out_start + (k_start + k_local) * B;
+			if (!range.accumulate) {
+				memset(outs_ptr[k_local], 0, B * sizeof(gf64_t));
+			}
 		}
 
 		// Coeff row for k_start..k_start+Kk-1, starting at column j.
-		const gf64_t* coeff_base = range.coeff_row_start + k_start * num_in;
+		const gf64_t* coeff_base = range.coeff_row_start + k_start * stride;
 
 		// L3-aware input tile: tile_size caps the j range to keep the
 		// (K outputs + G inputs) working set L3-resident.
@@ -703,7 +692,7 @@ static void WorkerThread(const WorkerRange& range) {
 					(const gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT)in_blocks_ptr,
 					Gk,
 					coeff_base + j,
-					num_in,
+					stride,
 					B);
 			}
 		} else {
@@ -725,7 +714,7 @@ static void WorkerThread(const WorkerRange& range) {
 						(const gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT)in_blocks_ptr,
 						Gk,
 						coeff_base + j,
-						num_in,
+						stride,
 						B);
 				}
 			}
@@ -890,7 +879,8 @@ void GF64Controller::ComputeRecoveryBlocks(
 	gf64_t*       recovery, size_t numRecovery,
 	size_t        blockSize64,
 	uint64_t      firstInput, uint64_t firstRecovery,
-	int           numThreads
+	int           numThreads,
+	bool          accumulate
 ) {
 	if (numInputs == 0 || numRecovery == 0) return;
 
@@ -933,7 +923,7 @@ void GF64Controller::ComputeRecoveryBlocks(
 	if (!coeff) return;
 
 	ComputeRecoveryBlocksWithCoeff(inputs, numInputs, recovery, numRecovery,
-	                                blockSize64, coeff, numThreads);
+	                                blockSize64, coeff, numThreads, accumulate);
 }
 
 // ============================================================================
@@ -944,6 +934,16 @@ void GF64Controller::ComputeRecoveryBlocks(
 // caller can overlap the matrix build with other work (e.g. file read).
 // The caller is responsible for freeing the coeff buffer after the call.
 // ============================================================================
+static std::atomic<int> s_last_decomposition_path{0};
+
+int GF64Controller::GetLastDecompositionPath() {
+	return s_last_decomposition_path.load();
+}
+
+void GF64Controller::ResetLastDecompositionPath() {
+	s_last_decomposition_path.store(0);
+}
+
 void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	const gf64_t* inputs, size_t numInputs,
 	gf64_t*       recovery, size_t numRecovery,
@@ -952,7 +952,10 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	int           numThreads,
 	bool          accumulate
 ) {
-	if (numInputs == 0 || numRecovery == 0 || !coeff) return;
+	if (numInputs == 0 || numRecovery == 0 || !coeff) {
+		ResetLastDecompositionPath();
+		return;
+	}
 
 	// --- 2. Per-workload dispatch (PD2 AVX-512 downclock heuristic) ---
 	gf64_apply_method(gf64_method_for_workload(numInputs, numRecovery, blockSize64));
@@ -961,15 +964,6 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		numThreads = (int)GetEffectiveCpuCount();
 		if (numThreads <= 0) numThreads = 1;
 	}
-
-	// --- 3. Distribute work ---
-	// Cap threads at numRecovery (no point spinning more workers than blocks).
-	if ((size_t)numThreads > numRecovery) numThreads = (int)numRecovery;
-
-	// Basic round-robin split — each thread gets ceil(N/numThreads) blocks.
-	size_t base    = 0;
-	size_t chunk   = (numRecovery + numThreads - 1) / (size_t)numThreads;
-	size_t n_workers = (size_t)numThreads;
 
 	// Compute L3-aware tile size for input blocks.
 	size_t l3Size = GetL3CacheSize();
@@ -981,8 +975,9 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		if (tileSize == 0) tileSize = 1;
 	}
 
-	if (n_workers == 1) {
-		// Single-threaded path — avoids std::thread overhead.
+	// Case 1: Single thread
+	if (numThreads == 1) {
+		s_last_decomposition_path.store(1);
 		WorkerRange r;
 		r.out_start = recovery;
 		r.num_out = numRecovery;
@@ -990,134 +985,144 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		r.in = inputs;
 		r.num_in = numInputs;
 		r.coeff_row_start = coeff;
+		r.coeff_stride = numInputs;
 		r.block_size64 = blockSize64;
 		r.tile_size = tileSize;
 		r.accumulate = accumulate;
 		WorkerThread(r);
-	} else {
-		std::thread* workers = nullptr;
-		try {
-			workers = new std::thread[n_workers];
-		} catch (...) {
-			// Fall back to single-threaded if allocating worker array fails
-			WorkerRange r;
-			r.out_start       = recovery;
-			r.num_out         = numRecovery;
-			r.total_num_out   = numRecovery;
-			r.in              = inputs;
-			r.num_in          = numInputs;
-			r.coeff_row_start = coeff;
-			r.block_size64    = blockSize64;
-			r.tile_size       = tileSize;
-			r.accumulate      = accumulate;
-			WorkerThread(r);
+		return;
+	}
+
+	// Case 2: numThreads > numRecovery AND numInputs >= numThreads
+	// Input-domain decomposition: partition numInputs across all numThreads workers.
+	// Thread 0 computes directly into `recovery`.
+	// Threads 1..T-1 compute into small temporary thread-local buffers and are XOR-reduced into `recovery`.
+	// Cubic review P1 & P2: Bounded scratch cap with overflow-safe division.
+	// If total scratch across all (numThreads - 1) workers would exceed 64 MiB
+	// (e.g. huge blockSize or large R), fall back to output-domain decomposition.
+	constexpr size_t kMaxInputDecompScratchBytes = 64 * 1024 * 1024;
+	size_t maxPerWorkerBytes = (numThreads > 1) ? (kMaxInputDecompScratchBytes / (size_t)(numThreads - 1)) : 0;
+	size_t maxPerWorkerWords = maxPerWorkerBytes / sizeof(gf64_t);
+	bool scratch_fits = (numRecovery > 0 && blockSize64 <= maxPerWorkerWords / numRecovery);
+	if ((size_t)numThreads > numRecovery && numInputs >= (size_t)numThreads && scratch_fits) {
+		size_t n_workers = (size_t)numThreads;
+		size_t total_out_words = numRecovery * blockSize64;
+		size_t total_out_bytes = total_out_words * sizeof(gf64_t);
+
+		std::vector<gf64_t*> temp_bufs(n_workers, nullptr);
+		bool alloc_ok = true;
+		for (size_t t = 1; t < n_workers; t++) {
+			void* ptr = nullptr;
+			ALIGN_ALLOC(ptr, total_out_bytes, 64);
+			if (!ptr) {
+				alloc_ok = false;
+				break;
+			}
+			memset(ptr, 0, total_out_bytes);
+			temp_bufs[t] = (gf64_t*)ptr;
+		}
+
+		if (alloc_ok) {
+			s_last_decomposition_path.store(2);
+			std::vector<std::thread> workers;
+			workers.reserve(n_workers);
+
+			for (size_t t = 0; t < n_workers; t++) {
+				size_t in_start = (t * numInputs) / n_workers;
+				size_t in_end = ((t + 1) * numInputs) / n_workers;
+				size_t count_in = in_end - in_start;
+				if (count_in == 0) continue;
+
+				WorkerRange r;
+				r.out_start = (t == 0) ? recovery : temp_bufs[t];
+				r.num_out = numRecovery;
+				r.total_num_out = numRecovery;
+				r.in = inputs + in_start * blockSize64;
+				r.num_in = count_in;
+				r.coeff_row_start = coeff + in_start;
+				r.coeff_stride = numInputs;
+				r.block_size64 = blockSize64;
+				r.tile_size = tileSize;
+				r.accumulate = (t == 0) ? accumulate : false;
+
+				workers.emplace_back(WorkerThread, r);
+			}
+
+			for (auto& w : workers) {
+				w.join();
+			}
+
+			// Reduction: XOR all thread buffers into recovery
+			for (size_t t = 1; t < n_workers; t++) {
+				if (temp_bufs[t]) {
+					size_t in_start = (t * numInputs) / n_workers;
+					size_t in_end = ((t + 1) * numInputs) / n_workers;
+					if (in_end > in_start) {
+						xor_buffer(recovery, temp_bufs[t], total_out_words);
+					}
+					ALIGN_FREE(temp_bufs[t]);
+				}
+			}
 			return;
 		}
 
-		size_t active = 0;
-
-		// cubic review df1de4cb P1: if worker creation throws (e.g. std::system_error),
-		// join all already-started workers before re-throwing so bounce buffers are not accessed
-		try {
-			while (base < numRecovery) {
-				size_t end = base + chunk;
-				if (end > numRecovery) end = numRecovery;
-				WorkerRange r;
-				r.out_start       = recovery + base * blockSize64;
-				r.num_out         = end - base;
-				r.total_num_out   = numRecovery;
-				r.in              = inputs;
-				r.num_in          = numInputs;
-				r.coeff_row_start = coeff + base * numInputs;
-				r.block_size64    = blockSize64;
-				r.tile_size       = tileSize;
-				r.accumulate      = accumulate;
-
-				// cubic review 59dd8dd8 P1: move-assign into default-constructed slot (no placement-new)
-				workers[active] = std::thread(WorkerThread, r);
-				active++;
-				base = end;
-			}
-		} catch (...) {
-			for (size_t i = 0; i < active; i++) {
-				if (workers[i].joinable()) {
-					workers[i].join();
-				}
-			}
-			delete[] workers;
-			throw;
+		// Allocation fallback: free any allocated buffers and fall back to output-domain decomposition
+		for (size_t t = 1; t < n_workers; t++) {
+			if (temp_bufs[t]) ALIGN_FREE(temp_bufs[t]);
 		}
-
-		for (size_t i = 0; i < active; i++) {
-			if (workers[i].joinable()) {
-				workers[i].join();
-			}
-		}
-
-		delete[] workers;
 	}
 
-}
+	// Case 3: Output-domain decomposition (standard path when numThreads <= numRecovery)
+	s_last_decomposition_path.store(3);
+	if ((size_t)numThreads > numRecovery) numThreads = (int)numRecovery;
+	size_t n_workers = (size_t)numThreads;
+	size_t chunk = (numRecovery + n_workers - 1) / n_workers;
+	size_t base = 0;
 
-// ============================================================================
-// GF64Controller::AccumulateRecoveryChunk
-// ----------------------------------------------------------------------------
-// Accumulates recovery blocks for a chunk of input blocks directly into
-// `recoveryAccumulator` in-place.
-// ============================================================================
-void GF64Controller::AccumulateRecoveryChunk(
-	const gf64_t* chunkInputs, size_t numChunkBlocks,
-	gf64_t*       recoveryAccumulator, size_t numRecovery,
-	size_t        blockSize64,
-	uint64_t      firstChunkInput, uint64_t firstRecovery,
-	int           numThreads
-) {
-	if (numChunkBlocks == 0 || numRecovery == 0 || blockSize64 == 0) return;
-	EnsureDispatch();
+	std::thread* workers = new std::thread[n_workers];
+	size_t active = 0;
 
-	// cubic review 0c8cc30f P1: prevent integer overflow in coeffCount
-	if (numChunkBlocks > SIZE_MAX / numRecovery) {
-		throw std::bad_alloc();
+	while (base < numRecovery) {
+		size_t end = std::min(base + chunk, numRecovery);
+		WorkerRange r;
+		r.out_start       = recovery + base * blockSize64;
+		r.num_out         = end - base;
+		r.total_num_out   = numRecovery;
+		r.in              = inputs;
+		r.num_in          = numInputs;
+		r.coeff_row_start = coeff + base * numInputs;
+		r.coeff_stride    = numInputs;
+		r.block_size64    = blockSize64;
+		r.tile_size       = tileSize;
+		r.accumulate      = accumulate;
+
+		new (&workers[active]) std::thread(WorkerThread, r);
+		active++;
+		base = end;
 	}
-	size_t coeffCount = numRecovery * numChunkBlocks;
-	if (coeffCount > SIZE_MAX / sizeof(gf64_t)) {
-		throw std::bad_alloc();
+
+	for (size_t i = 0; i < active; i++) {
+		workers[i].join();
 	}
 
-	// Allocate and build the Cauchy coefficient matrix for this chunk (numRecovery x numChunkBlocks)
-	std::vector<gf64_t> coeff;
-	coeff.resize(coeffCount);
-	BuildCauchyMatrix(coeff.data(), numChunkBlocks, numRecovery, firstChunkInput, firstRecovery);
-
-	ComputeRecoveryBlocksWithCoeff(
-		chunkInputs, numChunkBlocks,
-		recoveryAccumulator, numRecovery,
-		blockSize64, coeff.data(),
-		numThreads, /*accumulate=*/true
-	);
+	delete[] workers;
 }
 
 // ============================================================================
 // GF64Controller::ComputeRecoveryBlocksFull
 // ----------------------------------------------------------------------------
-// Single-call entry point for the full recovery range. Functionally equivalent
-// to ComputeRecoveryBlocks today (the per-batch path is itself a single pass
-// over the full input range; the JS-side 16-batch loop in lib/par3gen.js is
-// what makes 16 separate NAPI calls into ComputeRecoveryBlocks). Splitting
-// the two methods lets future optimizations (e.g., a single-pass Cauchy matrix
-// with per-thread shards that amortises coeff-matrix cache misses) diverge
-// from the per-batch path used by the JS-side batched flow without breaking
-// it.
+// Single-call entry point for the full recovery range.
 // ============================================================================
 void GF64Controller::ComputeRecoveryBlocksFull(
 	const gf64_t* inputs, size_t numInputs,
 	gf64_t*       recovery, size_t numRecovery,
 	size_t        blockSize64,
 	uint64_t      firstInput, uint64_t firstRecovery,
-	int           numThreads
+	int           numThreads,
+	bool          accumulate
 ) {
 	ComputeRecoveryBlocks(inputs, numInputs, recovery, numRecovery,
-	                      blockSize64, firstInput, firstRecovery, numThreads);
+	                      blockSize64, firstInput, firstRecovery, numThreads, accumulate);
 }
 
 // ============================================================================

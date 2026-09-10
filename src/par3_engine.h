@@ -19,12 +19,14 @@ public:
 	/// @param firstInput   First input exponent for Cauchy matrix construction
 	/// @param firstRecovery First recovery exponent for Cauchy matrix construction
 	/// @param numThreads   Number of threads for parallel computation (0 = auto)
+	/// @param accumulate   If true, XOR-accumulate into recovery instead of zero-initializing
 	static void ComputeRecoveryBlocks(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,
 		size_t blockSize64,
 		uint64_t firstInput, uint64_t firstRecovery,
-		int numThreads
+		int numThreads,
+		bool accumulate = false
 	);
 
 	/// Compute recovery blocks in a single pass over the full input.
@@ -40,12 +42,14 @@ public:
 	/// @param firstInput   First input exponent for Cauchy matrix construction
 	/// @param firstRecovery First recovery exponent for Cauchy matrix construction
 	/// @param numThreads   Number of threads for parallel computation (0 = auto)
+	/// @param accumulate   If true, XOR-accumulate into recovery instead of zero-initializing
 	static void ComputeRecoveryBlocksFull(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,
 		size_t blockSize64,
 		uint64_t firstInput, uint64_t firstRecovery,
-		int numThreads
+		int numThreads,
+		bool accumulate = false
 	);
 
 	/// v2-4: pre-computed coefficient matrix variant. Skips the matrix
@@ -53,6 +57,7 @@ public:
 	/// caller can overlap the matrix build with other work (e.g. file
 	/// read). The coeff buffer is owned by the caller and must outlive
 	/// this call. Layout: numRecovery rows × numInputs columns, row-major.
+	/// @param accumulate   If true, XOR-accumulate into recovery instead of zero-initializing
 	static void ComputeRecoveryBlocksWithCoeff(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,
@@ -62,15 +67,14 @@ public:
 		bool accumulate = false
 	);
 
-	/// Chunked recovery accumulation for bounded-memory creates.
-	/// Builds Cauchy coefficients for this chunk and XOR-accumulates into recoveryAccumulator.
-	static void AccumulateRecoveryChunk(
-		const gf64_t* chunkInputs, size_t numChunkBlocks,
-		gf64_t* recoveryAccumulator, size_t numRecovery,
-		size_t blockSize64,
-		uint64_t firstChunkInput, uint64_t firstRecovery,
-		int numThreads = 0
-	);
+	/// Returns the decomposition path used by the last (serialized) ComputeRecoveryBlocks-family call:
+	/// 0 = unset / early-return sentinel (also reset to 0 by Barycentric/Fenger calls),
+	/// 1 = single-thread, 2 = input-domain, 3 = output-domain.
+	/// Note: concurrent calls will report the latest completed path.
+	static int GetLastDecompositionPath();
+
+	/// Resets the recorded decomposition path to 0 (sentinel).
+	static void ResetLastDecompositionPath();
 
 	/// v2-4: standalone matrix build. Allocates a buffer of
 	/// numRecovery × numInputs gf64_t, fills it with the Cauchy
@@ -201,12 +205,14 @@ public:
 	/// @param firstInput    First input exponent for the interpolation grid
 	/// @param firstRecovery First recovery exponent for the evaluation grid
 	/// @param numThreads    Number of threads (0 = auto, currently single-threaded in T9)
+	/// @param accumulate    If true, XOR-accumulate into recovery instead of zero-initializing
 	static void ComputeRecoveryBlocksBarycentric(
 		const gf64_t* inputs, size_t numInputs,
 		gf64_t* recovery, size_t numRecovery,
 		size_t blockSize64,
 		uint64_t firstInput, uint64_t firstRecovery,
-		int numThreads
+		int numThreads,
+		bool accumulate = false
 	);
 
 	/// Compute recovery blocks via the Fenger Toeplitz pipeline (issue #28).

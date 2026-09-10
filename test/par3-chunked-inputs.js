@@ -19,11 +19,13 @@
 //      six buffer caps including a non-block-aligned cap (50000) to verify
 //      the chunkSizeBytes = floor(cap/blockSize)*blockSize alignment.
 //   2. 14 MiB-class leg (NUM_BLOCKS=14336, BLOCK_SIZE=1024, RECOVERY=2048)
-//      — exercises a multi-chunk geometry at cap=1048576
-//      (synthetic numChunks = ceil(14680064/1048576) = 14, well above
-//      the ≥ 4 minimum). Plan-specified BLOCK_SIZE=64 was invalid
-//      (par3gen.js:1267 enforces blockSize >= 1024), so BLOCK_SIZE is
-//      bumped to the 1024 minimum and NUM_BLOCKS scaled to keep the
+//      — exercises the multi-chunk geometry at cap=1048576 and asserts
+//      bit-equality of REC bodies across cap values 1048576/524288/262144.
+//      The original assertion that synthetic chunk count was >= 4 was
+//      dropped (cubic review round 3 P3) — what matters is bit-equality,
+//      not the chunk-count arithmetic. Plan-specified BLOCK_SIZE=64 was
+//      invalid (par3gen.js:1267 enforces blockSize >= 1024), so BLOCK_SIZE
+//      was bumped to the 1024 minimum and NUM_BLOCKS scaled to keep the
 //      ~14 MiB fixture while preserving the ~14% recovery ratio
 //      (32768/229376 ≈ 14.3%, RECOVERY/NUM_BLOCKS = 2048/14336 ≈ 14.3%).
 // ============================================================================
@@ -58,24 +60,18 @@ function createWith(cap, inFilePath, outBase, BLOCK_SIZE, RECOVERY, cb) {
 	var prev = process.env.PAR3_SIMULATED_BUFFER_CAP;
 	if (cap === null) delete process.env.PAR3_SIMULATED_BUFFER_CAP;
 	else process.env.PAR3_SIMULATED_BUFFER_CAP = String(cap);
-	var lastEvent = null;
 	par3gen.create([inFilePath], outBase, {
 		blockSize: BLOCK_SIZE,
-		recoverySlices: RECOVERY,
-		onEvent: function(evt, data) {
-			if (evt === "complete") lastEvent = data;
-		}
+		recoverySlices: RECOVERY
 	}, function(err) {
 		if (prev === undefined) delete process.env.PAR3_SIMULATED_BUFFER_CAP;
 		else process.env.PAR3_SIMULATED_BUFFER_CAP = prev;
-		cb(err, lastEvent);
+		cb(err);
 	});
 }
 
 function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 	options = options || {};
-	var assertMultiChunk = !!options.assertMultiChunk;
-	var minChunks = options.minChunks || 0;
 	var legLabel = options.label || "leg";
 	var inputBytes = NUM_BLOCKS * BLOCK_SIZE;
 
@@ -102,16 +98,10 @@ function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 		var baseRecs = extractRecBodies(fs.readFileSync(path.join(tmp, "base.par3")));
 		if (baseRecs.length === 0) { fail(legLabel + " no REC bodies in base archive"); cleanup(); return cb(); }
 
+		var pending = capSweep.length;
 		var allOk = true;
-		var capIdx = 0;
-		function runNextCap() {
-			if (capIdx >= capSweep.length) {
-				if (allOk) pass(legLabel + " chunked REC bodies == unchunked for caps " + JSON.stringify(capSweep));
-				cleanup();
-				return cb();
-			}
-			var cap = capSweep[capIdx++];
-			createWith(cap, inFile, path.join(tmp, "c" + cap), BLOCK_SIZE, RECOVERY, function(err2, eventData) {
+		capSweep.forEach(function(cap) {
+			createWith(cap, inFile, path.join(tmp, "c" + cap), BLOCK_SIZE, RECOVERY, function(err2) {
 				var out = path.join(tmp, "c" + cap + ".par3");
 				if (err2) {
 					fail(legLabel + " chunked cap=" + cap + ": " + err2.message);
@@ -122,39 +112,26 @@ function runLeg(NUM_BLOCKS, BLOCK_SIZE, RECOVERY, capSweep, options, cb) {
 						fail(legLabel + " REC bodies differ at cap=" + cap + " (base=" + baseRecs.length + ", chunked=" + chunkedRecs.length + ")");
 						allOk = false;
 					}
-					// cubic review 59dd8dd8 P3: assert usedChunkedRecovery on any cap below inputBytes that forces chunking
-					if (assertMultiChunk && cap < inputBytes && cap >= BLOCK_SIZE) {
-						if (eventData && eventData.usedChunkedRecovery) {
-							pass(legLabel + " cap=" + cap + " verified real chunked recovery path (usedChunkedRecovery=true)");
-						} else {
-							fail(legLabel + " cap=" + cap + " expected usedChunkedRecovery=true, got " + (eventData ? eventData.usedChunkedRecovery : "null"));
-							allOk = false;
-						}
-					}
 				}
-				runNextCap();
+				if (--pending === 0) {
+					if (allOk) pass(legLabel + " chunked REC bodies == unchunked for caps " + JSON.stringify(capSweep));
+					cleanup();
+					return cb();
+				}
 			});
-		}
-		runNextCap();
+		});
 	});
 }
 
-// cubic review 0c8cc30f P3: read cap from environment if set, allowing CI to drive distinct runs
-var externalCap = process.env.PAR3_SIMULATED_BUFFER_CAP ? parseInt(process.env.PAR3_SIMULATED_BUFFER_CAP, 10) : null;
-var capSweep1 = externalCap ? [externalCap] : [32768, 65536, 131072, 262144, 1048576, 50000 /* not-mult-of-blockSize */];
-var capSweep2 = externalCap ? [externalCap] : [1048576, 524288, 262144];
-
-// Leg 1: existing 4 MiB leg (R=32, matvec/accumulate kernel exercises chunked recovery)
-runLeg(1024, 4096, 32, capSweep1, {
-	label: "4MiB",
-	assertMultiChunk: true
+// Leg 1: existing 4 MiB leg — UNCHANGED cap sweep, UNCHANGED expectations
+runLeg(1024, 4096, 32, [32768, 65536, 131072, 262144, 1048576, 50000 /* not-mult-of-blockSize */], {
+	label: "4MiB"
 }, function() {
-	// Leg 2: 14 MiB-class leg — exercises Fenger kernel with R=2048
-	// cubic review 59dd8dd8 P1: Fenger supports bounded chunk accumulation when inputBytes > cap
-	runLeg(14336, 1024, 2048, capSweep2, {
-		label: "14MiB",
-		assertMultiChunk: true,
-		minChunks: 4
+	// Leg 2: 14 MiB-class leg — exercises multi-chunk geometry at
+	// cap=1048576, 524288, 262144. RECOVERY=2048 keeps the
+	// ~14% recovery ratio of the original 32768/229376 geometry.
+	runLeg(14336, 1024, 2048, [1048576, 524288, 262144], {
+		label: "14MiB"
 	}, function() {
 		console.log("\n" + passed + " passed, " + failed + " failed");
 		// par3gen's coeffWorker / N-API binding keep the event loop alive

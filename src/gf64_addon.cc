@@ -1264,8 +1264,8 @@ static napi_status get_uint64_from_value(napi_env env, napi_value val, uint64_t*
 
 static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
-	size_t argc = 8;
-	napi_value args[8];
+	size_t argc = 9;
+	napi_value args[9];
 
 	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 	if(status != napi_ok) {
@@ -1369,6 +1369,15 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 		}
 	}
 
+	bool accumulate = false;
+	if(argc >= 9) {
+		status = napi_get_value_bool(env, args[8], &accumulate);
+		if(status != napi_ok) {
+			napi_throw_type_error(env, NULL, "accumulate must be a boolean");
+			return NULL;
+		}
+	}
+
 	// Validation
 	if(numInputs <= 0) {
 		napi_throw_range_error(env, NULL, "numInputs must be positive");
@@ -1405,7 +1414,8 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 		(gf64_t*)aligned_outputs, (size_t)numRecovery,
 		blockSize64,
 		firstInput, firstRecovery,
-		(int)numThreads
+		(int)numThreads,
+		accumulate
 	);
 
 	if (needs_inputs_temp) {
@@ -1431,8 +1441,8 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 // pattern, not this NAPI binding.
 static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
-	size_t argc = 8;
-	napi_value args[8];
+	size_t argc = 9;
+	napi_value args[9];
 
 	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 	if(status != napi_ok) {
@@ -1527,6 +1537,15 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 		status = napi_get_value_int32(env, args[7], &numThreads);
 		if(status != napi_ok) {
 			napi_throw_type_error(env, NULL, "numThreads must be an integer");
+			return NULL;
+		}
+	}
+
+	bool accumulate = false;
+	if(argc >= 9) {
+		status = napi_get_value_bool(env, args[8], &accumulate);
+		if(status != napi_ok) {
+			napi_throw_type_error(env, NULL, "accumulate must be a boolean");
 			return NULL;
 		}
 	}
@@ -1568,12 +1587,13 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 #endif
 	}
 
-GF64Controller::ComputeRecoveryBlocksFull(
+	GF64Controller::ComputeRecoveryBlocksFull(
 		(gf64_t*)aligned_inputs, (size_t)numInputs,
 		(gf64_t*)aligned_outputs, (size_t)numRecovery,
 		blockSize64,
 		firstInput, firstRecovery,
-		(int)numThreads
+		(int)numThreads,
+		accumulate
 	);
 
 	// v2: per-stage kernel timing. PAR3_PROFILE must be set in the parent
@@ -1614,8 +1634,8 @@ GF64Controller::ComputeRecoveryBlocksFull(
 // the recovery-side entry that avoids the O(N²) matrix-build cost.
 static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
-	size_t argc = 8;
-	napi_value args[8];
+	size_t argc = 9;
+	napi_value args[9];
 
 	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 	if(status != napi_ok) {
@@ -1714,6 +1734,15 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 		}
 	}
 
+	bool accumulate = false;
+	if(argc >= 9) {
+		status = napi_get_value_bool(env, args[8], &accumulate);
+		if(status != napi_ok) {
+			napi_throw_type_error(env, NULL, "accumulate must be a boolean");
+			return NULL;
+		}
+	}
+
 	if(numInputs <= 0) {
 		napi_throw_range_error(env, NULL, "numInputs must be positive");
 		return NULL;
@@ -1748,7 +1777,8 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 		(gf64_t*)aligned_outputs, (size_t)numRecovery,
 		blockSize64,
 		firstInput, firstRecovery,
-		(int)numThreads
+		(int)numThreads,
+		accumulate
 	);
 
 	if (needs_inputs_temp) {
@@ -1900,12 +1930,17 @@ static napi_value ComputeRecoveryAccumulate_NAPI(napi_env env, napi_callback_inf
 
 	// cubic review 0c8cc30f P1: catch bad_alloc and exceptions to prevent Node abort and avoid leaking bounce buffers
 	try {
-		GF64Controller::AccumulateRecoveryChunk(
+		// PR #111 unified all chunked accumulation through the `accumulate=true`
+		// 9th-arg variant of ComputeRecoveryBlocksFull. PR #108 had a dedicated
+		// AccumulateRecoveryChunk helper that was redundant with this overload;
+		// the merge takes PR #111's API, so we route through the unified entry.
+		GF64Controller::ComputeRecoveryBlocksFull(
 			(const gf64_t*)aligned_inputs, (size_t)numInputs,
 			(gf64_t*)aligned_outputs, (size_t)numRecovery,
 			blockSize64,
 			firstInput, firstRecovery,
-			(int)numThreads
+			(int)numThreads,
+			true /* accumulate=true: XOR-accumulate into output */
 		);
 	} catch (const std::bad_alloc&) {
 		if (needs_inputs_temp) ALIGN_FREE(aligned_inputs);
@@ -3116,6 +3151,68 @@ static napi_value MulArr_NAPI(napi_env env, napi_callback_info info) {
 	return NULL;
 }
 
+static napi_value GetLastDecompositionPath_NAPI(napi_env env, napi_callback_info info) {
+	int path = GF64Controller::GetLastDecompositionPath();
+	napi_value result;
+	napi_create_int32(env, path, &result);
+	return result;
+}
+
+static napi_value XorBuffers_NAPI(napi_env env, napi_callback_info info) {
+	napi_status status;
+	size_t argc = 2;
+	napi_value args[2];
+	status = napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if (status != napi_ok || argc < 2) {
+		napi_throw_type_error(env, NULL, "Requires dst and src Buffers");
+		return NULL;
+	}
+	uint8_t* dst = NULL;
+	size_t dstLen = 0;
+	status = napi_get_buffer_info(env, args[0], (void**)&dst, &dstLen);
+	if (status != napi_ok) {
+		napi_throw_type_error(env, NULL, "dst must be a Buffer");
+		return NULL;
+	}
+	uint8_t* src = NULL;
+	size_t srcLen = 0;
+	status = napi_get_buffer_info(env, args[1], (void**)&src, &srcLen);
+	if (status != napi_ok) {
+		napi_throw_type_error(env, NULL, "src must be a Buffer");
+		return NULL;
+	}
+	// Cubic review P1 (round 4): require equal-length buffers. The previous
+	// `len = dstLen < srcLen ? dstLen : srcLen` silently truncated the tail of
+	// every chunk, which on the chunked Fenger recovery path made the produced
+	// recovery packets wrong (the reduction only XORed the prefix of each
+	// chunk). Throw on mismatch so the JS caller fixes the contract instead
+	// of producing a corrupted archive.
+	if (dstLen != srcLen) {
+		char msg[160];
+		snprintf(msg, sizeof(msg),
+			"xor_buffers: dst.length (%zu) must equal src.length (%zu)", dstLen, srcLen);
+		napi_throw_range_error(env, NULL, msg);
+		return NULL;
+	}
+	size_t words = dstLen / 8;
+	uint64_t* d64 = (uint64_t*)dst;
+	const uint64_t* s64 = (const uint64_t*)src;
+	size_t i = 0;
+	for (; i + 3 < words; i += 4) {
+		d64[i + 0] ^= s64[i + 0];
+		d64[i + 1] ^= s64[i + 1];
+		d64[i + 2] ^= s64[i + 2];
+		d64[i + 3] ^= s64[i + 3];
+	}
+	for (; i < words; i++) {
+		d64[i] ^= s64[i];
+	}
+	for (size_t b = words * 8; b < dstLen; b++) {
+		dst[b] ^= src[b];
+	}
+	return NULL;
+}
+
 napi_value parpar_gf64_init_NAPI(napi_env env, napi_value exports) {
 	napi_status status;
 
@@ -3216,6 +3313,11 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "compute_recovery_full", compute_recovery_full_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set compute_recovery_full property");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "compute_recovery_accumulate", compute_recovery_full_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set compute_recovery_accumulate property");
 		return NULL;
 	}
 
@@ -3375,6 +3477,30 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "isAlignedBuffer", is_aligned_buffer_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set isAlignedBuffer property");
+		return NULL;
+	}
+
+	napi_value get_last_decomp_fn;
+	status = napi_create_function(env, NULL, 0, GetLastDecompositionPath_NAPI, NULL, &get_last_decomp_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create get_last_decomposition_path function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "get_last_decomposition_path", get_last_decomp_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set get_last_decomposition_path property");
+		return NULL;
+	}
+
+	napi_value xor_buffers_fn;
+	status = napi_create_function(env, NULL, 0, XorBuffers_NAPI, NULL, &xor_buffers_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create xor_buffers function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "xor_buffers", xor_buffers_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set xor_buffers property");
 		return NULL;
 	}
 
