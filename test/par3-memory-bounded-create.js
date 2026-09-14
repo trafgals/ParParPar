@@ -433,6 +433,81 @@ function runTest() {
 					} else {
 						pass("Issue #113: 70 MiB archive verified successfully (archiveOk=true)");
 					}
+					testIssue115AdaptiveChunkingAndInputDecomp(tmpDir, next);
+				});
+			});
+		}
+
+		function testIssue115AdaptiveChunkingAndInputDecomp(tmpDir, next) {
+			console.log("\n--- Issue #115 regression: adaptive chunk sizing & input-domain decomposition ---");
+
+			// 1. Verify native input-domain adaptive worker sizing
+			var nativeBinding = null;
+			try {
+				nativeBinding = require("../build/Release/parpar_gf64.node");
+			} catch (e) {
+				try {
+					nativeBinding = require("../build/Debug/parpar_gf64.node");
+				} catch (e2) {}
+			}
+
+			if (nativeBinding && typeof nativeBinding.compute_recovery_full === "function" && typeof nativeBinding.get_last_decomposition_path === "function") {
+				var N = 16, R = 8, B = 1024 * 1024;
+				var inBuf = Buffer.alloc(N * B);
+				var outBuf = Buffer.alloc(R * B);
+
+				// Under default 128 MiB scratch cap, 8 * 1 MiB * 15 = 120 MiB <= 128 MiB fits in input decomp
+				delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
+				nativeBinding.compute_recovery_full(inBuf, outBuf, N, R, B, 0, N, 16, false);
+				var pathDefault = nativeBinding.get_last_decomposition_path();
+				if (pathDefault === 2) {
+					pass("Issue #115: 120 MiB scratch under default 128 MiB cap engages input-domain decomposition (path 2)");
+				} else {
+					fail("Issue #115: expected path 2 under default 128 MiB cap, got path " + pathDefault);
+				}
+
+				// With 32 MiB scratch cap, 120 MiB exceeds budget and max workers (5) <= R (8) -> falls back to path 3
+				process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = "33554432";
+				nativeBinding.compute_recovery_full(inBuf, outBuf, N, R, B, 0, N, 16, false);
+				var pathCapped = nativeBinding.get_last_decomposition_path();
+				delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
+				if (pathCapped === 3) {
+					pass("Issue #115: oversized scratch under 32 MiB cap safely falls back to output-domain decomposition (path 3)");
+				} else {
+					fail("Issue #115: expected path 3 under 32 MiB cap, got path " + pathCapped);
+				}
+			} else {
+				console.log("  SKIP: native addon not available for decomposition path check");
+			}
+
+			// 2. End-to-end create with 1 MiB forced chunking on 4 MiB file (4 chunk flushes)
+			var fileLarge = path.join(tmpDir, "adaptive_chunk_test.bin");
+			var outLarge = path.join(tmpDir, "adaptive_chunk_test_out");
+			fs.writeFileSync(fileLarge, crypto.randomBytes(4 * 1024 * 1024));
+
+			process.env.PAR3_FORCE_CHUNKED = "1";
+			process.env.PAR3_STREAM_CHUNK_BYTES = (1024 * 1024).toString();
+
+			par3gen.create([fileLarge], outLarge, {
+				blockSize: 64 * 1024,
+				recoverySlices: 8
+			}, function(err) {
+				delete process.env.PAR3_FORCE_CHUNKED;
+				delete process.env.PAR3_STREAM_CHUNK_BYTES;
+
+				if (err) {
+					fail("Issue #115: chunked create failed", err);
+					next();
+					return;
+				}
+				pass("Issue #115: chunked create completed without error");
+
+				par3gen.verify(outLarge + ".par3", function(errV, resV) {
+					if (errV || !resV || !resV.archiveOk) {
+						fail("Issue #115: chunked archive verification failed", errV);
+					} else {
+						pass("Issue #115: chunked archive verified successfully (archiveOk=true)");
+					}
 					next();
 				});
 			});

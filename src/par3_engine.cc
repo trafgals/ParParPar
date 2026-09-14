@@ -13,6 +13,13 @@
 // Linux/macOS only; Windows builds fall back to file-read via
 // Win32 CreateFile/MapViewOfFile (or just a plain read) below.
 #if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
 #  include <io.h>
 #  include <fcntl.h>
 #  include <sys/stat.h>
@@ -958,6 +965,31 @@ void GF64Controller::ResetLastDecompositionPath() {
 	s_last_decomposition_path.store(0);
 }
 
+static size_t GetInputDecompScratchCap() {
+#ifdef _WIN32
+	char env_buf[64];
+	DWORD len = GetEnvironmentVariableA("PAR3_INPUT_DECOMP_SCRATCH_BYTES", env_buf, sizeof(env_buf));
+	if (len > 0 && len < sizeof(env_buf)) {
+		char* endptr = nullptr;
+		unsigned long long val = std::strtoull(env_buf, &endptr, 10);
+		if (endptr != env_buf && val > 0) {
+			return (size_t)val;
+		}
+	}
+#else
+	const char* env = std::getenv("PAR3_INPUT_DECOMP_SCRATCH_BYTES");
+	if (env != nullptr && *env != '\0') {
+		char* endptr = nullptr;
+		unsigned long long val = std::strtoull(env, &endptr, 10);
+		if (endptr != env && val > 0) {
+			return (size_t)val;
+		}
+	}
+#endif
+	// Default: 128 MiB on 64-bit systems, 32 MiB on 32-bit systems
+	return (sizeof(void*) >= 8) ? (128 * 1024 * 1024) : (32 * 1024 * 1024);
+}
+
 void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	const gf64_t* inputs, size_t numInputs,
 	gf64_t*       recovery, size_t numRecovery,
@@ -1007,25 +1039,26 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		return;
 	}
 
-	// Case 2: numThreads > numRecovery AND numInputs >= numThreads
-	// Input-domain decomposition: partition numInputs across all numThreads workers.
+	// Case 2: Input-domain decomposition: partition numInputs across workers.
 	// Thread 0 computes directly into `recovery`.
-	// Threads 1..T-1 compute into small temporary thread-local buffers and are XOR-reduced into `recovery`.
-	// Cubic review P1 & P2: Bounded scratch cap with overflow-safe division.
-	// If total scratch across all (numThreads - 1) workers would exceed 64 MiB
-	// (e.g. huge blockSize or large R), fall back to output-domain decomposition.
-	constexpr size_t kMaxInputDecompScratchBytes = 64 * 1024 * 1024;
-	size_t maxPerWorkerBytes = (numThreads > 1) ? (kMaxInputDecompScratchBytes / (size_t)(numThreads - 1)) : 0;
-	size_t maxPerWorkerWords = maxPerWorkerBytes / sizeof(gf64_t);
-	bool scratch_fits = (numRecovery > 0 && blockSize64 <= maxPerWorkerWords / numRecovery);
-	if ((size_t)numThreads > numRecovery && numInputs >= (size_t)numThreads && scratch_fits) {
-		size_t n_workers = (size_t)numThreads;
-		size_t total_out_words = numRecovery * blockSize64;
-		size_t total_out_bytes = total_out_words * sizeof(gf64_t);
+	// Threads 1..n_workers-1 compute into small temporary thread-local buffers and are XOR-reduced into `recovery`.
+	// Adaptive worker sizing (Issue #115): instead of an all-or-nothing check for numThreads,
+	// adaptively size n_workers based on how many thread-local scratch buffers
+	// fit within the scratch budget (GetInputDecompScratchCap()).
+	// Each worker after thread 0 needs total_out_bytes = numRecovery * blockSize64 * sizeof(gf64_t).
+	size_t scratch_cap = GetInputDecompScratchCap();
+	size_t total_out_words = numRecovery * blockSize64;
+	size_t total_out_bytes = total_out_words * sizeof(gf64_t);
 
-		std::vector<gf64_t*> temp_bufs(n_workers, nullptr);
+	size_t max_extra_workers = (total_out_bytes > 0) ? (scratch_cap / total_out_bytes) : 0;
+	size_t max_scratch_workers = 1 + max_extra_workers;
+	size_t n_input_workers = std::min((size_t)numThreads, max_scratch_workers);
+	if (n_input_workers > numInputs) n_input_workers = numInputs;
+
+	if (n_input_workers > numRecovery && n_input_workers >= 2) {
+		std::vector<gf64_t*> temp_bufs(n_input_workers, nullptr);
 		bool alloc_ok = true;
-		for (size_t t = 1; t < n_workers; t++) {
+		for (size_t t = 1; t < n_input_workers; t++) {
 			void* ptr = nullptr;
 			ALIGN_ALLOC(ptr, total_out_bytes, 64);
 			if (!ptr) {
@@ -1039,11 +1072,11 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		if (alloc_ok) {
 			s_last_decomposition_path.store(2);
 			std::vector<std::thread> workers;
-			workers.reserve(n_workers);
+			workers.reserve(n_input_workers);
 
-			for (size_t t = 0; t < n_workers; t++) {
-				size_t in_start = (t * numInputs) / n_workers;
-				size_t in_end = ((t + 1) * numInputs) / n_workers;
+			for (size_t t = 0; t < n_input_workers; t++) {
+				size_t in_start = (t * numInputs) / n_input_workers;
+				size_t in_end = ((t + 1) * numInputs) / n_input_workers;
 				size_t count_in = in_end - in_start;
 				if (count_in == 0) continue;
 
@@ -1067,10 +1100,10 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 			}
 
 			// Reduction: XOR all thread buffers into recovery
-			for (size_t t = 1; t < n_workers; t++) {
+			for (size_t t = 1; t < n_input_workers; t++) {
 				if (temp_bufs[t]) {
-					size_t in_start = (t * numInputs) / n_workers;
-					size_t in_end = ((t + 1) * numInputs) / n_workers;
+					size_t in_start = (t * numInputs) / n_input_workers;
+					size_t in_end = ((t + 1) * numInputs) / n_input_workers;
 					if (in_end > in_start) {
 						xor_buffer(recovery, temp_bufs[t], total_out_words);
 					}
@@ -1081,7 +1114,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		}
 
 		// Allocation fallback: free any allocated buffers and fall back to output-domain decomposition
-		for (size_t t = 1; t < n_workers; t++) {
+		for (size_t t = 1; t < n_input_workers; t++) {
 			if (temp_bufs[t]) ALIGN_FREE(temp_bufs[t]);
 		}
 	}
