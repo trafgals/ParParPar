@@ -564,6 +564,15 @@ function runTest() {
 				} else {
 					fail("Cubic review P1: expected 0, got " + capExplicitWithLimitExceeded);
 				}
+				// Cubic review P1: Explicit chunk cap larger than memoryLimit is clamped to memoryLimit / 2
+				process.env.PAR3_STREAM_CHUNK_BYTES = (10 * 1024 * 1024).toString();
+				var capClamped = par3gen.decideChunkCapBytes(4 * 1024 * 1024, 8, 64 * 1024, "matvec", 4 * 1024 * 1024);
+				delete process.env.PAR3_STREAM_CHUNK_BYTES;
+				if (capClamped === 2 * 1024 * 1024) {
+					pass("Cubic review P1: explicit chunk cap larger than memoryLimit clamped to memoryLimit / 2");
+				} else {
+					fail("Cubic review P1: expected 2 MiB clamped cap, got " + capClamped);
+				}
 			} else {
 				fail("Cubic review P3: par3gen.decideChunkCapBytes is not exported");
 			}
@@ -609,6 +618,7 @@ function runTest() {
 					pass("Issue #115: chunked archive verified successfully (archiveOk=true)");
 
 					// 3. Cubic review P2: Workload where recovery reserve exceeds memory limit routes cleanly to per-batch path
+					// (Note: routing to per-batch is decided solely by recoveryReserve + blockSize > memoryLimit)
 					var fileBatch = path.join(tmpDir, "per_batch_route_test.bin");
 					var outBatch = path.join(tmpDir, "per_batch_route_test_out");
 					fs.writeFileSync(fileBatch, crypto.randomBytes(512 * 1024));
@@ -635,31 +645,44 @@ function runTest() {
 							}
 							pass("Cubic review P2: per-batch archive verified successfully (archiveOk=true)");
 
-							// 4. Cubic review P1: Workload with explicit chunk cap combined with memoryLimit that cannot fit recovery reserve
-							// routes cleanly to per-batch path without throwing RangeError and creates valid archive
-							var fileExpl = path.join(tmpDir, "expl_chunk_cap_per_batch.bin");
-							var outExpl = path.join(tmpDir, "expl_chunk_cap_per_batch_out");
-							fs.writeFileSync(fileExpl, crypto.randomBytes(512 * 1024));
+							// 4. Cubic review P1 / P3: Explicit chunk cap combined with memoryLimit actively clamps chunk size in create
+							// (recoveryReserve=512 KiB + 64 KiB block <= 4 MiB memoryLimit; requested 10 MiB chunk cap is clamped to memoryLimit/2=2 MiB)
+							var fileClamped = path.join(tmpDir, "expl_chunk_cap_clamped.bin");
+							var outClamped = path.join(tmpDir, "expl_chunk_cap_clamped_out");
+							fs.writeFileSync(fileClamped, crypto.randomBytes(4 * 1024 * 1024));
 
-							process.env.PAR3_STREAM_CHUNK_BYTES = (64 * 1024).toString();
-							par3gen.create([fileExpl], outExpl, {
-								blockSize: 16 * 1024,
-								recoverySlices: 16,
-								memoryLimit: 200 * 1024
-							}, function(errE) {
+							process.env.PAR3_FORCE_CHUNKED = "1";
+							process.env.PAR3_STREAM_CHUNK_BYTES = (10 * 1024 * 1024).toString();
+							var clampedFlushes = 0;
+							par3gen.create([fileClamped], outClamped, {
+								blockSize: 64 * 1024,
+								recoverySlices: 8,
+								memoryLimit: 4 * 1024 * 1024,
+								onEvent: function(evt, d) {
+									if (evt === "chunk_flush") clampedFlushes++;
+								}
+							}, function(errC) {
+								delete process.env.PAR3_FORCE_CHUNKED;
 								delete process.env.PAR3_STREAM_CHUNK_BYTES;
-								if (errE) {
-									fail("Cubic review P1: create with explicit chunk cap and reserve > memoryLimit failed", errE);
+								if (errC) {
+									fail("Cubic review P1: create with clamped explicit chunk cap failed", errC);
 									next();
 									return;
 								}
-								pass("Cubic review P1: explicit chunk cap with reserve > memoryLimit routed cleanly to per-batch path without RangeError");
+								pass("Cubic review P1: explicit chunk cap clamped to memoryLimit/2 created successfully");
 
-								par3gen.verify(outExpl + ".par3", function(errVE, resVE) {
-									if (errVE || !resVE || !resVE.archiveOk) {
-										fail("Cubic review P1: archive verification failed", errVE);
+								// 4 MiB file with 2 MiB clamped chunk size = exactly 2 flushes (not 1 flush)
+								if (clampedFlushes === 2) {
+									pass("Cubic review P1: 4 MiB file with 10 MiB requested cap clamped to 2 MiB performed exactly 2 flushes");
+								} else {
+									fail("Cubic review P1: expected 2 flushes, got " + clampedFlushes);
+								}
+
+								par3gen.verify(outClamped + ".par3", function(errVC, resVC) {
+									if (errVC || !resVC || !resVC.archiveOk) {
+										fail("Cubic review P1: clamped archive verification failed", errVC);
 									} else {
-										pass("Cubic review P1: archive verified successfully (archiveOk=true)");
+										pass("Cubic review P1: clamped archive verified successfully (archiveOk=true)");
 									}
 									next();
 								});
