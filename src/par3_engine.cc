@@ -631,14 +631,28 @@ static void WorkerThread(const WorkerRange& range) {
 				memset(range.out_start + k * B, 0, B * sizeof(gf64_t));
 			}
 		}
+		if (num_out == 1) {
+			const gf64_t* row = range.coeff_row_start;
+			for (size_t j = 0; j < num_in; j++) {
+				gf64_t c = row[j];
+				if (c != 0) {
+					gf64_region_muladd_arr(range.out_start, range.in + j * B, &c, B, 1);
+				}
+			}
+			return;
+		}
+
+		gf64_t* outs_ptrs[32];
+		for (size_t k = 0; k < num_out; k++) {
+			outs_ptrs[k] = range.out_start + k * B;
+		}
+		const gf64_t* coeff_ptrs[32];
 		for (size_t j = 0; j < num_in; j++) {
 			const gf64_t* in_block = range.in + j * B;
 			for (size_t k = 0; k < num_out; k++) {
-				gf64_t c = range.coeff_row_start[k * stride + j];
-				if (c != 0) {
-					gf64_region_muladd_arr(range.out_start + k * B, in_block, &c, B, 1);
-				}
+				coeff_ptrs[k] = &range.coeff_row_start[k * stride + j];
 			}
+			gf64_region_fused_output_muladd_arr(outs_ptrs, in_block, coeff_ptrs, B, num_out);
 		}
 		return;
 	}
