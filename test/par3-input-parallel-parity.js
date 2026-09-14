@@ -117,10 +117,23 @@ addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN
 assert(addon.get_last_decomposition_path() === 2, 'Adaptive scratch (120 MiB <= 128 MiB cap) uses input-domain decomposition (2)');
 delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
 
-// Cubic review eea081c2df38 P3: Verify that with PAR3_INPUT_DECOMP_SCRATCH_BYTES unset,
-// the default scratch cap is exactly 128 MiB on 64-bit systems (120 MiB adaptR fits -> path 2).
-addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
-assert(addon.get_last_decomposition_path() === 2, 'Cubic review eea081c2df38 P3: default scratch cap (128 MiB on 64-bit) accommodates 120 MiB workload (path 2)');
+// Cubic review eea081c2df38 P3 & 46aa71ed9c8a P2/P3: Verify that with PAR3_INPUT_DECOMP_SCRATCH_BYTES unset,
+// the engine default scratch cap behaves according to architecture:
+// - On 64-bit systems (128 MiB default), 15 extra workers need 120.16 MiB scratch; cap >= 120.16 MiB
+//   yields max_scratch_workers = 16 > R=15 (path 2). A cap <= 119 MiB (or 64 MiB) yields path 3.
+// - On 32-bit systems (32 MiB default), 32 MiB / 8.4 MiB = 3 extra workers (4 total <= R=15), safely falling back to path 3.
+var is64Bit = (process.arch === 'x64' || process.arch === 'arm64' || process.arch.endsWith('64'));
+var discR = 15;
+var discB = 560000;
+var discN = 16;
+var discIn = Buffer.alloc(discN * discB);
+var discOut = Buffer.alloc(discR * discB);
+addon.compute_recovery_full(discIn, discOut, discN, discR, discB, 0, discN, 16, false);
+var expectedDefaultPath = is64Bit ? 2 : 3;
+assert(addon.get_last_decomposition_path() === expectedDefaultPath,
+	'Cubic review 46aa71ed9c8a P2/P3: default scratch cap (' +
+	(is64Bit ? '64-bit default >= 120 MiB -> path 2' : '32-bit default 32 MiB bounds scratch -> path 3') +
+	') selects expected decomposition path');
 
 // Oversized scratch fallback: 16 recovery x 1 MiB block x 16 threads (would need 240 MiB scratch > 128 MiB cap;
 // max workers that fit scratch is 9 <= R=16) safely falls back to output-domain decomposition (path 3).
