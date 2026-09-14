@@ -500,56 +500,61 @@ void gf64_region_fused_output_muladd_avx2_arr(
 	size_t len,
 	size_t K) {
 	if (K == 0 || len == 0) return;
-	size_t cap_k = (K > 256) ? 256 : K;
-	__m256i coeff_bc[256];
-	size_t active_k[256];
-	size_t n_active = 0;
-	for (size_t k = 0; k < cap_k; k++) {
-		uint64_t c = (uint64_t)*coeff_block_starts[k];
-		if (c != 0) {
-			coeff_bc[n_active] = _mm256_set1_epi64x((int64_t)c);
-			active_k[n_active] = k;
-			n_active++;
+
+	for (size_t k_base = 0; k_base < K; k_base += 256) {
+		size_t chunk_K = K - k_base;
+		if (chunk_K > 256) chunk_K = 256;
+
+		__m256i coeff_bc[256];
+		size_t active_k[256];
+		size_t n_active = 0;
+		for (size_t k = 0; k < chunk_K; k++) {
+			uint64_t c = (uint64_t)*coeff_block_starts[k_base + k];
+			if (c != 0) {
+				coeff_bc[n_active] = _mm256_set1_epi64x((int64_t)c);
+				active_k[n_active] = k_base + k;
+				n_active++;
+			}
 		}
-	}
-	if (n_active == 0) return;
+		if (n_active == 0) continue;
 
-	/* Fused: each 4-element chunk of the shared `in` is loaded ONCE and
-	 * applied to all K outputs, keeping input traffic at len not K*len. */
-	size_t i = 0;
-	size_t blocks = len / 4;
-	for (size_t b = 0; b < blocks; b++) {
-		__m256i in01 = _mm256_setr_epi64x((int64_t)in[i + 0], 0, (int64_t)in[i + 1], 0);
-		__m256i in23 = _mm256_setr_epi64x((int64_t)in[i + 2], 0, (int64_t)in[i + 3], 0);
+		/* Fused: each 4-element chunk of the shared `in` is loaded ONCE and
+		 * applied to all K outputs, keeping input traffic at len not K*len. */
+		size_t i = 0;
+		size_t blocks = len / 4;
+		for (size_t b = 0; b < blocks; b++) {
+			__m256i in01 = _mm256_setr_epi64x((int64_t)in[i + 0], 0, (int64_t)in[i + 1], 0);
+			__m256i in23 = _mm256_setr_epi64x((int64_t)in[i + 2], 0, (int64_t)in[i + 3], 0);
 
-		for (size_t a = 0; a < n_active; a++) {
-			size_t k = active_k[a];
-			__m256i prod01 = _mm256_clmulepi64_epi128(in01, coeff_bc[a], 0x00);
-			__m256i lo_vec, hi_vec;
-			gf64_split_prod_ymm(prod01, &lo_vec, &hi_vec);
-			__m256i red01 = gf64_reduce_ymm(lo_vec, hi_vec);
-			__m128i prev01 = _mm_loadu_si128((const __m128i *)(outs[k] + i + 0));
-			_mm_storeu_si128((__m128i *)(outs[k] + i + 0),
-			                 _mm_xor_si128(prev01, _mm256_castsi256_si128(red01)));
+			for (size_t a = 0; a < n_active; a++) {
+				size_t k = active_k[a];
+				__m256i prod01 = _mm256_clmulepi64_epi128(in01, coeff_bc[a], 0x00);
+				__m256i lo_vec, hi_vec;
+				gf64_split_prod_ymm(prod01, &lo_vec, &hi_vec);
+				__m256i red01 = gf64_reduce_ymm(lo_vec, hi_vec);
+				__m128i prev01 = _mm_loadu_si128((const __m128i *)(outs[k] + i + 0));
+				_mm_storeu_si128((__m128i *)(outs[k] + i + 0),
+				                 _mm_xor_si128(prev01, _mm256_castsi256_si128(red01)));
 
-			__m256i prod23 = _mm256_clmulepi64_epi128(in23, coeff_bc[a], 0x00);
-			gf64_split_prod_ymm(prod23, &lo_vec, &hi_vec);
-			__m256i red23 = gf64_reduce_ymm(lo_vec, hi_vec);
-			__m128i prev23 = _mm_loadu_si128((const __m128i *)(outs[k] + i + 2));
-			_mm_storeu_si128((__m128i *)(outs[k] + i + 2),
-			                 _mm_xor_si128(prev23, _mm256_castsi256_si128(red23)));
+				__m256i prod23 = _mm256_clmulepi64_epi128(in23, coeff_bc[a], 0x00);
+				gf64_split_prod_ymm(prod23, &lo_vec, &hi_vec);
+				__m256i red23 = gf64_reduce_ymm(lo_vec, hi_vec);
+				__m128i prev23 = _mm_loadu_si128((const __m128i *)(outs[k] + i + 2));
+				_mm_storeu_si128((__m128i *)(outs[k] + i + 2),
+				                 _mm_xor_si128(prev23, _mm256_castsi256_si128(red23)));
+			}
+
+			i += 4;
 		}
 
-		i += 4;
-	}
-
-	while (i < len) {
-		gf64_t in_w = in[i];
-		for (size_t a = 0; a < n_active; a++) {
-			size_t k = active_k[a];
-			outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)*coeff_block_starts[k]);
+		while (i < len) {
+			gf64_t in_w = in[i];
+			for (size_t a = 0; a < n_active; a++) {
+				size_t k = active_k[a];
+				outs[k][i] ^= gf64_mul_reference(in_w, (gf64_t)*coeff_block_starts[k]);
+			}
+			i++;
 		}
-		i++;
 	}
 }
 
