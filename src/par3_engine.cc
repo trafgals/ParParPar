@@ -966,26 +966,35 @@ void GF64Controller::ResetLastDecompositionPath() {
 }
 
 static size_t GetInputDecompScratchCap() {
+	const char* val_str = nullptr;
 #ifdef _WIN32
 	char env_buf[64];
 	DWORD len = GetEnvironmentVariableA("PAR3_INPUT_DECOMP_SCRATCH_BYTES", env_buf, sizeof(env_buf));
 	if (len > 0 && len < sizeof(env_buf)) {
-		char* endptr = nullptr;
-		unsigned long long val = std::strtoull(env_buf, &endptr, 10);
-		if (endptr != env_buf && val > 0) {
-			return (size_t)val;
-		}
+		val_str = env_buf;
 	}
 #else
 	const char* env = std::getenv("PAR3_INPUT_DECOMP_SCRATCH_BYTES");
 	if (env != nullptr && *env != '\0') {
-		char* endptr = nullptr;
-		unsigned long long val = std::strtoull(env, &endptr, 10);
-		if (endptr != env && val > 0) {
-			return (size_t)val;
-		}
+		val_str = env;
 	}
 #endif
+	if (val_str != nullptr) {
+		while (*val_str == ' ' || *val_str == '\t') val_str++;
+		// Cubic review P2: reject leading signs ('-', '+') and non-digits so negative or signed values are not accepted
+		if (*val_str >= '0' && *val_str <= '9') {
+			char* endptr = nullptr;
+			errno = 0;
+			unsigned long long val = std::strtoull(val_str, &endptr, 10);
+			if (errno != ERANGE && endptr != val_str) {
+				while (*endptr == ' ' || *endptr == '\t') endptr++;
+				// Must parse the complete string with no trailing garbage, fit in size_t, and be positive
+				if (*endptr == '\0' && val > 0 && val <= (unsigned long long)SIZE_MAX) {
+					return (size_t)val;
+				}
+			}
+		}
+	}
 	// Default: 128 MiB on 64-bit systems, 32 MiB on 32-bit systems
 	return (sizeof(void*) >= 8) ? (128 * 1024 * 1024) : (32 * 1024 * 1024);
 }
@@ -1046,16 +1055,22 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	// adaptively size n_workers based on how many thread-local scratch buffers
 	// fit within the scratch budget (GetInputDecompScratchCap()).
 	// Each worker after thread 0 needs total_out_bytes = numRecovery * blockSize64 * sizeof(gf64_t).
+	//
+	// Cubic review P1: prevent integer overflow in numRecovery * blockSize64 and total_out_words * sizeof(gf64_t)
 	size_t scratch_cap = GetInputDecompScratchCap();
-	size_t total_out_words = numRecovery * blockSize64;
-	size_t total_out_bytes = total_out_words * sizeof(gf64_t);
+	bool overflow = (numRecovery > 0 && blockSize64 > SIZE_MAX / numRecovery);
+	size_t total_out_words = overflow ? 0 : (numRecovery * blockSize64);
+	if (!overflow && total_out_words > SIZE_MAX / sizeof(gf64_t)) {
+		overflow = true;
+	}
+	size_t total_out_bytes = overflow ? 0 : (total_out_words * sizeof(gf64_t));
 
-	size_t max_extra_workers = (total_out_bytes > 0) ? (scratch_cap / total_out_bytes) : 0;
+	size_t max_extra_workers = (!overflow && total_out_bytes > 0) ? (scratch_cap / total_out_bytes) : 0;
 	size_t max_scratch_workers = 1 + max_extra_workers;
 	size_t n_input_workers = std::min((size_t)numThreads, max_scratch_workers);
 	if (n_input_workers > numInputs) n_input_workers = numInputs;
 
-	if (n_input_workers > numRecovery && n_input_workers >= 2) {
+	if (!overflow && n_input_workers > numRecovery && n_input_workers >= 2) {
 		std::vector<gf64_t*> temp_bufs(n_input_workers, nullptr);
 		bool alloc_ok = true;
 		for (size_t t = 1; t < n_input_workers; t++) {

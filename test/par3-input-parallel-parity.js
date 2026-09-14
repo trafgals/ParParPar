@@ -106,8 +106,8 @@ var smallIn = Buffer.alloc(smallN * smallB);
 addon.compute_recovery_full(smallIn, Buffer.alloc(smallR * smallB), smallN, smallR, smallB, 0, smallN, 16, false);
 assert(addon.get_last_decomposition_path() === 2, 'Small scratch uses input-domain decomposition (2)');
 
-// Adaptive input-domain decomposition: 8 recovery x 1 MiB block x 16 threads (120 MiB scratch <= 128 MiB cap)
-// successfully uses input-domain decomposition (path 2) instead of falling back.
+// Cubic review P3: Pin PAR3_INPUT_DECOMP_SCRATCH_BYTES explicitly so adaptR test is hermetic
+process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = (128 * 1024 * 1024).toString();
 var adaptR = 8;
 var adaptB = 1024 * 1024; // 1 MiB
 var adaptN = 16;
@@ -115,6 +115,7 @@ var adaptIn = Buffer.alloc(adaptN * adaptB);
 var adaptOut = Buffer.alloc(adaptR * adaptB);
 addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
 assert(addon.get_last_decomposition_path() === 2, 'Adaptive scratch (120 MiB <= 128 MiB cap) uses input-domain decomposition (2)');
+delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
 
 // Oversized scratch fallback: 16 recovery x 1 MiB block x 16 threads (would need 240 MiB scratch > 128 MiB cap;
 // max workers that fit scratch is 9 <= R=16) safely falls back to output-domain decomposition (path 3).
@@ -125,6 +126,34 @@ var capIn = Buffer.alloc(capN * capB);
 var capOut = Buffer.alloc(capR * capB);
 addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
 assert(addon.get_last_decomposition_path() === 3, 'Oversized scratch (240 MiB > 128 MiB cap) safely falls back to output-domain decomposition (3)');
+
+// Cubic review P2: PAR3_INPUT_DECOMP_SCRATCH_BYTES validation tests (rejects signs, non-digits, ERANGE)
+console.log('\nTesting PAR3_INPUT_DECOMP_SCRATCH_BYTES parser validation (cubic review P2):');
+// Negative value: rejected, falls back to default 128 MiB cap -> adaptR uses path 2
+process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '-1';
+addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
+assert(addon.get_last_decomposition_path() === 2, 'Negative scratch cap (-1) rejected, falls back to default cap (path 2)');
+
+// Leading plus: rejected, falls back to default 128 MiB cap -> adaptR uses path 2
+process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '+134217728';
+addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
+assert(addon.get_last_decomposition_path() === 2, 'Leading plus sign rejected, falls back to default cap (path 2)');
+
+// Trailing non-digits: rejected, falls back to default 128 MiB cap -> adaptR uses path 2
+process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '134217728bytes';
+addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
+assert(addon.get_last_decomposition_path() === 2, 'Trailing characters rejected, falls back to default cap (path 2)');
+
+// ERANGE overflow: rejected, falls back to default 128 MiB cap -> adaptR uses path 2
+process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '9999999999999999999999999999999999999999';
+addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
+assert(addon.get_last_decomposition_path() === 2, 'ERANGE overflow rejected, falls back to default cap (path 2)');
+
+// Clean up env
+delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
+
+// Set path back to 3 for sentinel test
+addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
 
 // Cubic review P3: Test that Barycentric and Fenger reset decomposition path to 0 (sentinel)
 console.log('\nTesting non-routing kernel path reset (0 sentinel):');

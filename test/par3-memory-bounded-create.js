@@ -456,14 +456,16 @@ function runTest() {
 				var inBuf = Buffer.alloc(N * B);
 				var outBuf = Buffer.alloc(R * B);
 
-				// Under default 128 MiB scratch cap, 8 * 1 MiB * 15 = 120 MiB <= 128 MiB fits in input decomp
-				delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
+				// Under default 128 MiB scratch cap (pinned explicitly for 32-bit compatibility per Cubic review P2),
+				// 8 * 1 MiB * 15 = 120 MiB <= 128 MiB fits in input decomp
+				process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = (128 * 1024 * 1024).toString();
 				nativeBinding.compute_recovery_full(inBuf, outBuf, N, R, B, 0, N, 16, false);
 				var pathDefault = nativeBinding.get_last_decomposition_path();
+				delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
 				if (pathDefault === 2) {
-					pass("Issue #115: 120 MiB scratch under default 128 MiB cap engages input-domain decomposition (path 2)");
+					pass("Issue #115: 120 MiB scratch under 128 MiB cap engages input-domain decomposition (path 2)");
 				} else {
-					fail("Issue #115: expected path 2 under default 128 MiB cap, got path " + pathDefault);
+					fail("Issue #115: expected path 2 under 128 MiB cap, got path " + pathDefault);
 				}
 
 				// With 32 MiB scratch cap, 120 MiB exceeds budget and max workers (5) <= R (8) -> falls back to path 3
@@ -480,7 +482,65 @@ function runTest() {
 				console.log("  SKIP: native addon not available for decomposition path check");
 			}
 
-			// 2. End-to-end create with 1 MiB forced chunking on 4 MiB file (4 chunk flushes)
+			// Cubic review P3: Direct unit assertion on adaptive chunkCapBytes scaling contract
+			console.log("\n  Testing adaptive chunkCapBytes scaling contract (Cubic review P3):");
+			if (typeof par3gen.decideChunkCapBytes === "function") {
+				// < 4 GiB -> 64 MiB
+				var cap1G = par3gen.decideChunkCapBytes(1 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
+				if (cap1G === 64 * 1024 * 1024) {
+					pass("Cubic review P3: < 4 GiB yields 64 MiB chunk cap");
+				} else {
+					fail("Cubic review P3: expected 64 MiB, got " + cap1G);
+				}
+
+				// 4 GiB .. 16 GiB -> 128 MiB
+				var cap8G = par3gen.decideChunkCapBytes(8 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
+				if (cap8G === 128 * 1024 * 1024) {
+					pass("Cubic review P3: 4 GiB .. 16 GiB yields 128 MiB chunk cap");
+				} else {
+					fail("Cubic review P3: expected 128 MiB, got " + cap8G);
+				}
+
+				// >= 16 GiB -> 256 MiB
+				var cap32G = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
+				if (cap32G === 256 * 1024 * 1024) {
+					pass("Cubic review P3: >= 16 GiB yields 256 MiB chunk cap");
+				} else {
+					fail("Cubic review P3: expected 256 MiB, got " + cap32G);
+				}
+
+				// Recovery reserve deduction (matvec):
+				// 384 MiB default buffer budget - (1 * 2048 * 128 KiB = 256 MiB reserve) = 128 MiB available
+				var capWithReserve = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 2048, 128 * 1024, "matvec");
+				if (capWithReserve === 128 * 1024 * 1024) {
+					pass("Cubic review P3: recovery reserve properly clamps chunk cap on 384 MiB budget");
+				} else {
+					fail("Cubic review P3: expected 128 MiB clamped cap, got " + capWithReserve);
+				}
+
+				// Recovery reserve deduction (fenger):
+				// 384 MiB default buffer budget - (2 * 1024 * 128 KiB = 256 MiB reserve) = 128 MiB available
+				var capWithFengerReserve = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 1024, 128 * 1024, "fenger");
+				if (capWithFengerReserve === 128 * 1024 * 1024) {
+					pass("Cubic review P3: Fenger 2x recovery reserve properly clamps chunk cap on 384 MiB budget");
+				} else {
+					fail("Cubic review P3: expected 128 MiB clamped cap for Fenger, got " + capWithFengerReserve);
+				}
+
+				// Explicit env override
+				process.env.PAR3_STREAM_CHUNK_BYTES = (1024 * 1024).toString();
+				var capExplicit = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
+				delete process.env.PAR3_STREAM_CHUNK_BYTES;
+				if (capExplicit === 1024 * 1024) {
+					pass("Cubic review P3: explicit PAR3_STREAM_CHUNK_BYTES overrides adaptive scaling");
+				} else {
+					fail("Cubic review P3: expected 1024 * 1024 explicit cap, got " + capExplicit);
+				}
+			} else {
+				fail("Cubic review P3: par3gen.decideChunkCapBytes is not exported");
+			}
+
+			// 2. End-to-end create with 1 MiB forced chunking on 4 MiB file (assert exactly 4 chunk flushes)
 			var fileLarge = path.join(tmpDir, "adaptive_chunk_test.bin");
 			var outLarge = path.join(tmpDir, "adaptive_chunk_test_out");
 			fs.writeFileSync(fileLarge, crypto.randomBytes(4 * 1024 * 1024));
@@ -488,9 +548,13 @@ function runTest() {
 			process.env.PAR3_FORCE_CHUNKED = "1";
 			process.env.PAR3_STREAM_CHUNK_BYTES = (1024 * 1024).toString();
 
+			var actualFlushes = 0;
 			par3gen.create([fileLarge], outLarge, {
 				blockSize: 64 * 1024,
-				recoverySlices: 8
+				recoverySlices: 8,
+				onEvent: function(evt, d) {
+					if (evt === "chunk_flush") actualFlushes++;
+				}
 			}, function(err) {
 				delete process.env.PAR3_FORCE_CHUNKED;
 				delete process.env.PAR3_STREAM_CHUNK_BYTES;
@@ -501,6 +565,12 @@ function runTest() {
 					return;
 				}
 				pass("Issue #115: chunked create completed without error");
+
+				if (actualFlushes === 4) {
+					pass("Cubic review P3: 4 MiB input with 1 MiB chunk size performed exactly 4 chunk flushes");
+				} else {
+					fail("Cubic review P3: expected 4 chunk flushes, got " + actualFlushes);
+				}
 
 				par3gen.verify(outLarge + ".par3", function(errV, resV) {
 					if (errV || !resV || !resV.archiveOk) {
