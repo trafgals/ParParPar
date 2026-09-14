@@ -271,7 +271,8 @@ function runSectionG() {
     var shortArc = path.join(gTmp, 'short.par3');
 
     // Force chunked recovery path (128 KiB input with 32 KiB cap = 4 chunks)
-    process.env.PAR3_SIMULATED_MEMORY_CAP = "32768";
+    // Fixes cubic review 5193091436 P2: PAR3_SIMULATED_BUFFER_CAP is the correct env var in par3gen.js
+    process.env.PAR3_SIMULATED_BUFFER_CAP = "32768";
 
     // Create reference archive with normal fs.readSync
     par3gen.create([gSrc], refBase, { blockSize: 4096, recoverySlices: 4 }, function(err) {
@@ -279,17 +280,20 @@ function runSectionG() {
 
         // Monkey-patch fs.readSync to return at most 512 bytes per read
         var realReadSync = fs.readSync;
+        var shortReadCalls = 0;
         fs.readSync = function(fd, buffer, offset, length, position) {
+            shortReadCalls++;
             var cappedLen = Math.min(length, 512);
             return realReadSync.call(fs, fd, buffer, offset, cappedLen, position);
         };
 
         par3gen.create([gSrc], shortBase, { blockSize: 4096, recoverySlices: 4 }, function(err2) {
-            // Restore fs.readSync and memory cap
+            // Restore fs.readSync and buffer cap
             fs.readSync = realReadSync;
-            delete process.env.PAR3_SIMULATED_MEMORY_CAP;
+            delete process.env.PAR3_SIMULATED_BUFFER_CAP;
 
             assert(!err2, 'Short-read create completed without error');
+            assert(shortReadCalls >= 256, 'Short-read monkey-patch intercepted at least 256 chunked read calls (actual: ' + shortReadCalls + ')');
 
             var refData = fs.readFileSync(refArc);
             var shortData = fs.readFileSync(shortArc);
