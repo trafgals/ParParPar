@@ -25,8 +25,10 @@ process.on("unhandledRejection", function(e) { console.error("UNHANDLED REJECTIO
 
 var passed = 0;
 var failed = 0;
+var skipped = 0;
 function pass(name) { passed++; console.log("  PASS: " + name); }
 function fail(name, err) { failed++; console.error("  FAIL: " + name, err || ""); process.exitCode = 1; }
+function skip(name) { skipped++; console.log("  SKIP: " + name); }
 
 function extractRecBodies(buf) {
 	var out = [];
@@ -260,7 +262,7 @@ function runTest() {
 				// cubic review 59dd8dd8 P2: verify fileInfo with concurrency > 1 preserves strict input ordering
 				testFileInfoConcurrency(tmpDir, function() {
 					console.log("\n=================================");
-					console.log("Summary: " + passed + " passed, " + failed + " failed");
+					console.log("Summary: " + passed + " passed, " + failed + " failed" + (skipped > 0 ? ", " + skipped + " skipped" : ""));
 					console.log("=================================");
 					par3gen.shutdownHashPool();
 					done();
@@ -317,16 +319,29 @@ function runTest() {
 			delete process.env.PAR3_BATCH_SIZE;
 			delete process.env.PAR3_GF64_LEGACY_FULL;
 
-			// 1. cubic review (PR #114 delivery 884a35ad P2): Gate alignment check on native x86 addon availability
+			// 1. cubic review (PR #114 delivery 24411f3a P2): Distinguish MODULE_NOT_FOUND from broken build
 			try {
 				var nativeBinding = null;
+				var loadError = null;
 				try {
 					nativeBinding = require("../build/Release/parpar_gf64.node");
 				} catch(e) {
-					try { nativeBinding = require("../build/Debug/parpar_gf64.node"); } catch(e2) {}
+					if (e && e.code !== "MODULE_NOT_FOUND") {
+						loadError = e;
+					} else {
+						try {
+							nativeBinding = require("../build/Debug/parpar_gf64.node");
+						} catch(e2) {
+							if (e2 && e2.code !== "MODULE_NOT_FOUND") {
+								loadError = e2;
+							}
+						}
+					}
 				}
 
-				if (nativeBinding && typeof nativeBinding.compute_recovery_full === "function") {
+				if (loadError) {
+					fail("native addon load failed with unexpected error (broken build / dlopen failure)", loadError);
+				} else if (nativeBinding && typeof nativeBinding.compute_recovery_full === "function") {
 					assert.strictEqual(typeof nativeBinding.isAlignedBuffer, "function", "native binding must export isAlignedBuffer when compute_recovery_full is implemented");
 
 					// Allocate a buffer and find an offset that is 8-byte aligned but strictly NOT 64-byte aligned
@@ -358,9 +373,9 @@ function runTest() {
 					nativeBinding.compute_recovery_full(refIn, refOut, 2, 2, 64, 0, 2, 1, false);
 
 					assert(misalignedOut.equals(refOut), "non-64-byte aligned buffer output must match reference output bit-exact");
-					pass("cubic review 884a35ad P2: 8-byte aligned (strictly NOT 64-byte aligned) buffers execute bit-identically in native addon without requiring 64-byte alignment");
+					pass("cubic review 24411f3a P2: 8-byte aligned (strictly NOT 64-byte aligned) buffers execute bit-identically in native addon without requiring 64-byte alignment");
 				} else {
-					console.log("  SKIP: native x86 addon not available for 8-byte alignment verification; proceeding with bounded create test");
+					skip("native x86 addon not available for 8-byte alignment verification (MODULE_NOT_FOUND or non-x86 stub); proceeding with bounded create test");
 				}
 			} catch(errAlign) {
 				fail("Issue #113 alignment verification error", errAlign);
