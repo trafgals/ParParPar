@@ -317,46 +317,47 @@ function runTest() {
 			delete process.env.PAR3_BATCH_SIZE;
 			delete process.env.PAR3_GF64_LEGACY_FULL;
 
-			// 1. cubic review P2: Test native binding with guaranteed 8-byte aligned, strictly NOT 64-byte aligned buffers
+			// 1. cubic review (PR #114 delivery 2c833f61 P3): Test native binding with guaranteed 8-byte aligned, strictly NOT 64-byte aligned buffers
 			var nativeBinding = null;
 			try {
 				nativeBinding = require("../build/Release/parpar_gf64.node");
 			} catch(e) {
 				try { nativeBinding = require("../build/Debug/parpar_gf64.node"); } catch(e2) {}
 			}
+			assert(nativeBinding, "native addon (parpar_gf64.node) must be present to verify Issue #113 non-64B alignment");
+			assert.strictEqual(typeof nativeBinding.isAlignedBuffer, "function", "native binding must export isAlignedBuffer");
+			assert.strictEqual(typeof nativeBinding.compute_recovery_full, "function", "native binding must export compute_recovery_full");
 
-			if (nativeBinding && typeof nativeBinding.compute_recovery_full === "function" && typeof nativeBinding.isAlignedBuffer === "function") {
-				// Allocate a buffer and find an offset that is 8-byte aligned but strictly NOT 64-byte aligned
-				var rawIn = Buffer.alloc(256);
-				var inOffset = 8;
-				while (inOffset < 128 && nativeBinding.isAlignedBuffer(rawIn.subarray(inOffset), 64)) {
-					inOffset += 8;
-				}
-				var misalignedIn = rawIn.subarray(inOffset, inOffset + 128);
-				assert(nativeBinding.isAlignedBuffer(misalignedIn, 8), "input buffer must be 8-byte aligned");
-				assert(!nativeBinding.isAlignedBuffer(misalignedIn, 64), "input buffer must NOT be 64-byte aligned");
-				for (var i = 0; i < misalignedIn.length; i++) misalignedIn[i] = (i * 17 + 3) & 0xff;
-
-				var rawOut = Buffer.alloc(256);
-				var outOffset = 8;
-				while (outOffset < 128 && nativeBinding.isAlignedBuffer(rawOut.subarray(outOffset), 64)) {
-					outOffset += 8;
-				}
-				var misalignedOut = rawOut.subarray(outOffset, outOffset + 128);
-				assert(nativeBinding.isAlignedBuffer(misalignedOut, 8), "output buffer must be 8-byte aligned");
-				assert(!nativeBinding.isAlignedBuffer(misalignedOut, 64), "output buffer must NOT be 64-byte aligned");
-
-				var refOut = Buffer.alloc(128);
-				var refIn = Buffer.alloc(128);
-				misalignedIn.copy(refIn);
-
-				// Compute via native binding on non-64-byte aligned buffers (N=2, R=2, B=64)
-				nativeBinding.compute_recovery_full(misalignedIn, misalignedOut, 2, 2, 64, 0, 2, 1, false);
-				nativeBinding.compute_recovery_full(refIn, refOut, 2, 2, 64, 0, 2, 1, false);
-
-				assert(misalignedOut.equals(refOut), "non-64-byte aligned buffer output must match reference output bit-exact");
-				pass("cubic review P2: 8-byte aligned (strictly NOT 64-byte aligned) buffers execute bit-identically in native addon without requiring 64-byte alignment");
+			// Allocate a buffer and find an offset that is 8-byte aligned but strictly NOT 64-byte aligned
+			var rawIn = Buffer.alloc(256);
+			var inOffset = 8;
+			while (inOffset < 128 && nativeBinding.isAlignedBuffer(rawIn.subarray(inOffset), 64)) {
+				inOffset += 8;
 			}
+			var misalignedIn = rawIn.subarray(inOffset, inOffset + 128);
+			assert(nativeBinding.isAlignedBuffer(misalignedIn, 8), "input buffer must be 8-byte aligned");
+			assert(!nativeBinding.isAlignedBuffer(misalignedIn, 64), "input buffer must NOT be 64-byte aligned");
+			for (var i = 0; i < misalignedIn.length; i++) misalignedIn[i] = (i * 17 + 3) & 0xff;
+
+			var rawOut = Buffer.alloc(256);
+			var outOffset = 8;
+			while (outOffset < 128 && nativeBinding.isAlignedBuffer(rawOut.subarray(outOffset), 64)) {
+				outOffset += 8;
+			}
+			var misalignedOut = rawOut.subarray(outOffset, outOffset + 128);
+			assert(nativeBinding.isAlignedBuffer(misalignedOut, 8), "output buffer must be 8-byte aligned");
+			assert(!nativeBinding.isAlignedBuffer(misalignedOut, 64), "output buffer must NOT be 64-byte aligned");
+
+			var refOut = Buffer.alloc(128);
+			var refIn = Buffer.alloc(128);
+			misalignedIn.copy(refIn);
+
+			// Compute via native binding on non-64-byte aligned buffers (N=2, R=2, B=64)
+			nativeBinding.compute_recovery_full(misalignedIn, misalignedOut, 2, 2, 64, 0, 2, 1, false);
+			nativeBinding.compute_recovery_full(refIn, refOut, 2, 2, 64, 0, 2, 1, false);
+
+			assert(misalignedOut.equals(refOut), "non-64-byte aligned buffer output must match reference output bit-exact");
+			pass("cubic review P2/P3: 8-byte aligned (strictly NOT 64-byte aligned) buffers execute bit-identically in native addon without requiring 64-byte alignment");
 
 			// 2. Test default chunked create with 70 MiB file (> 64 MiB default chunkCapBytes)
 			var file70M = path.join(tmpDir, "issue113_70M.bin");
