@@ -164,20 +164,34 @@ assert(addon.get_last_decomposition_path() === 3, 'ERANGE overflow rejected, fal
 // Clean up env
 delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
 
-// Issue #117: Test that accumulate=true safely bypasses input-domain decomposition (path 2)
+// Issue #117 / cubic review 1782777ce99b P3:
+// Test that accumulate=true safely bypasses input-domain decomposition (path 2)
 // and routes directly to output-domain decomposition (path 3), preserving bit-exact parity
-// while eliminating 15 scratch allocations, 15 thread joins, and 15-way XOR reductions.
-console.log('\nTesting accumulate=true path selection (Issue #117):');
+// while eliminating thread-local scratch allocations (up to 240 MiB) and the post-reduction pass.
+console.log('\nTesting accumulate=true path selection & non-zero parity (Issue #117 / cubic review P3):');
+// cubic review 1782777ce99b P3: fill smallIn with non-zero random bytes so recovery output is non-trivial
+fillRandom(smallIn, rng);
+
 var accOut = Buffer.alloc(smallR * smallB);
 // When accumulate=false, small workload uses path 2 (input-domain decomp)
 addon.compute_recovery_full(smallIn, accOut, smallN, smallR, smallB, 0, smallN, 16, false);
 assert(addon.get_last_decomposition_path() === 2, 'Issue #117: accumulate=false uses input-domain decomposition (path 2)');
+assert(!accOut.equals(Buffer.alloc(smallR * smallB)), 'Cubic review P3: recovery output on random input is non-zero');
 
 // When accumulate=true, the engine must skip input-domain decomp and use path 3 (output-domain)
 var accOut2 = Buffer.alloc(smallR * smallB);
 addon.compute_recovery_full(smallIn, accOut2, smallN, smallR, smallB, 0, smallN, 16, true);
 assert(addon.get_last_decomposition_path() === 3, 'Issue #117: accumulate=true forces output-domain decomposition (path 3)');
-assert(accOut.equals(accOut2), 'Issue #117: accumulate=true into zeroed buffer produces bit-exact parity with accumulate=false');
+assert(accOut.equals(accOut2), 'Issue #117 / cubic review P3: accumulate=true into zeroed buffer produces bit-exact parity with accumulate=false on non-zero random payload');
+
+// Cubic review P3: Multi-chunk accumulation verification across split inputs
+var chunkAcc = Buffer.alloc(smallR * smallB);
+var halfN = smallN / 2;
+var chunk0 = smallIn.subarray(0, halfN * smallB);
+var chunk1 = smallIn.subarray(halfN * smallB);
+addon.compute_recovery_full(chunk0, chunkAcc, halfN, smallR, smallB, 0, smallN, 16, true);
+addon.compute_recovery_full(chunk1, chunkAcc, halfN, smallR, smallB, halfN, smallN, 16, true);
+assert(chunkAcc.equals(accOut), 'Cubic review P3: multi-chunk accumulation with accumulate=true matches single-pass bit-exactly');
 
 // Set path back to 3 for sentinel test
 addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
