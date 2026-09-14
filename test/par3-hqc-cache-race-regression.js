@@ -188,6 +188,7 @@ function runOneOuter() {
                         "compute_recovery_fenger called " + (fengerCallsDuring - fengerCallsBefore) + "/" + (OUTER_LOOPS * REPS) + " times (every create routed to Fenger)");
                     assertMsg(errored === 0, "no create errors across " + (OUTER_LOOPS * REPS) + " concurrent creates (errored=" + errored + ")");
                     if (failed > 0) process.exit(1);
+                    process.exit(0);
                 }
             }
         });
