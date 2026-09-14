@@ -553,6 +553,17 @@ function runTest() {
 				} else {
 					fail("Cubic review P2: expected 0 when reserve exceeds explicit limit, got " + capLimitExceeded);
 				}
+
+				// Cubic review P1: Explicit chunk cap combined with memory limit where reserve exceeds budget
+				// must return 0 unconditionally (cannot fit 1 block) instead of permitting an allocation that exceeds budget
+				process.env.PAR3_STREAM_CHUNK_BYTES = (1024 * 1024).toString();
+				var capExplicitWithLimitExceeded = par3gen.decideChunkCapBytes(1 * 1024 * 1024 * 1024, 1024, 64 * 1024, "matvec", 64 * 1024 * 1024);
+				delete process.env.PAR3_STREAM_CHUNK_BYTES;
+				if (capExplicitWithLimitExceeded === 0) {
+					pass("Cubic review P1: explicit chunk cap with reserve exceeding memory limit unconditionally returns 0");
+				} else {
+					fail("Cubic review P1: expected 0, got " + capExplicitWithLimitExceeded);
+				}
 			} else {
 				fail("Cubic review P3: par3gen.decideChunkCapBytes is not exported");
 			}
@@ -619,10 +630,40 @@ function runTest() {
 						par3gen.verify(outBatch + ".par3", function(errVB, resVB) {
 							if (errVB || !resVB || !resVB.archiveOk) {
 								fail("Cubic review P2: per-batch archive verification failed", errVB);
-							} else {
-								pass("Cubic review P2: per-batch archive verified successfully (archiveOk=true)");
+								next();
+								return;
 							}
-							next();
+							pass("Cubic review P2: per-batch archive verified successfully (archiveOk=true)");
+
+							// 4. Cubic review P1: Workload with explicit chunk cap combined with memoryLimit that cannot fit recovery reserve
+							// routes cleanly to per-batch path without throwing RangeError and creates valid archive
+							var fileExpl = path.join(tmpDir, "expl_chunk_cap_per_batch.bin");
+							var outExpl = path.join(tmpDir, "expl_chunk_cap_per_batch_out");
+							fs.writeFileSync(fileExpl, crypto.randomBytes(512 * 1024));
+
+							process.env.PAR3_STREAM_CHUNK_BYTES = (64 * 1024).toString();
+							par3gen.create([fileExpl], outExpl, {
+								blockSize: 16 * 1024,
+								recoverySlices: 16,
+								memoryLimit: 200 * 1024
+							}, function(errE) {
+								delete process.env.PAR3_STREAM_CHUNK_BYTES;
+								if (errE) {
+									fail("Cubic review P1: create with explicit chunk cap and reserve > memoryLimit failed", errE);
+									next();
+									return;
+								}
+								pass("Cubic review P1: explicit chunk cap with reserve > memoryLimit routed cleanly to per-batch path without RangeError");
+
+								par3gen.verify(outExpl + ".par3", function(errVE, resVE) {
+									if (errVE || !resVE || !resVE.archiveOk) {
+										fail("Cubic review P1: archive verification failed", errVE);
+									} else {
+										pass("Cubic review P1: archive verified successfully (archiveOk=true)");
+									}
+									next();
+								});
+							});
 						});
 					});
 				});
