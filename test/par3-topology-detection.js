@@ -3,7 +3,6 @@
 
 var assert = require("assert");
 var par3gen = require("../lib/par3gen");
-var binding = par3gen.gf64Binding || require("../build/Release/parpar_gf64.node");
 
 var passed = 0;
 var failed = 0;
@@ -21,6 +20,30 @@ function fail(name, err) {
 console.log("PAR3 CPU Topology Detection Tests (Issue #119)");
 console.log("==============================================\n");
 
+var binding = null;
+try {
+	binding = par3gen.gf64Binding;
+	if (!binding) {
+		binding = require("../build/Release/parpar_gf64.node");
+	}
+} catch (e) {
+	binding = null;
+}
+
+var isX86ish = (process.arch === "x64" || process.arch === "ia32");
+if (!binding || typeof binding !== "object") {
+	if (isX86ish) {
+		fail("Native addon could not be loaded on x86 platform");
+		console.log("\n=================================");
+		console.log("Summary: 0 passed, 1 failed");
+		console.log("=================================");
+		process.exit(1);
+	} else {
+		console.log("SKIP: native addon not available on non-x86 platform");
+		process.exit(0);
+	}
+}
+
 // 1. Native binding exports
 if (typeof binding.get_cpu_topology === "function") {
 	pass("binding.get_cpu_topology is exported as a function");
@@ -34,8 +57,22 @@ if (typeof binding.reset_cpu_topology_cache === "function") {
 	fail("binding.reset_cpu_topology_cache is NOT exported");
 }
 
+if (failed > 0) {
+	console.log("\n=================================");
+	console.log("Summary: " + passed + " passed, " + failed + " failed");
+	console.log("=================================");
+	process.exit(1);
+}
+
 // 2. Query host topology
-var hostTopo = binding.get_cpu_topology();
+var hostTopo = null;
+try {
+	hostTopo = binding.get_cpu_topology();
+} catch (err) {
+	fail("binding.get_cpu_topology() threw an error", err);
+	process.exit(1);
+}
+
 console.log("Host Topology detected:");
 console.log("  Physical Cores: " + hostTopo.physicalCores);
 console.log("  Logical Cores:  " + hostTopo.logicalCores);

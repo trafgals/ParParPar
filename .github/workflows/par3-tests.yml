@@ -133,6 +133,18 @@ jobs:
         run: |
           node -e "var m=require('./build/Release/parpar_gf64.node'); var keys=Object.keys(m); if(keys.length<5) { console.error('FAIL: native addon exports only '+keys.length+' keys, need >=5'); process.exit(2); } console.log('OK '+keys.length, keys);"
 
+      - name: Topology detection test
+        run: node test/par3-topology-detection.js
+        timeout-minutes: 5
+
+      - name: 2D decomposition parity test
+        run: node test/par3-2d-decomposition-parity.js
+        timeout-minutes: 5
+
+      - name: Adaptive chunk sizing test
+        run: node test/par3-adaptive-chunk-sizing.js
+        timeout-minutes: 5
+
       - name: Create test files
         run: |
           mkdir -p par3-test-input

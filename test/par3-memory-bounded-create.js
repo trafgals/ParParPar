@@ -482,31 +482,44 @@ function runTest() {
 				console.log("  SKIP: native addon not available for decomposition path check");
 			}
 
-			// Issue #117: Direct unit assertion on chunkCapBytes contract (64 MiB default across all shapes)
-			console.log("\n  Testing chunkCapBytes contract (Issue #117):");
+			// Issue #117 / #119: Direct unit assertion on chunkCapBytes contract
+			console.log("\n  Testing chunkCapBytes contract (Issue #117 / #119):");
 			if (typeof par3gen.decideChunkCapBytes === "function") {
-				// < 4 GiB -> 64 MiB
+				var expectedCap = typeof par3gen.getOptimalChunkCap === "function"
+					? par3gen.getOptimalChunkCap(null, 64 * 1024)
+					: (64 * 1024 * 1024);
+
+				// < 4 GiB
 				var cap1G = par3gen.decideChunkCapBytes(1 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
-				if (cap1G === 64 * 1024 * 1024) {
-					pass("Issue #117: < 4 GiB yields 64 MiB chunk cap");
+				if (cap1G === expectedCap) {
+					pass("Issue #117 / #119: < 4 GiB yields expected chunk cap (" + (expectedCap / 1048576).toFixed(1) + " MiB)");
 				} else {
-					fail("Issue #117: expected 64 MiB, got " + cap1G);
+					fail("Issue #117 / #119: expected " + expectedCap + ", got " + cap1G);
 				}
 
-				// 4 GiB .. 16 GiB -> 64 MiB (Issue #117: unified 64 MiB default for L3 cache locality and RSS < 450 MiB)
+				// 4 GiB .. 16 GiB
 				var cap8G = par3gen.decideChunkCapBytes(8 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
-				if (cap8G === 64 * 1024 * 1024) {
-					pass("Issue #117: 4 GiB .. 16 GiB yields 64 MiB chunk cap");
+				if (cap8G === expectedCap) {
+					pass("Issue #117 / #119: 4 GiB .. 16 GiB yields expected chunk cap (" + (expectedCap / 1048576).toFixed(1) + " MiB)");
 				} else {
-					fail("Issue #117: expected 64 MiB, got " + cap8G);
+					fail("Issue #117 / #119: expected " + expectedCap + ", got " + cap8G);
 				}
 
-				// >= 16 GiB -> 64 MiB (Issue #117: unified 64 MiB default prevents 256 MiB TLB thrashing and memory ballooning)
+				// >= 16 GiB
 				var cap32G = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
-				if (cap32G === 64 * 1024 * 1024) {
-					pass("Issue #117: >= 16 GiB yields 64 MiB chunk cap");
+				if (cap32G === expectedCap) {
+					pass("Issue #117 / #119: >= 16 GiB yields expected chunk cap (" + (expectedCap / 1048576).toFixed(1) + " MiB)");
 				} else {
-					fail("Issue #117: expected 64 MiB, got " + cap32G);
+					fail("Issue #117 / #119: expected " + expectedCap + ", got " + cap32G);
+				}
+
+				// Explicit 96 MiB Zen4 topology yields exact 64 MiB regardless of host
+				var topo96M = { l3PerCluster: 96 * 1024 * 1024 };
+				var capExplicit96M = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec", null, topo96M);
+				if (capExplicit96M === 64 * 1024 * 1024) {
+					pass("Issue #119: explicit 96 MiB L3 topology yields exact 64 MiB chunk cap");
+				} else {
+					fail("Issue #119: expected 64 MiB for 96M topology, got " + capExplicit96M);
 				}
 
 				// Recovery reserve deduction (matvec):

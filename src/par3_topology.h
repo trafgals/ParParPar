@@ -1,5 +1,5 @@
-#ifndef __PAR3_TOPOLOGY_H
-#define __PAR3_TOPOLOGY_H
+#ifndef PAR3_TOPOLOGY_H_
+#define PAR3_TOPOLOGY_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -15,4 +15,4 @@ struct CpuTopology {
 CpuTopology GetCpuTopology();
 void ResetCpuTopologyCache();
 
-#endif // __PAR3_TOPOLOGY_H
+#endif // PAR3_TOPOLOGY_H_

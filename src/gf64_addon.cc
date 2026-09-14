@@ -3161,23 +3161,27 @@ static napi_value GetCpuTopology_NAPI(napi_env env, napi_callback_info info) {
 	(void)info;
 	CpuTopology topo = GetCpuTopology();
 	napi_value obj;
-	napi_create_object(env, &obj);
+	napi_status status = napi_create_object(env, &obj);
+	if (status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create topology object");
+		return NULL;
+	}
 
-	napi_value val;
-	napi_create_int64(env, (int64_t)topo.physicalCores, &val);
-	napi_set_named_property(env, obj, "physicalCores", val);
+	auto set_prop = [&](const char* name, size_t num) -> bool {
+		napi_value val;
+		if (napi_create_int64(env, (int64_t)num, &val) != napi_ok) return false;
+		if (napi_set_named_property(env, obj, name, val) != napi_ok) return false;
+		return true;
+	};
 
-	napi_create_int64(env, (int64_t)topo.logicalCores, &val);
-	napi_set_named_property(env, obj, "logicalCores", val);
-
-	napi_create_int64(env, (int64_t)topo.l3PerCluster, &val);
-	napi_set_named_property(env, obj, "l3PerCluster", val);
-
-	napi_create_int64(env, (int64_t)topo.numClusters, &val);
-	napi_set_named_property(env, obj, "numClusters", val);
-
-	napi_create_int64(env, (int64_t)topo.totalL3, &val);
-	napi_set_named_property(env, obj, "totalL3", val);
+	if (!set_prop("physicalCores", topo.physicalCores) ||
+	    !set_prop("logicalCores", topo.logicalCores) ||
+	    !set_prop("l3PerCluster", topo.l3PerCluster) ||
+	    !set_prop("numClusters", topo.numClusters) ||
+	    !set_prop("totalL3", topo.totalL3)) {
+		napi_throw_error(env, NULL, "Failed to populate topology properties");
+		return NULL;
+	}
 
 	return obj;
 }

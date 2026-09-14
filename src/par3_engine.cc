@@ -128,13 +128,12 @@ static inline void EnsureDispatch() {
 static constexpr size_t kCauchyMaxWorkers = 8;
 static size_t s_cauchyWorkerCount = 0;
 // ============================================================================
-// Effective CPU count  (affinity-aware)
+// Effective CPU count  (affinity- and topology-aware)
 // ----------------------------------------------------------------------------
 // Returns the number of CPUs the process is allowed to run on according to
-// the thread's CPU affinity mask (sched_getaffinity), falling back to
-// std::thread::hardware_concurrency() when affinity info is unavailable or
-// on non-Linux platforms.  The result is cached after the first call and
-// capped at 32 to keep per-worker overhead bounded on large machines.
+// the thread's CPU affinity mask, falling back to GetCpuTopology().logicalCores
+// and std::thread::hardware_concurrency(). Capped at 128 to keep per-worker
+// overhead bounded on high-core-count architectures.
 // ============================================================================
 size_t GetEffectiveCpuCount() {
 	static size_t s_cached = 0;
@@ -148,11 +147,25 @@ size_t GetEffectiveCpuCount() {
 		count = (size_t)CPU_COUNT(&mask);
 	}
 #elif defined(_WIN32)
-	DWORD_PTR processMask = 0, systemMask = 0;
-	if (GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) && processMask != 0) {
-		size_t aff_count = 0;
-		for (DWORD_PTR m = processMask; m > 0; m &= (m - 1)) aff_count++;
-		count = aff_count;
+	USHORT groupCount = 0;
+	if (GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, nullptr) == 0 &&
+	    GetLastError() == ERROR_INSUFFICIENT_BUFFER && groupCount > 1) {
+		std::vector<USHORT> groups(groupCount);
+		if (GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, groups.data())) {
+			size_t total_aff = 0;
+			for (USHORT g : groups) {
+				total_aff += (size_t)GetActiveProcessorCount(g);
+			}
+			if (total_aff > 0) count = total_aff;
+		}
+	}
+	if (count == 0) {
+		DWORD_PTR processMask = 0, systemMask = 0;
+		if (GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) && processMask != 0) {
+			size_t aff_count = 0;
+			for (DWORD_PTR m = processMask; m > 0; m &= (m - 1)) aff_count++;
+			count = aff_count;
+		}
 	}
 #endif
 	if (count == 0) {

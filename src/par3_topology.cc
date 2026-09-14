@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <set>
+#include <map>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -76,7 +77,7 @@ static CpuTopology DetectRawTopology() {
 #elif defined(__linux__)
 	// 1. Enumerate CPUs under /sys/devices/system/cpu/
 	std::set<std::pair<int, int>> physicalCorePairs;
-	std::set<std::string> l3Clusters;
+	std::map<std::string, size_t> l3Clusters;
 	DIR* dir = opendir("/sys/devices/system/cpu");
 	if (dir) {
 		struct dirent* entry;
@@ -115,23 +116,30 @@ static CpuTopology DetectRawTopology() {
 								// Read shared_cpu_list
 								std::string sharedPath = idxPath + "/shared_cpu_list";
 								char sbuf[256] = {0};
+								std::string clusterKey;
 								FILE* fpShared = std::fopen(sharedPath.c_str(), "r");
 								if (fpShared) {
 									if (std::fgets(sbuf, sizeof(sbuf), fpShared)) {
-										l3Clusters.insert(std::string(sbuf));
+										char* nl = std::strpbrk(sbuf, "\r\n");
+										if (nl) *nl = '\0';
+										clusterKey = sbuf;
 									}
 									std::fclose(fpShared);
 								}
 								// Read size
-								if (topo.l3PerCluster == 0) {
-									std::string sizePath = idxPath + "/size";
-									char szBuf[64] = {0};
-									FILE* fpSz = std::fopen(sizePath.c_str(), "r");
-									if (fpSz) {
-										if (std::fgets(szBuf, sizeof(szBuf), fpSz)) {
-											topo.l3PerCluster = ParseSizeWithSuffix(szBuf);
-										}
-										std::fclose(fpSz);
+								std::string sizePath = idxPath + "/size";
+								char szBuf[64] = {0};
+								size_t clusterSize = 0;
+								FILE* fpSz = std::fopen(sizePath.c_str(), "r");
+								if (fpSz) {
+									if (std::fgets(szBuf, sizeof(szBuf), fpSz)) {
+										clusterSize = ParseSizeWithSuffix(szBuf);
+									}
+									std::fclose(fpSz);
+								}
+								if (!clusterKey.empty() && clusterSize > 0) {
+									if (l3Clusters.find(clusterKey) == l3Clusters.end()) {
+										l3Clusters[clusterKey] = clusterSize;
 									}
 								}
 							}
@@ -148,7 +156,14 @@ static CpuTopology DetectRawTopology() {
 	}
 	if (!l3Clusters.empty()) {
 		topo.numClusters = l3Clusters.size();
-		topo.totalL3 = topo.l3PerCluster * topo.numClusters;
+		size_t sumL3 = 0;
+		size_t minClusterL3 = SIZE_MAX;
+		for (const auto& kv : l3Clusters) {
+			sumL3 += kv.second;
+			if (kv.second < minClusterL3) minClusterL3 = kv.second;
+		}
+		topo.totalL3 = sumL3;
+		topo.l3PerCluster = (minClusterL3 != SIZE_MAX) ? minClusterL3 : 0;
 	}
 #elif defined(__APPLE__)
 	int val = 0;

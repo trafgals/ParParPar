@@ -39,16 +39,18 @@ function fillPattern(buf) {
 // Test matrix of configurations:
 // Shape: { N, R, blockSize, threadCounts }
 var testCases = [
-	// R=2, B=128 KiB: S_B will be up to 16 with T=32
+	// R=2, B=128 KiB: S_R = 2; S_B = min(T/2, 128K/64K) = 2 with T >= 4
 	{ N: 8, R: 2, B: 128 * 1024, threads: [1, 2, 4, 8, 16, 32] },
-	// R=4, B=256 KiB: S_B will be up to 8 with T=32
+	// R=4, B=256 KiB: S_R = 4; S_B = min(T/4, 256K/64K) = 4 with T >= 16
 	{ N: 16, R: 4, B: 256 * 1024, threads: [1, 2, 4, 8, 16, 32, 64] },
-	// R=8, B=512 KiB: S_B will be up to 8 with T=64
+	// R=8, B=512 KiB: S_R = 8; S_B = min(T/8, 512K/64K) = 8 with T = 64
 	{ N: 32, R: 8, B: 512 * 1024, threads: [1, 2, 8, 16, 32, 64] },
 	// Non-power-of-two thread counts (e.g. 3, 5, 6, 7, 12)
 	{ N: 16, R: 2, B: 256 * 1024, threads: [3, 5, 6, 7, 12] },
 	// Large block size B=1 MiB with R=2 and high thread count T=16
 	{ N: 4, R: 2, B: 1024 * 1024, threads: [1, 4, 8, 16] },
+	// R > 32 (total_num_out > 32) exercises the KxG tiled 2D kernel with byte slicing (S_B > 1 when T > 64)
+	{ N: 16, R: 64, B: 256 * 1024, threads: [1, 2, 32, 64, 128] },
 ];
 
 for (var tc = 0; tc < testCases.length; tc++) {
