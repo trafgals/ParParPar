@@ -1070,7 +1070,11 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 	size_t n_input_workers = std::min((size_t)numThreads, max_scratch_workers);
 	if (n_input_workers > numInputs) n_input_workers = numInputs;
 
-	if (!overflow && n_input_workers > numRecovery && n_input_workers >= 2) {
+	// Issue #117: Only enable input-domain decomposition when the input reads are NOT
+	// already being amortized by chunk streaming (accumulate == true).
+	// The chunked path is already input-streaming, so adding input-domain partitioning
+	// with thread-local scratch buffers and XOR reduction on top is a net performance loss.
+	if (!accumulate && !overflow && n_input_workers > numRecovery && n_input_workers >= 2) {
 		std::vector<gf64_t*> temp_bufs(n_input_workers, nullptr);
 		bool alloc_ok = true;
 		for (size_t t = 1; t < n_input_workers; t++) {

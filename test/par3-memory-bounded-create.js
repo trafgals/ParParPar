@@ -482,49 +482,49 @@ function runTest() {
 				console.log("  SKIP: native addon not available for decomposition path check");
 			}
 
-			// Cubic review P3: Direct unit assertion on adaptive chunkCapBytes scaling contract
-			console.log("\n  Testing adaptive chunkCapBytes scaling contract (Cubic review P3):");
+			// Issue #117: Direct unit assertion on chunkCapBytes contract (64 MiB default across all shapes)
+			console.log("\n  Testing chunkCapBytes contract (Issue #117):");
 			if (typeof par3gen.decideChunkCapBytes === "function") {
 				// < 4 GiB -> 64 MiB
 				var cap1G = par3gen.decideChunkCapBytes(1 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
 				if (cap1G === 64 * 1024 * 1024) {
-					pass("Cubic review P3: < 4 GiB yields 64 MiB chunk cap");
+					pass("Issue #117: < 4 GiB yields 64 MiB chunk cap");
 				} else {
-					fail("Cubic review P3: expected 64 MiB, got " + cap1G);
+					fail("Issue #117: expected 64 MiB, got " + cap1G);
 				}
 
-				// 4 GiB .. 16 GiB -> 128 MiB
+				// 4 GiB .. 16 GiB -> 64 MiB (Issue #117: unified 64 MiB default for L3 cache locality and RSS < 450 MiB)
 				var cap8G = par3gen.decideChunkCapBytes(8 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
-				if (cap8G === 128 * 1024 * 1024) {
-					pass("Cubic review P3: 4 GiB .. 16 GiB yields 128 MiB chunk cap");
+				if (cap8G === 64 * 1024 * 1024) {
+					pass("Issue #117: 4 GiB .. 16 GiB yields 64 MiB chunk cap");
 				} else {
-					fail("Cubic review P3: expected 128 MiB, got " + cap8G);
+					fail("Issue #117: expected 64 MiB, got " + cap8G);
 				}
 
-				// >= 16 GiB -> 256 MiB
+				// >= 16 GiB -> 64 MiB (Issue #117: unified 64 MiB default prevents 256 MiB TLB thrashing and memory ballooning)
 				var cap32G = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
-				if (cap32G === 256 * 1024 * 1024) {
-					pass("Cubic review P3: >= 16 GiB yields 256 MiB chunk cap");
+				if (cap32G === 64 * 1024 * 1024) {
+					pass("Issue #117: >= 16 GiB yields 64 MiB chunk cap");
 				} else {
-					fail("Cubic review P3: expected 256 MiB, got " + cap32G);
+					fail("Issue #117: expected 64 MiB, got " + cap32G);
 				}
 
 				// Recovery reserve deduction (matvec):
-				// 384 MiB default buffer budget - (1 * 2048 * 128 KiB = 256 MiB reserve) = 128 MiB available
-				var capWithReserve = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 2048, 128 * 1024, "matvec");
-				if (capWithReserve === 128 * 1024 * 1024) {
-					pass("Cubic review P3: recovery reserve properly clamps chunk cap on 384 MiB budget");
+				// 384 MiB default buffer budget - (1 * 2816 * 128 KiB = 352 MiB reserve) = 32 MiB available (< 64 MiB)
+				var capWithReserve = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 2816, 128 * 1024, "matvec");
+				if (capWithReserve === 32 * 1024 * 1024) {
+					pass("Issue #117: recovery reserve properly clamps chunk cap on 384 MiB budget");
 				} else {
-					fail("Cubic review P3: expected 128 MiB clamped cap, got " + capWithReserve);
+					fail("Issue #117: expected 32 MiB clamped cap, got " + capWithReserve);
 				}
 
 				// Recovery reserve deduction (fenger):
-				// 384 MiB default buffer budget - (2 * 1024 * 128 KiB = 256 MiB reserve) = 128 MiB available
-				var capWithFengerReserve = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 1024, 128 * 1024, "fenger");
-				if (capWithFengerReserve === 128 * 1024 * 1024) {
-					pass("Cubic review P3: Fenger 2x recovery reserve properly clamps chunk cap on 384 MiB budget");
+				// 384 MiB default buffer budget - (2 * 1408 * 128 KiB = 352 MiB reserve) = 32 MiB available (< 64 MiB)
+				var capWithFengerReserve = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 1408, 128 * 1024, "fenger");
+				if (capWithFengerReserve === 32 * 1024 * 1024) {
+					pass("Issue #117: Fenger 2x recovery reserve properly clamps chunk cap on 384 MiB budget");
 				} else {
-					fail("Cubic review P3: expected 128 MiB clamped cap for Fenger, got " + capWithFengerReserve);
+					fail("Issue #117: expected 32 MiB clamped cap for Fenger, got " + capWithFengerReserve);
 				}
 
 				// Explicit env override

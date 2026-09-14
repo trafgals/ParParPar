@@ -117,6 +117,36 @@ addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN
 assert(addon.get_last_decomposition_path() === 2, 'Adaptive scratch (120 MiB <= 128 MiB cap) uses input-domain decomposition (2)');
 delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
 
+// Cubic review eea081c2df38 P3, 46aa71ed9c8a P2/P3 & 3b558c0b1442 P2: Verify default scratch cap by architecture.
+// Engine default uses sizeof(void*) >= 8 (128 MiB) vs 32-bit (32 MiB).
+// 64-bit Node arches include x64, arm64, ppc64, riscv64, loong64, and s390x (IBM z/Architecture, which does not end in '64').
+function is64BitArch(arch) {
+	return arch.endsWith('64') || arch === 's390x';
+}
+// Unit test arch classifier per cubic review 3b558c0b1442 P2
+assert(is64BitArch('x64') === true, 'x64 is 64-bit');
+assert(is64BitArch('arm64') === true, 'arm64 is 64-bit');
+assert(is64BitArch('ppc64') === true, 'ppc64 is 64-bit');
+assert(is64BitArch('riscv64') === true, 'riscv64 is 64-bit');
+assert(is64BitArch('loong64') === true, 'loong64 is 64-bit');
+assert(is64BitArch('s390x') === true, 's390x is 64-bit');
+assert(is64BitArch('ia32') === false, 'ia32 is 32-bit');
+assert(is64BitArch('arm') === false, 'arm is 32-bit');
+assert(is64BitArch('s390') === false, 's390 is 32-bit');
+
+var is64Bit = is64BitArch(process.arch);
+var discR = 15;
+var discB = 560000;
+var discN = 16;
+var discIn = Buffer.alloc(discN * discB);
+var discOut = Buffer.alloc(discR * discB);
+addon.compute_recovery_full(discIn, discOut, discN, discR, discB, 0, discN, 16, false);
+var expectedDefaultPath = is64Bit ? 2 : 3;
+assert(addon.get_last_decomposition_path() === expectedDefaultPath,
+	'Cubic review 46aa71ed9c8a P2/P3 & 3b558c0b1442 P2: default scratch cap (' +
+	(is64Bit ? '64-bit default >= 120 MiB -> path 2' : '32-bit default 32 MiB bounds scratch -> path 3') +
+	') selects expected decomposition path');
+
 // Oversized scratch fallback: 16 recovery x 1 MiB block x 16 threads (would need 240 MiB scratch > 128 MiB cap;
 // max workers that fit scratch is 9 <= R=16) safely falls back to output-domain decomposition (path 3).
 var capR = 16;
@@ -163,6 +193,35 @@ assert(addon.get_last_decomposition_path() === 3, 'ERANGE overflow rejected, fal
 
 // Clean up env
 delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
+
+// Issue #117 / cubic review 1782777ce99b P3:
+// Test that accumulate=true safely bypasses input-domain decomposition (path 2)
+// and routes directly to output-domain decomposition (path 3), preserving bit-exact parity
+// while eliminating thread-local scratch allocations (up to 240 MiB) and the post-reduction pass.
+console.log('\nTesting accumulate=true path selection & non-zero parity (Issue #117 / cubic review P3):');
+// cubic review 1782777ce99b P3: fill smallIn with non-zero random bytes so recovery output is non-trivial
+fillRandom(smallIn, rng);
+
+var accOut = Buffer.alloc(smallR * smallB);
+// When accumulate=false, small workload uses path 2 (input-domain decomp)
+addon.compute_recovery_full(smallIn, accOut, smallN, smallR, smallB, 0, smallN, 16, false);
+assert(addon.get_last_decomposition_path() === 2, 'Issue #117: accumulate=false uses input-domain decomposition (path 2)');
+assert(!accOut.equals(Buffer.alloc(smallR * smallB)), 'Cubic review P3: recovery output on random input is non-zero');
+
+// When accumulate=true, the engine must skip input-domain decomp and use path 3 (output-domain)
+var accOut2 = Buffer.alloc(smallR * smallB);
+addon.compute_recovery_full(smallIn, accOut2, smallN, smallR, smallB, 0, smallN, 16, true);
+assert(addon.get_last_decomposition_path() === 3, 'Issue #117: accumulate=true forces output-domain decomposition (path 3)');
+assert(accOut.equals(accOut2), 'Issue #117 / cubic review P3: accumulate=true into zeroed buffer produces bit-exact parity with accumulate=false on non-zero random payload');
+
+// Cubic review P3: Multi-chunk accumulation verification across split inputs
+var chunkAcc = Buffer.alloc(smallR * smallB);
+var halfN = smallN / 2;
+var chunk0 = smallIn.subarray(0, halfN * smallB);
+var chunk1 = smallIn.subarray(halfN * smallB);
+addon.compute_recovery_full(chunk0, chunkAcc, halfN, smallR, smallB, 0, smallN, 16, true);
+addon.compute_recovery_full(chunk1, chunkAcc, halfN, smallR, smallB, halfN, smallN, 16, true);
+assert(chunkAcc.equals(accOut), 'Cubic review P3: multi-chunk accumulation with accumulate=true matches single-pass bit-exactly');
 
 // Set path back to 3 for sentinel test
 addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
