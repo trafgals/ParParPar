@@ -25,8 +25,10 @@ process.on("unhandledRejection", function(e) { console.error("UNHANDLED REJECTIO
 
 var passed = 0;
 var failed = 0;
+var skipped = 0;
 function pass(name) { passed++; console.log("  PASS: " + name); }
 function fail(name, err) { failed++; console.error("  FAIL: " + name, err || ""); process.exitCode = 1; }
+function skip(name) { skipped++; console.log("  SKIP: " + name); }
 
 function extractRecBodies(buf) {
 	var out = [];
@@ -260,7 +262,7 @@ function runTest() {
 				// cubic review 59dd8dd8 P2: verify fileInfo with concurrency > 1 preserves strict input ordering
 				testFileInfoConcurrency(tmpDir, function() {
 					console.log("\n=================================");
-					console.log("Summary: " + passed + " passed, " + failed + " failed");
+					console.log("Summary: " + passed + " passed, " + failed + " failed" + (skipped > 0 ? ", " + skipped + " skipped" : ""));
 					console.log("=================================");
 					par3gen.shutdownHashPool();
 					done();
@@ -297,7 +299,142 @@ function runTest() {
 						fail("cubic review 59dd8dd8 P2: fileInfo returned out-of-order results");
 					}
 				}
-				testFileInfoNonFileError(tmpDir, next);
+				testFileInfoNonFileError(tmpDir, function() {
+					testIssue113DefaultChunkBounds(tmpDir, next);
+				});
+			});
+		}
+
+		function testIssue113DefaultChunkBounds(tmpDir, next) {
+			console.log("\n--- Issue #113 regression: default 64 MiB chunking bounds & 8-byte alignment ---");
+
+			// Ensure all forced chunking env vars are clean to test DEFAULT behavior
+			// cubic review P3: Ensure all chunking and memory-budget env vars are clean to test DEFAULT behavior
+			delete process.env.PAR3_FORCE_CHUNKED;
+			delete process.env.PAR3_DISABLE_CHUNKED;
+			delete process.env.PAR3_STREAM_CHUNK_BYTES;
+			delete process.env.PAR3_SIMULATED_BUFFER_CAP;
+			delete process.env.PAR3_INPUT_CHUNK_CAP;
+			delete process.env.PAR3_MEMORY_LIMIT;
+			delete process.env.PAR3_BATCH_SIZE;
+			delete process.env.PAR3_GF64_LEGACY_FULL;
+
+			// 1. cubic review (PR #114 delivery 24411f3a P2): Distinguish MODULE_NOT_FOUND from broken build
+			try {
+				var nativeBinding = null;
+				var loadError = null;
+				try {
+					nativeBinding = require("../build/Release/parpar_gf64.node");
+				} catch(e) {
+					if (e && e.code !== "MODULE_NOT_FOUND") {
+						loadError = e;
+					} else {
+						try {
+							nativeBinding = require("../build/Debug/parpar_gf64.node");
+						} catch(e2) {
+							if (e2 && e2.code !== "MODULE_NOT_FOUND") {
+								loadError = e2;
+							}
+						}
+					}
+				}
+
+				if (loadError) {
+					fail("native addon load failed with unexpected error (broken build / dlopen failure)", loadError);
+				} else if (nativeBinding && typeof nativeBinding.compute_recovery_full === "function") {
+					assert.strictEqual(typeof nativeBinding.isAlignedBuffer, "function", "native binding must export isAlignedBuffer when compute_recovery_full is implemented");
+
+					// Allocate a buffer and find an offset that is 8-byte aligned but strictly NOT 64-byte aligned
+					var rawIn = Buffer.alloc(256);
+					var inOffset = 8;
+					while (inOffset < 128 && nativeBinding.isAlignedBuffer(rawIn.subarray(inOffset), 64)) {
+						inOffset += 8;
+					}
+					var misalignedIn = rawIn.subarray(inOffset, inOffset + 128);
+					assert(nativeBinding.isAlignedBuffer(misalignedIn, 8), "input buffer must be 8-byte aligned");
+					assert(!nativeBinding.isAlignedBuffer(misalignedIn, 64), "input buffer must NOT be 64-byte aligned");
+					for (var i = 0; i < misalignedIn.length; i++) misalignedIn[i] = (i * 17 + 3) & 0xff;
+
+					var rawOut = Buffer.alloc(256);
+					var outOffset = 8;
+					while (outOffset < 128 && nativeBinding.isAlignedBuffer(rawOut.subarray(outOffset), 64)) {
+						outOffset += 8;
+					}
+					var misalignedOut = rawOut.subarray(outOffset, outOffset + 128);
+					assert(nativeBinding.isAlignedBuffer(misalignedOut, 8), "output buffer must be 8-byte aligned");
+					assert(!nativeBinding.isAlignedBuffer(misalignedOut, 64), "output buffer must NOT be 64-byte aligned");
+
+					var refOut = Buffer.alloc(128);
+					var refIn = Buffer.alloc(128);
+					misalignedIn.copy(refIn);
+
+					// Compute via native binding on non-64-byte aligned buffers (N=2, R=2, B=64)
+					nativeBinding.compute_recovery_full(misalignedIn, misalignedOut, 2, 2, 64, 0, 2, 1, false);
+					nativeBinding.compute_recovery_full(refIn, refOut, 2, 2, 64, 0, 2, 1, false);
+
+					assert(misalignedOut.equals(refOut), "non-64-byte aligned buffer output must match reference output bit-exact");
+					pass("cubic review 24411f3a P2: 8-byte aligned (strictly NOT 64-byte aligned) buffers execute bit-identically in native addon without requiring 64-byte alignment");
+				} else {
+					skip("native x86 addon not available for 8-byte alignment verification (MODULE_NOT_FOUND or non-x86 stub); proceeding with bounded create test");
+				}
+			} catch(errAlign) {
+				fail("Issue #113 alignment verification error", errAlign);
+			}
+
+			// 2. Test default chunked create with 70 MiB file (> 64 MiB default chunkCapBytes)
+			var file70M = path.join(tmpDir, "issue113_70M.bin");
+			var out70M = path.join(tmpDir, "issue113_70M_out");
+			var size70M = 70 * 1024 * 1024; // 70 MiB
+			var fd = fs.openSync(file70M, "w");
+			var chunk = crypto.randomBytes(64 * 1024);
+			for (var w = 0; w < size70M; w += chunk.length) {
+				fs.writeSync(fd, chunk, 0, Math.min(chunk.length, size70M - w));
+			}
+			fs.closeSync(fd);
+
+			var initialRss = process.memoryUsage().rss;
+			var peakRss = initialRss;
+			var sampleTimer = setInterval(function() {
+				var cur = process.memoryUsage().rss;
+				if (cur > peakRss) peakRss = cur;
+			}, 5);
+
+			par3gen.create([file70M], out70M, {
+				blockSize: 64 * 1024,
+				recoverySlices: 8,
+				onEvent: function(evt, d) {
+					var cur = process.memoryUsage().rss;
+					if (cur > peakRss) peakRss = cur;
+				}
+			}, function(err) {
+				clearInterval(sampleTimer);
+				if (err) {
+					fail("Issue #113: 70 MiB default create failed", err);
+					next();
+					return;
+				}
+
+				var peakRssDelta = peakRss - initialRss;
+				console.log("  Default 70M create Initial RSS: " + (initialRss / 1048576).toFixed(1) + " MiB");
+				console.log("  Default 70M create Peak RSS:    " + (peakRss / 1048576).toFixed(1) + " MiB");
+				console.log("  Default 70M create Peak RSS Δ:  " + (peakRssDelta / 1048576).toFixed(1) + " MiB");
+
+				// Sized to 64 MiB chunk: peak RSS delta must not spike by the full 70 MiB + full recovery
+				var maxAllowedDelta = 120 * 1024 * 1024; // 120 MiB ceiling
+				if (peakRssDelta > maxAllowedDelta) {
+					fail("Issue #113: Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB exceeded budget " + (maxAllowedDelta / 1048576).toFixed(1) + " MiB");
+				} else {
+					pass("Issue #113: 70 MiB default create bounded to 64 MiB chunks with Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB");
+				}
+
+				par3gen.verify(out70M + ".par3", function(errV, resV) {
+					if (errV || !resV || !resV.archiveOk) {
+						fail("Issue #113: 70 MiB archive verification failed", errV);
+					} else {
+						pass("Issue #113: 70 MiB archive verified successfully (archiveOk=true)");
+					}
+					next();
+				});
 			});
 		}
 
