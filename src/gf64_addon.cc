@@ -235,7 +235,7 @@ static napi_value Gf64Encoder_NAPI_mul(napi_env env, napi_callback_info info) {
 	}
 	void* aligned_out = (void*)out;
 	bool needs_out_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)out & 63) != 0) {
+	if (((uintptr_t)out & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outLen, 64)) {
 			memcpy(tmp, out, outLen);
@@ -256,7 +256,7 @@ static napi_value Gf64Encoder_NAPI_mul(napi_env env, napi_callback_info info) {
 	}
 	void* aligned_in = (void*)in;
 	bool needs_in_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)in & 63) != 0) {
+	if (((uintptr_t)in & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inLen, 64)) {
 			memcpy(tmp, in, inLen);
@@ -329,7 +329,7 @@ static napi_value Gf64Encoder_NAPI_mul_arr(napi_env env, napi_callback_info info
 	}
 	void* aligned_out = (void*)out;
 	bool needs_out_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)out & 63) != 0) {
+	if (((uintptr_t)out & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outLen, 64)) {
 			memcpy(tmp, out, outLen);
@@ -350,7 +350,7 @@ static napi_value Gf64Encoder_NAPI_mul_arr(napi_env env, napi_callback_info info
 	}
 	void* aligned_in = (void*)in;
 	bool needs_in_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)in & 63) != 0) {
+	if (((uintptr_t)in & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inLen, 64)) {
 			memcpy(tmp, in, inLen);
@@ -371,7 +371,7 @@ static napi_value Gf64Encoder_NAPI_mul_arr(napi_env env, napi_callback_info info
 	}
 	void* aligned_coeff = (void*)coeff;
 	bool needs_coeff_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)coeff & 63) != 0) {
+	if (((uintptr_t)coeff & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, coeffLen, 64)) {
 			memcpy(tmp, coeff, coeffLen);
@@ -475,7 +475,7 @@ static napi_value Gf64Encoder_NAPI_coupled_muladd_arr(napi_env env, napi_callbac
 	}
 	void* aligned_out = (void*)out;
 	bool needs_out_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)out & 63) != 0) {
+	if (((uintptr_t)out & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outLen, 64)) {
 			memcpy(tmp, out, outLen);
@@ -519,7 +519,7 @@ static napi_value Gf64Encoder_NAPI_coupled_muladd_arr(napi_env env, napi_callbac
 	}
 	void* aligned_coeff = (void*)coeff;
 	bool needs_coeff_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)coeff & 63) != 0) {
+	if (((uintptr_t)coeff & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, coeffLen, 64)) {
 			memcpy(tmp, coeff, coeffLen);
@@ -677,7 +677,7 @@ static napi_value Gf64Encoder_NAPI_fused_output_muladd_arr(napi_env env, napi_ca
 	}
 	void* aligned_in = (void*)in;
 	bool needs_in_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)in & 63) != 0) {
+	if (((uintptr_t)in & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inLen, 64)) {
 			memcpy(tmp, in, inLen);
@@ -916,7 +916,7 @@ static napi_value Gf64Encoder_NAPI_two_d_muladd_arr(napi_env env, napi_callback_
 	}
 	void* aligned_coeff_block_2d = (void*)coeff_block_2d;
 	bool needs_coeff_block_2d_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)coeff_block_2d & 63) != 0) {
+	if (((uintptr_t)coeff_block_2d & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, coeffLen, 64)) {
 			memcpy(tmp, coeff_block_2d, coeffLen);
@@ -1148,7 +1148,7 @@ static napi_value gf64_solve_NAPI(napi_env env, napi_callback_info info) {
 	}
 	void* aligned_A = (void*)A;
 	bool needs_A_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)A & 63) != 0) {
+	if (((uintptr_t)A & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, ALen, 64)) {
 			memcpy(tmp, A, ALen);
@@ -1169,7 +1169,7 @@ static napi_value gf64_solve_NAPI(napi_env env, napi_callback_info info) {
 	}
 	void* aligned_b = (void*)b;
 	bool needs_b_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)b & 63) != 0) {
+	if (((uintptr_t)b & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, bLen, 64)) {
 			memcpy(tmp, b, bLen);
@@ -1288,7 +1288,7 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 	}
 	void* aligned_inputs = (void*)inputs;
 	bool needs_inputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+	if (((uintptr_t)inputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inputsLen, 64)) {
 			memcpy(tmp, inputs, inputsLen);
@@ -1309,7 +1309,7 @@ static napi_value ComputeRecovery_NAPI(napi_env env, napi_callback_info info) {
 	}
 	void* aligned_outputs = (void*)outputs;
 	bool needs_outputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+	if (((uintptr_t)outputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outputsLen, 64)) {
 			memcpy(tmp, outputs, outputsLen);
@@ -1464,7 +1464,7 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 	}
 	void* aligned_inputs = (void*)inputs;
 	bool needs_inputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+	if (((uintptr_t)inputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inputsLen, 64)) {
 			memcpy(tmp, inputs, inputsLen);
@@ -1485,7 +1485,7 @@ static napi_value ComputeRecoveryFull_NAPI(napi_env env, napi_callback_info info
 	}
 	void* aligned_outputs = (void*)outputs;
 	bool needs_outputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+	if (((uintptr_t)outputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outputsLen, 64)) {
 			memcpy(tmp, outputs, outputsLen);
@@ -1657,7 +1657,7 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 	}
 	void* aligned_inputs = (void*)inputs;
 	bool needs_inputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+	if (((uintptr_t)inputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inputsLen, 64)) {
 			memcpy(tmp, inputs, inputsLen);
@@ -1678,7 +1678,7 @@ static napi_value ComputeRecoveryBarycentric_NAPI(napi_env env, napi_callback_in
 	}
 	void* aligned_outputs = (void*)outputs;
 	bool needs_outputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+	if (((uintptr_t)outputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outputsLen, 64)) {
 			memcpy(tmp, outputs, outputsLen);
@@ -1820,7 +1820,7 @@ static napi_value ComputeRecoveryAccumulate_NAPI(napi_env env, napi_callback_inf
 	}
 	void* aligned_inputs = (void*)inputs;
 	bool needs_inputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+	if (((uintptr_t)inputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inputsLen, 64)) {
 			memcpy(tmp, inputs, inputsLen);
@@ -1842,7 +1842,7 @@ static napi_value ComputeRecoveryAccumulate_NAPI(napi_env env, napi_callback_inf
 	}
 	void* aligned_outputs = (void*)outputs;
 	bool needs_outputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+	if (((uintptr_t)outputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outputsLen, 64)) {
 			memcpy(tmp, outputs, outputsLen);
@@ -2065,7 +2065,7 @@ static napi_value ComputeRecoveryFenger_NAPI(napi_env env, napi_callback_info in
 	const size_t outputsBytes = (size_t)numRecovery * (size_t)blockSize;
 	void* aligned_inputs = (void*)inputs;
 	bool inputs_bounced = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+	if (((uintptr_t)inputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inputsBytes, 64)) {
 			memcpy(tmp, inputs, inputsBytes);
@@ -2078,7 +2078,7 @@ static napi_value ComputeRecoveryFenger_NAPI(napi_env env, napi_callback_info in
 	}
 	void* aligned_outputs = (void*)outputs;
 	bool outputs_bounced = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+	if (((uintptr_t)outputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outputsBytes, 64)) {
 			memcpy(tmp, outputs, outputsBytes);
@@ -2212,7 +2212,7 @@ static napi_value ComputeRecoveryWithCoeff_NAPI(napi_env env, napi_callback_info
 	if (status != napi_ok) { napi_throw_type_error(env, NULL, "inputs must be a Buffer"); return NULL; }
 	void* aligned_inputs = (void*)inputs;
 	bool needs_inputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)inputs & 63) != 0) {
+	if (((uintptr_t)inputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, inputsLen, 64)) {
 			memcpy(tmp, inputs, inputsLen);
@@ -2230,7 +2230,7 @@ static napi_value ComputeRecoveryWithCoeff_NAPI(napi_env env, napi_callback_info
 	if (status != napi_ok) { napi_throw_type_error(env, NULL, "outputs must be a Buffer"); return NULL; }
 	void* aligned_outputs = (void*)outputs;
 	bool needs_outputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+	if (((uintptr_t)outputs & 7) != 0) {
 		void* tmp = nullptr;
 		size_t needed = outputsLen;
 		if (ALIGN_ALLOC(tmp, needed, 64)) {
@@ -2384,7 +2384,7 @@ static napi_value ComputeRecoveryStreaming_NAPI(napi_env env, napi_callback_info
 	}
 	void* aligned_outputs = (void*)outputs;
 	bool needs_outputs_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)outputs & 63) != 0) {
+	if (((uintptr_t)outputs & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, outputsLen, 64)) {
 			aligned_outputs = tmp;
@@ -2676,7 +2676,7 @@ static napi_value SolveAndReconstruct_NAPI(napi_env env, napi_callback_info info
 	}
 	void* aligned_A = (void*)A;
 	bool needs_A_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)A & 63) != 0) {
+	if (((uintptr_t)A & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, ALen, 64)) {
 			memcpy(tmp, A, ALen);
@@ -2697,7 +2697,7 @@ static napi_value SolveAndReconstruct_NAPI(napi_env env, napi_callback_info info
 	}
 	void* aligned_rhsBlocks = (void*)rhsBlocks;
 	bool needs_rhsBlocks_temp = false;
-	if (gf64_current_method == GF64_AVX512 && ((uintptr_t)rhsBlocks & 63) != 0) {
+	if (((uintptr_t)rhsBlocks & 7) != 0) {
 		void* tmp = nullptr;
 		if (ALIGN_ALLOC(tmp, rhsLen, 64)) {
 			memcpy(tmp, rhsBlocks, rhsLen);
@@ -3117,19 +3117,17 @@ static napi_value MulArr_NAPI(napi_env env, napi_callback_info info) {
 	uint8_t* aligned_in = in;
 	uint8_t* aligned_coeff = coeff;
 	bool out_bounced = false, in_bounced = false, coeff_bounced = false;
-	if (gf64_current_method == GF64_AVX512) {
-		if (((uintptr_t)out & 63) != 0) {
-			if (ALIGN_ALLOC(aligned_out, outBytes, 64)) { out_bounced = true; }
-			else { napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr out)"); return NULL; }
-		}
-		if (((uintptr_t)in & 63) != 0) {
-			if (ALIGN_ALLOC(aligned_in, inBytes, 64)) { in_bounced = true; memcpy(aligned_in, in, inBytes); }
-			else { if (out_bounced) ALIGN_FREE(aligned_out); napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr in)"); return NULL; }
-		}
-		if (((uintptr_t)coeff & 63) != 0) {
-			if (ALIGN_ALLOC(aligned_coeff, coeffBytes, 64)) { coeff_bounced = true; memcpy(aligned_coeff, coeff, coeffBytes); }
-			else { if (out_bounced) ALIGN_FREE(aligned_out); if (in_bounced) ALIGN_FREE(aligned_in); napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr coeff)"); return NULL; }
-		}
+	if (((uintptr_t)out & 7) != 0) {
+		if (ALIGN_ALLOC(aligned_out, outBytes, 64)) { out_bounced = true; }
+		else { napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr out)"); return NULL; }
+	}
+	if (((uintptr_t)in & 7) != 0) {
+		if (ALIGN_ALLOC(aligned_in, inBytes, 64)) { in_bounced = true; memcpy(aligned_in, in, inBytes); }
+		else { if (out_bounced) ALIGN_FREE(aligned_out); napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr in)"); return NULL; }
+	}
+	if (((uintptr_t)coeff & 7) != 0) {
+		if (ALIGN_ALLOC(aligned_coeff, coeffBytes, 64)) { coeff_bounced = true; memcpy(aligned_coeff, coeff, coeffBytes); }
+		else { if (out_bounced) ALIGN_FREE(aligned_out); if (in_bounced) ALIGN_FREE(aligned_in); napi_throw_error(env, NULL, "ALIGN_ALLOC failed (mul_arr coeff)"); return NULL; }
 	}
 
 	gf64_region_mul_arr(

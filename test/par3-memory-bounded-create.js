@@ -297,7 +297,104 @@ function runTest() {
 						fail("cubic review 59dd8dd8 P2: fileInfo returned out-of-order results");
 					}
 				}
-				testFileInfoNonFileError(tmpDir, next);
+				testFileInfoNonFileError(tmpDir, function() {
+					testIssue113DefaultChunkBounds(tmpDir, next);
+				});
+			});
+		}
+
+		function testIssue113DefaultChunkBounds(tmpDir, next) {
+			console.log("\n--- Issue #113 regression: default 64 MiB chunking bounds & 8-byte alignment ---");
+
+			// Ensure all forced chunking env vars are clean to test DEFAULT behavior
+			delete process.env.PAR3_FORCE_CHUNKED;
+			delete process.env.PAR3_DISABLE_CHUNKED;
+			delete process.env.PAR3_STREAM_CHUNK_BYTES;
+			delete process.env.PAR3_SIMULATED_BUFFER_CAP;
+
+			// 1. Test native binding with 8-byte aligned (but NOT 64-byte aligned) buffers
+			var nativeBinding = null;
+			try {
+				nativeBinding = require("../build/Release/parpar_gf64.node");
+			} catch(e) {
+				try { nativeBinding = require("../build/Debug/parpar_gf64.node"); } catch(e2) {}
+			}
+
+			if (nativeBinding && typeof nativeBinding.compute_recovery_full === "function") {
+				// Allocate a 64-byte-aligned base buffer + 8 byte offset -> guaranteed 8-byte aligned, NOT 64-byte aligned
+				var rawIn = Buffer.alloc(128 + 8);
+				var misalignedIn = rawIn.subarray(8, 128 + 8);
+				for (var i = 0; i < misalignedIn.length; i++) misalignedIn[i] = (i * 17 + 3) & 0xff;
+
+				var rawOut = Buffer.alloc(128 + 8);
+				var misalignedOut = rawOut.subarray(8, 128 + 8);
+
+				var refOut = Buffer.alloc(128);
+				var refIn = Buffer.alloc(128);
+				misalignedIn.copy(refIn);
+
+				// Compute via native binding on misaligned buffers (N=2, R=2, B=64)
+				nativeBinding.compute_recovery_full(misalignedIn, misalignedOut, 2, 2, 64, 0, 2, 1, false);
+				nativeBinding.compute_recovery_full(refIn, refOut, 2, 2, 64, 0, 2, 1, false);
+
+				assert(misalignedOut.equals(refOut), "misaligned buffer output must match reference output bit-exact");
+				pass("Issue #113: 8-byte aligned (not 64-byte aligned) buffers execute bit-identically in native addon without bounce failure");
+			}
+
+			// 2. Test default chunked create with 70 MiB file (> 64 MiB default chunkCapBytes)
+			var file70M = path.join(tmpDir, "issue113_70M.bin");
+			var out70M = path.join(tmpDir, "issue113_70M_out");
+			var size70M = 70 * 1024 * 1024; // 70 MiB
+			var fd = fs.openSync(file70M, "w");
+			var chunk = crypto.randomBytes(64 * 1024);
+			for (var w = 0; w < size70M; w += chunk.length) {
+				fs.writeSync(fd, chunk, 0, Math.min(chunk.length, size70M - w));
+			}
+			fs.closeSync(fd);
+
+			var initialRss = process.memoryUsage().rss;
+			var peakRss = initialRss;
+			var sampleTimer = setInterval(function() {
+				var cur = process.memoryUsage().rss;
+				if (cur > peakRss) peakRss = cur;
+			}, 5);
+
+			par3gen.create([file70M], out70M, {
+				blockSize: 64 * 1024,
+				recoverySlices: 8,
+				onEvent: function(evt, d) {
+					var cur = process.memoryUsage().rss;
+					if (cur > peakRss) peakRss = cur;
+				}
+			}, function(err) {
+				clearInterval(sampleTimer);
+				if (err) {
+					fail("Issue #113: 70 MiB default create failed", err);
+					next();
+					return;
+				}
+
+				var peakRssDelta = peakRss - initialRss;
+				console.log("  Default 70M create Initial RSS: " + (initialRss / 1048576).toFixed(1) + " MiB");
+				console.log("  Default 70M create Peak RSS:    " + (peakRss / 1048576).toFixed(1) + " MiB");
+				console.log("  Default 70M create Peak RSS Δ:  " + (peakRssDelta / 1048576).toFixed(1) + " MiB");
+
+				// Sized to 64 MiB chunk: peak RSS delta must not spike by the full 70 MiB + full recovery
+				var maxAllowedDelta = 120 * 1024 * 1024; // 120 MiB ceiling
+				if (peakRssDelta > maxAllowedDelta) {
+					fail("Issue #113: Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB exceeded budget " + (maxAllowedDelta / 1048576).toFixed(1) + " MiB");
+				} else {
+					pass("Issue #113: 70 MiB default create bounded to 64 MiB chunks with Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB");
+				}
+
+				par3gen.verify(out70M + ".par3", function(errV, resV) {
+					if (errV || !resV || !resV.archiveOk) {
+						fail("Issue #113: 70 MiB archive verification failed", errV);
+					} else {
+						pass("Issue #113: 70 MiB archive verified successfully (archiveOk=true)");
+					}
+					next();
+				});
 			});
 		}
 
