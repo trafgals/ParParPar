@@ -127,27 +127,39 @@ var capOut = Buffer.alloc(capR * capB);
 addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
 assert(addon.get_last_decomposition_path() === 3, 'Oversized scratch (240 MiB > 128 MiB cap) safely falls back to output-domain decomposition (3)');
 
-// Cubic review P2: PAR3_INPUT_DECOMP_SCRATCH_BYTES validation tests (rejects signs, non-digits, ERANGE)
+// Cubic review P2: PAR3_INPUT_DECOMP_SCRATCH_BYTES parser validation tests (rejects signs, non-digits, ERANGE)
+// Tests are discriminating: a small valid cap (1 MiB) forces path 3 on adaptR (needs 120 MiB),
+// whereas rejected invalid values fall back to default 128 MiB cap yielding path 2.
+// Similarly, wrap-around values like negative or ERANGE would yield ULLONG_MAX (path 2 on capR),
+// whereas rejected invalid values fall back to default 128 MiB cap yielding path 3 on capR.
 console.log('\nTesting PAR3_INPUT_DECOMP_SCRATCH_BYTES parser validation (cubic review P2):');
-// Negative value: rejected, falls back to default 128 MiB cap -> adaptR uses path 2
+
+// Control baseline: valid small cap (1 MiB) correctly forces path 3 on adaptR
+process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '1048576';
+addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
+assert(addon.get_last_decomposition_path() === 3, 'Control: valid 1 MiB cap forces output-domain decomposition (path 3)');
+
+// Leading plus on 1 MiB: if accepted yields path 3, but rejected falls back to default 128 MiB cap -> path 2
+process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '+1048576';
+addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
+assert(addon.get_last_decomposition_path() === 2, 'Leading plus (+1048576) rejected, falls back to default cap (path 2)');
+
+// Trailing non-digits on 1 MiB: if accepted yields path 3, but rejected falls back to default 128 MiB cap -> path 2
+process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '1048576bytes';
+addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
+assert(addon.get_last_decomposition_path() === 2, 'Trailing characters (1048576bytes) rejected, falls back to default cap (path 2)');
+
+// Negative value: if strtoull parsed it, wraps to ULLONG_MAX (> 240 MiB) yielding path 2 on capR;
+// rejected falls back to default 128 MiB cap yielding path 3 on capR
 process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '-1';
-addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
-assert(addon.get_last_decomposition_path() === 2, 'Negative scratch cap (-1) rejected, falls back to default cap (path 2)');
+addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
+assert(addon.get_last_decomposition_path() === 3, 'Negative scratch cap (-1) rejected, falls back to default cap (path 3)');
 
-// Leading plus: rejected, falls back to default 128 MiB cap -> adaptR uses path 2
-process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '+134217728';
-addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
-assert(addon.get_last_decomposition_path() === 2, 'Leading plus sign rejected, falls back to default cap (path 2)');
-
-// Trailing non-digits: rejected, falls back to default 128 MiB cap -> adaptR uses path 2
-process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '134217728bytes';
-addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
-assert(addon.get_last_decomposition_path() === 2, 'Trailing characters rejected, falls back to default cap (path 2)');
-
-// ERANGE overflow: rejected, falls back to default 128 MiB cap -> adaptR uses path 2
+// ERANGE overflow: if unchecked, strtoull returns ULLONG_MAX (> 240 MiB) yielding path 2 on capR;
+// rejected falls back to default 128 MiB cap yielding path 3 on capR
 process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = '9999999999999999999999999999999999999999';
-addon.compute_recovery_full(adaptIn, adaptOut, adaptN, adaptR, adaptB, 0, adaptN, 16, false);
-assert(addon.get_last_decomposition_path() === 2, 'ERANGE overflow rejected, falls back to default cap (path 2)');
+addon.compute_recovery_full(capIn, capOut, capN, capR, capB, 0, capN, 16, false);
+assert(addon.get_last_decomposition_path() === 3, 'ERANGE overflow rejected, falls back to default cap (path 3)');
 
 // Clean up env
 delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;

@@ -536,6 +536,23 @@ function runTest() {
 				} else {
 					fail("Cubic review P3: expected 1024 * 1024 explicit cap, got " + capExplicit);
 				}
+
+				// Cubic review P2 (round 2): Recovery reserve exceeds budget -> returns 0 (cannot fit)
+				// E.g. 4096 recovery x 128 KiB = 512 MiB reserve > 384 MiB default budget
+				var capExceeded = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 4096, 128 * 1024, "matvec");
+				if (capExceeded === 0) {
+					pass("Cubic review P2: returns 0 when recovery reserve exceeds default 384 MiB budget");
+				} else {
+					fail("Cubic review P2: expected 0 when reserve exceeds budget, got " + capExceeded);
+				}
+
+				// Under explicit memory limit: 64 MiB limit with 64 MiB recovery reserve -> returns 0 (cannot fit 1 block)
+				var capLimitExceeded = par3gen.decideChunkCapBytes(1 * 1024 * 1024 * 1024, 1024, 64 * 1024, "matvec", 64 * 1024 * 1024);
+				if (capLimitExceeded === 0) {
+					pass("Cubic review P2: returns 0 when recovery reserve exceeds explicit memory limit");
+				} else {
+					fail("Cubic review P2: expected 0 when reserve exceeds explicit limit, got " + capLimitExceeded);
+				}
 			} else {
 				fail("Cubic review P3: par3gen.decideChunkCapBytes is not exported");
 			}
@@ -575,10 +592,39 @@ function runTest() {
 				par3gen.verify(outLarge + ".par3", function(errV, resV) {
 					if (errV || !resV || !resV.archiveOk) {
 						fail("Issue #115: chunked archive verification failed", errV);
-					} else {
-						pass("Issue #115: chunked archive verified successfully (archiveOk=true)");
+						next();
+						return;
 					}
-					next();
+					pass("Issue #115: chunked archive verified successfully (archiveOk=true)");
+
+					// 3. Cubic review P2: Workload where recovery reserve exceeds memory limit routes cleanly to per-batch path
+					var fileBatch = path.join(tmpDir, "per_batch_route_test.bin");
+					var outBatch = path.join(tmpDir, "per_batch_route_test_out");
+					fs.writeFileSync(fileBatch, crypto.randomBytes(512 * 1024));
+
+					// 16 recovery x 16 KiB = 256 KiB recovery reserve.
+					// memoryLimit: 200 KiB (< 256 KiB reserve + 16 KiB block)
+					par3gen.create([fileBatch], outBatch, {
+						blockSize: 16 * 1024,
+						recoverySlices: 16,
+						memoryLimit: 200 * 1024
+					}, function(errB) {
+						if (errB) {
+							fail("Cubic review P2: create with recovery reserve > memoryLimit failed", errB);
+							next();
+							return;
+						}
+						pass("Cubic review P2: workload with recovery reserve > memoryLimit routed cleanly to per-batch path");
+
+						par3gen.verify(outBatch + ".par3", function(errVB, resVB) {
+							if (errVB || !resVB || !resVB.archiveOk) {
+								fail("Cubic review P2: per-batch archive verification failed", errVB);
+							} else {
+								pass("Cubic review P2: per-batch archive verified successfully (archiveOk=true)");
+							}
+							next();
+						});
+					});
 				});
 			});
 		}
