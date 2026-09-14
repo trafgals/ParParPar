@@ -433,7 +433,262 @@ function runTest() {
 					} else {
 						pass("Issue #113: 70 MiB archive verified successfully (archiveOk=true)");
 					}
+					testIssue115AdaptiveChunkingAndInputDecomp(tmpDir, next);
+				});
+			});
+		}
+
+		function testIssue115AdaptiveChunkingAndInputDecomp(tmpDir, next) {
+			console.log("\n--- Issue #115 regression: adaptive chunk sizing & input-domain decomposition ---");
+
+			// 1. Verify native input-domain adaptive worker sizing
+			var nativeBinding = null;
+			try {
+				nativeBinding = require("../build/Release/parpar_gf64.node");
+			} catch (e) {
+				try {
+					nativeBinding = require("../build/Debug/parpar_gf64.node");
+				} catch (e2) {}
+			}
+
+			if (nativeBinding && typeof nativeBinding.compute_recovery_full === "function" && typeof nativeBinding.get_last_decomposition_path === "function") {
+				var N = 16, R = 8, B = 1024 * 1024;
+				var inBuf = Buffer.alloc(N * B);
+				var outBuf = Buffer.alloc(R * B);
+
+				// Under default 128 MiB scratch cap (pinned explicitly for 32-bit compatibility per Cubic review P2),
+				// 8 * 1 MiB * 15 = 120 MiB <= 128 MiB fits in input decomp
+				process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = (128 * 1024 * 1024).toString();
+				nativeBinding.compute_recovery_full(inBuf, outBuf, N, R, B, 0, N, 16, false);
+				var pathDefault = nativeBinding.get_last_decomposition_path();
+				delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
+				if (pathDefault === 2) {
+					pass("Issue #115: 120 MiB scratch under 128 MiB cap engages input-domain decomposition (path 2)");
+				} else {
+					fail("Issue #115: expected path 2 under 128 MiB cap, got path " + pathDefault);
+				}
+
+				// With 32 MiB scratch cap, 120 MiB exceeds budget and max workers (5) <= R (8) -> falls back to path 3
+				process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES = "33554432";
+				nativeBinding.compute_recovery_full(inBuf, outBuf, N, R, B, 0, N, 16, false);
+				var pathCapped = nativeBinding.get_last_decomposition_path();
+				delete process.env.PAR3_INPUT_DECOMP_SCRATCH_BYTES;
+				if (pathCapped === 3) {
+					pass("Issue #115: oversized scratch under 32 MiB cap safely falls back to output-domain decomposition (path 3)");
+				} else {
+					fail("Issue #115: expected path 3 under 32 MiB cap, got path " + pathCapped);
+				}
+			} else {
+				console.log("  SKIP: native addon not available for decomposition path check");
+			}
+
+			// Cubic review P3: Direct unit assertion on adaptive chunkCapBytes scaling contract
+			console.log("\n  Testing adaptive chunkCapBytes scaling contract (Cubic review P3):");
+			if (typeof par3gen.decideChunkCapBytes === "function") {
+				// < 4 GiB -> 64 MiB
+				var cap1G = par3gen.decideChunkCapBytes(1 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
+				if (cap1G === 64 * 1024 * 1024) {
+					pass("Cubic review P3: < 4 GiB yields 64 MiB chunk cap");
+				} else {
+					fail("Cubic review P3: expected 64 MiB, got " + cap1G);
+				}
+
+				// 4 GiB .. 16 GiB -> 128 MiB
+				var cap8G = par3gen.decideChunkCapBytes(8 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
+				if (cap8G === 128 * 1024 * 1024) {
+					pass("Cubic review P3: 4 GiB .. 16 GiB yields 128 MiB chunk cap");
+				} else {
+					fail("Cubic review P3: expected 128 MiB, got " + cap8G);
+				}
+
+				// >= 16 GiB -> 256 MiB
+				var cap32G = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
+				if (cap32G === 256 * 1024 * 1024) {
+					pass("Cubic review P3: >= 16 GiB yields 256 MiB chunk cap");
+				} else {
+					fail("Cubic review P3: expected 256 MiB, got " + cap32G);
+				}
+
+				// Recovery reserve deduction (matvec):
+				// 384 MiB default buffer budget - (1 * 2048 * 128 KiB = 256 MiB reserve) = 128 MiB available
+				var capWithReserve = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 2048, 128 * 1024, "matvec");
+				if (capWithReserve === 128 * 1024 * 1024) {
+					pass("Cubic review P3: recovery reserve properly clamps chunk cap on 384 MiB budget");
+				} else {
+					fail("Cubic review P3: expected 128 MiB clamped cap, got " + capWithReserve);
+				}
+
+				// Recovery reserve deduction (fenger):
+				// 384 MiB default buffer budget - (2 * 1024 * 128 KiB = 256 MiB reserve) = 128 MiB available
+				var capWithFengerReserve = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 1024, 128 * 1024, "fenger");
+				if (capWithFengerReserve === 128 * 1024 * 1024) {
+					pass("Cubic review P3: Fenger 2x recovery reserve properly clamps chunk cap on 384 MiB budget");
+				} else {
+					fail("Cubic review P3: expected 128 MiB clamped cap for Fenger, got " + capWithFengerReserve);
+				}
+
+				// Explicit env override
+				process.env.PAR3_STREAM_CHUNK_BYTES = (1024 * 1024).toString();
+				var capExplicit = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec");
+				delete process.env.PAR3_STREAM_CHUNK_BYTES;
+				if (capExplicit === 1024 * 1024) {
+					pass("Cubic review P3: explicit PAR3_STREAM_CHUNK_BYTES overrides adaptive scaling");
+				} else {
+					fail("Cubic review P3: expected 1024 * 1024 explicit cap, got " + capExplicit);
+				}
+
+				// Cubic review P2 (round 2): Recovery reserve exceeds budget -> returns 0 (cannot fit)
+				// E.g. 4096 recovery x 128 KiB = 512 MiB reserve > 384 MiB default budget
+				var capExceeded = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 4096, 128 * 1024, "matvec");
+				if (capExceeded === 0) {
+					pass("Cubic review P2: returns 0 when recovery reserve exceeds default 384 MiB budget");
+				} else {
+					fail("Cubic review P2: expected 0 when reserve exceeds budget, got " + capExceeded);
+				}
+
+				// Under explicit memory limit: 64 MiB limit with 64 MiB recovery reserve -> returns 0 (cannot fit 1 block)
+				var capLimitExceeded = par3gen.decideChunkCapBytes(1 * 1024 * 1024 * 1024, 1024, 64 * 1024, "matvec", 64 * 1024 * 1024);
+				if (capLimitExceeded === 0) {
+					pass("Cubic review P2: returns 0 when recovery reserve exceeds explicit memory limit");
+				} else {
+					fail("Cubic review P2: expected 0 when reserve exceeds explicit limit, got " + capLimitExceeded);
+				}
+
+				// Cubic review P1: Explicit chunk cap combined with memory limit where reserve exceeds budget
+				// must return 0 unconditionally (cannot fit 1 block) instead of permitting an allocation that exceeds budget
+				process.env.PAR3_STREAM_CHUNK_BYTES = (1024 * 1024).toString();
+				var capExplicitWithLimitExceeded = par3gen.decideChunkCapBytes(1 * 1024 * 1024 * 1024, 1024, 64 * 1024, "matvec", 64 * 1024 * 1024);
+				delete process.env.PAR3_STREAM_CHUNK_BYTES;
+				if (capExplicitWithLimitExceeded === 0) {
+					pass("Cubic review P1: explicit chunk cap with reserve exceeding memory limit unconditionally returns 0");
+				} else {
+					fail("Cubic review P1: expected 0, got " + capExplicitWithLimitExceeded);
+				}
+				// Cubic review P1: Explicit chunk cap larger than memoryLimit is clamped to memoryLimit / 2
+				process.env.PAR3_STREAM_CHUNK_BYTES = (10 * 1024 * 1024).toString();
+				var capClamped = par3gen.decideChunkCapBytes(4 * 1024 * 1024, 8, 64 * 1024, "matvec", 4 * 1024 * 1024);
+				delete process.env.PAR3_STREAM_CHUNK_BYTES;
+				if (capClamped === 2 * 1024 * 1024) {
+					pass("Cubic review P1: explicit chunk cap larger than memoryLimit clamped to memoryLimit / 2");
+				} else {
+					fail("Cubic review P1: expected 2 MiB clamped cap, got " + capClamped);
+				}
+			} else {
+				fail("Cubic review P3: par3gen.decideChunkCapBytes is not exported");
+			}
+
+			// 2. End-to-end create with 1 MiB forced chunking on 4 MiB file (assert exactly 4 chunk flushes)
+			var fileLarge = path.join(tmpDir, "adaptive_chunk_test.bin");
+			var outLarge = path.join(tmpDir, "adaptive_chunk_test_out");
+			fs.writeFileSync(fileLarge, crypto.randomBytes(4 * 1024 * 1024));
+
+			process.env.PAR3_FORCE_CHUNKED = "1";
+			process.env.PAR3_STREAM_CHUNK_BYTES = (1024 * 1024).toString();
+
+			var actualFlushes = 0;
+			par3gen.create([fileLarge], outLarge, {
+				blockSize: 64 * 1024,
+				recoverySlices: 8,
+				onEvent: function(evt, d) {
+					if (evt === "chunk_flush") actualFlushes++;
+				}
+			}, function(err) {
+				delete process.env.PAR3_FORCE_CHUNKED;
+				delete process.env.PAR3_STREAM_CHUNK_BYTES;
+
+				if (err) {
+					fail("Issue #115: chunked create failed", err);
 					next();
+					return;
+				}
+				pass("Issue #115: chunked create completed without error");
+
+				if (actualFlushes === 4) {
+					pass("Cubic review P3: 4 MiB input with 1 MiB chunk size performed exactly 4 chunk flushes");
+				} else {
+					fail("Cubic review P3: expected 4 chunk flushes, got " + actualFlushes);
+				}
+
+				par3gen.verify(outLarge + ".par3", function(errV, resV) {
+					if (errV || !resV || !resV.archiveOk) {
+						fail("Issue #115: chunked archive verification failed", errV);
+						next();
+						return;
+					}
+					pass("Issue #115: chunked archive verified successfully (archiveOk=true)");
+
+					// 3. Cubic review P2: Workload where recovery reserve exceeds memory limit routes cleanly to per-batch path
+					// (Note: routing to per-batch is decided solely by recoveryReserve + blockSize > memoryLimit)
+					var fileBatch = path.join(tmpDir, "per_batch_route_test.bin");
+					var outBatch = path.join(tmpDir, "per_batch_route_test_out");
+					fs.writeFileSync(fileBatch, crypto.randomBytes(512 * 1024));
+
+					// 16 recovery x 16 KiB = 256 KiB recovery reserve.
+					// memoryLimit: 200 KiB (< 256 KiB reserve + 16 KiB block)
+					par3gen.create([fileBatch], outBatch, {
+						blockSize: 16 * 1024,
+						recoverySlices: 16,
+						memoryLimit: 200 * 1024
+					}, function(errB) {
+						if (errB) {
+							fail("Cubic review P2: create with recovery reserve > memoryLimit failed", errB);
+							next();
+							return;
+						}
+						pass("Cubic review P2: workload with recovery reserve > memoryLimit routed cleanly to per-batch path");
+
+						par3gen.verify(outBatch + ".par3", function(errVB, resVB) {
+							if (errVB || !resVB || !resVB.archiveOk) {
+								fail("Cubic review P2: per-batch archive verification failed", errVB);
+								next();
+								return;
+							}
+							pass("Cubic review P2: per-batch archive verified successfully (archiveOk=true)");
+
+							// 4. Cubic review P1 / P3: Explicit chunk cap combined with memoryLimit actively clamps chunk size in create
+							// (recoveryReserve=512 KiB + 64 KiB block <= 4 MiB memoryLimit; requested 10 MiB chunk cap is clamped to memoryLimit/2=2 MiB)
+							var fileClamped = path.join(tmpDir, "expl_chunk_cap_clamped.bin");
+							var outClamped = path.join(tmpDir, "expl_chunk_cap_clamped_out");
+							fs.writeFileSync(fileClamped, crypto.randomBytes(4 * 1024 * 1024));
+
+							process.env.PAR3_FORCE_CHUNKED = "1";
+							process.env.PAR3_STREAM_CHUNK_BYTES = (10 * 1024 * 1024).toString();
+							var clampedFlushes = 0;
+							par3gen.create([fileClamped], outClamped, {
+								blockSize: 64 * 1024,
+								recoverySlices: 8,
+								memoryLimit: 4 * 1024 * 1024,
+								onEvent: function(evt, d) {
+									if (evt === "chunk_flush") clampedFlushes++;
+								}
+							}, function(errC) {
+								delete process.env.PAR3_FORCE_CHUNKED;
+								delete process.env.PAR3_STREAM_CHUNK_BYTES;
+								if (errC) {
+									fail("Cubic review P1: create with clamped explicit chunk cap failed", errC);
+									next();
+									return;
+								}
+								pass("Cubic review P1: explicit chunk cap clamped to memoryLimit/2 created successfully");
+
+								// 4 MiB file with 2 MiB clamped chunk size = exactly 2 flushes (not 1 flush)
+								if (clampedFlushes === 2) {
+									pass("Cubic review P1: 4 MiB file with 10 MiB requested cap clamped to 2 MiB performed exactly 2 flushes");
+								} else {
+									fail("Cubic review P1: expected 2 flushes, got " + clampedFlushes);
+								}
+
+								par3gen.verify(outClamped + ".par3", function(errVC, resVC) {
+									if (errVC || !resVC || !resVC.archiveOk) {
+										fail("Cubic review P1: clamped archive verification failed", errVC);
+									} else {
+										pass("Cubic review P1: clamped archive verified successfully (archiveOk=true)");
+									}
+									next();
+								});
+							});
+						});
+					});
 				});
 			});
 		}
