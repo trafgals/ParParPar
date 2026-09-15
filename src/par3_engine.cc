@@ -137,10 +137,10 @@ static size_t s_cauchyWorkerCount = 0;
 // Capped at 128 to keep per-worker overhead bounded on high-core-count
 // architectures.
 // ============================================================================
-static size_t s_effectiveCpuCountCached = 0;
+static std::atomic<size_t> s_effectiveCpuCountCached{0};
 
 void ResetEffectiveCpuCountCache() {
-	s_effectiveCpuCountCached = 0;
+	s_effectiveCpuCountCached.store(0, std::memory_order_release);
 }
 
 size_t GetEffectiveCpuCount() {
@@ -165,7 +165,8 @@ size_t GetEffectiveCpuCount() {
 	}
 #endif
 
-	if (s_effectiveCpuCountCached != 0) return s_effectiveCpuCountCached;
+	size_t cached = s_effectiveCpuCountCached.load(std::memory_order_acquire);
+	if (cached != 0) return cached;
 
 	size_t count = 0;
 #ifdef __linux__
@@ -175,13 +176,10 @@ size_t GetEffectiveCpuCount() {
 		count = (size_t)CPU_COUNT(&mask);
 	}
 #elif defined(_WIN32)
-	// Use GetLogicalProcessorInformationEx(RelationGroup) to enumerate per-group
-	// active counts, intersecting with the process's affinity. The simpler
-	// GetActiveProcessorCount(g) returns the *system's* total in group g —
-	// if the process is affinity-restricted within group g, that overcounts.
-	// Multi-group processes (groups.size() > 1) require the full enumeration.
-	// Single-group processes still use GetActiveProcessorCount since the
-	// process's group is the only one available.
+	// Track the process's effective affinity bitmask per group to enable
+	// exact intersection with CPU sets (and prevent overcounting).
+	std::unordered_map<WORD, KAFFINITY> effectiveGroupMasks;
+
 	USHORT groupCount = 0;
 	std::vector<USHORT> processGroups;
 	if (GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, nullptr) == 0 &&
@@ -191,6 +189,7 @@ size_t GetEffectiveCpuCount() {
 			processGroups.clear();
 		}
 	}
+
 	if (processGroups.size() > 1) {
 		// Multi-group: check if restricted by a multi-group Job Object first.
 		std::vector<GROUP_AFFINITY> jobAffinities;
@@ -211,15 +210,19 @@ size_t GetEffectiveCpuCount() {
 				for (const auto& ga : jobAffinities) {
 					if (ga.Group == g) {
 						found_job_aff = true;
-						if (ga.Mask != 0) {
-							for (KAFFINITY m = ga.Mask; m > 0; m &= (m - 1)) group_cpus++;
+						KAFFINITY mask = ga.Mask;
+						if (mask != 0) {
+							effectiveGroupMasks[g] = mask;
+							for (KAFFINITY m = mask; m > 0; m &= (m - 1)) group_cpus++;
 						} else {
+							effectiveGroupMasks[g] = (KAFFINITY)-1;
 							group_cpus = (size_t)GetActiveProcessorCount(g);
 						}
 						break;
 					}
 				}
 				if (!found_job_aff) {
+					effectiveGroupMasks[g] = (KAFFINITY)-1;
 					group_cpus = (size_t)GetActiveProcessorCount(g);
 				}
 				total_aff += group_cpus;
@@ -245,6 +248,7 @@ size_t GetEffectiveCpuCount() {
 									if (pg == g) { processUsesGroup = true; break; }
 								}
 								if (!processUsesGroup) continue;
+								effectiveGroupMasks[g] = mask;
 								for (KAFFINITY m = mask; m != 0; m &= (m - 1)) total_aff++;
 							}
 						}
@@ -253,29 +257,75 @@ size_t GetEffectiveCpuCount() {
 				}
 			}
 		}
+		if (total_aff > 0) count = total_aff;
 	} else {
 		// Single-group or unassigned process: query process affinity mask first
+		WORD primaryGroup = processGroups.empty() ? 0 : processGroups[0];
 		DWORD_PTR processMask = 0, systemMask = 0;
 		if (GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) && processMask != 0) {
 			size_t aff_count = 0;
 			for (DWORD_PTR m = processMask; m > 0; m &= (m - 1)) aff_count++;
 			count = aff_count;
+			effectiveGroupMasks[primaryGroup] = (KAFFINITY)processMask;
 		}
 		if (count == 0 && !processGroups.empty()) {
 			for (USHORT g : processGroups) {
 				size_t gc = (size_t)GetActiveProcessorCount(g);
 				if (gc > 0) count += gc;
+				effectiveGroupMasks[g] = (KAFFINITY)-1;
 			}
 		}
 	}
-	// Check if restricted by Process Default CPU Sets (Windows 10 / Server 2016+)
+
+	// Cubic review 5b1b83d5 P2:
+	// When CPU sets and process/JobObject affinity masks are both specified,
+	// enumerate CPU set IDs and intersect with group masks rather than comparing counts.
+	// NULL-buffer query returns ERROR_INSUFFICIENT_BUFFER when default CPU sets are configured.
 	ULONG cpuSetCount = 0;
-	if (GetProcessDefaultCpuSets(GetCurrentProcess(), nullptr, 0, &cpuSetCount) && cpuSetCount > 0) {
-		if (count == 0 || (size_t)cpuSetCount < count) {
-			count = (size_t)cpuSetCount;
+	std::vector<ULONG> cpuSetIds;
+	if (!GetProcessDefaultCpuSets(GetCurrentProcess(), nullptr, 0, &cpuSetCount) &&
+	    GetLastError() == ERROR_INSUFFICIENT_BUFFER && cpuSetCount > 0) {
+		cpuSetIds.resize(cpuSetCount);
+		if (!GetProcessDefaultCpuSets(GetCurrentProcess(), cpuSetIds.data(), cpuSetCount, &cpuSetCount)) {
+			cpuSetIds.clear();
+		}
+	}
+
+	if (!cpuSetIds.empty()) {
+		ULONG sysLen = 0;
+		GetSystemCpuSetInformation(nullptr, 0, &sysLen, GetCurrentProcess(), 0);
+		if (sysLen > 0) {
+			std::vector<uint8_t> sysBuf(sysLen);
+			if (GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(sysBuf.data()), sysLen, &sysLen, GetCurrentProcess(), 0)) {
+				size_t intersectionCount = 0;
+				BYTE* ptr = sysBuf.data();
+				while (ptr < sysBuf.data() + sysLen) {
+					auto* item = reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(ptr);
+					if (item->Type == CpuSetInformation) {
+						bool inCpuSets = false;
+						for (ULONG id : cpuSetIds) {
+							if (id == item->CpuSet.Id) { inCpuSets = true; break; }
+						}
+						if (inCpuSets) {
+							WORD grp = item->CpuSet.Group;
+							BYTE procIdx = item->CpuSet.LogicalProcessorIndex;
+							auto it = effectiveGroupMasks.find(grp);
+							if (it != effectiveGroupMasks.end()) {
+								KAFFINITY grpMask = it->second;
+								if (procIdx < 64 && (grpMask & (KAFFINITY(1) << procIdx))) {
+									intersectionCount++;
+								}
+							}
+						}
+					}
+					ptr += item->Size;
+				}
+				count = intersectionCount;
+			}
 		}
 	}
 #endif
+
 
 
 	if (count == 0) {

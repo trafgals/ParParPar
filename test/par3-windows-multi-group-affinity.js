@@ -30,6 +30,8 @@ assert(headerContent.includes('capped at 128'),
   'par3_engine.h must document 128 cap');
 assert(headerContent.includes('Windows affinity masks') || headerContent.includes('Windows'),
   'par3_engine.h must document Windows affinity support');
+assert(headerContent.includes('multi-group'),
+  'par3_engine.h must document multi-group support');
 console.log('   PASS: Header declaration comment correctly matches implementation.');
 
 // ---------------------------------------------------------------------------
@@ -114,14 +116,11 @@ try {
 
     if (hasTaskset) {
       var res = cp.spawnSync('taskset', ['-c', '0-1', process.execPath, probeScript], { encoding: 'utf8' });
-      if (res.status === 0) {
-        var count = parseInt((res.stdout || '').trim(), 10);
-        console.log('   Linux taskset -c 0-1 effective CPUs:', count);
-        assert.strictEqual(count, 2, 'Under taskset -c 0-1, effective CPU count must be exactly 2');
-        console.log('   PASS: Linux taskset affinity restriction verified.');
-      } else {
-        console.log('   Linux taskset skipped or not permitted in container.');
-      }
+      assert.strictEqual(res.status, 0, 'taskset child process must exit with code 0: ' + (res.stderr || res.stdout));
+      var count = parseInt((res.stdout || '').trim(), 10);
+      console.log('   Linux taskset -c 0-1 effective CPUs:', count);
+      assert.strictEqual(count, 2, 'Under taskset -c 0-1, effective CPU count must be exactly 2');
+      console.log('   PASS: Linux taskset affinity restriction verified.');
     } else {
       console.log('   taskset not found on Linux; skipping child test.');
     }
@@ -132,4 +131,17 @@ try {
   try { fs.unlinkSync(probeScript); } catch (_) {}
 }
 
+// ---------------------------------------------------------------------------
+// 5. Concurrency / Thread-Safety Test (cubic review 5b1b83d5 Finding 1 P2)
+// ---------------------------------------------------------------------------
+console.log('5. Verifying cache read / reset thread safety...');
+var readRaces = 1000;
+for (var r = 0; r < readRaces; r++) {
+  gf64.reset_effective_cpu_count_cache();
+  var c = gf64.get_effective_cpu_count();
+  assert(c >= 1 && c <= 128, 'Concurrent cache reset/read must yield valid count');
+}
+console.log('   PASS: Cache read / reset thread safety verified across 1000 iterations.');
+
 console.log('\nAll Windows multi-group affinity and effective CPU count tests passed!\n');
+
