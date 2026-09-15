@@ -94,24 +94,7 @@ if(!cmd) {
 	error('No command specified');
 }
 
-var parseSize = function(s) {
-	if(typeof s === 'number') return s;
-	var parts = (''+s).toUpperCase().match(/^([0-9.]+)([BKMGTPE])$/);
-	if(parts) {
-		var num = +(parts[1]);
-		switch(parts[2]) {
-			case 'E': num *= 1024;
-			case 'P': num *= 1024;
-			case 'T': num *= 1024;
-			case 'G': num *= 1024;
-			case 'M': num *= 1024;
-			case 'K': num *= 1024;
-			case 'B': num *= 1;
-		}
-		return Math.floor(num);
-	}
-	return parseInt(s) || 0;
-};
+var parseSize = arg_parser.parseSize;
 
 var buildOpts = function() {
 	var opts = {
