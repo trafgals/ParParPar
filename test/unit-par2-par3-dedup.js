@@ -15,6 +15,12 @@ var par3gen = require('../lib/par3gen');
 
 console.log('Testing PAR2/PAR3 shared utilities and deduplication...');
 
+var watchdog = setTimeout(function() {
+	console.error('Test timed out after 30 seconds');
+	process.exit(1);
+}, 30000);
+if(watchdog.unref) watchdog.unref();
+
 // 1. Test utils.friendlySize
 assert.strictEqual(utils.friendlySize(0), '0 B');
 assert.strictEqual(utils.friendlySize(1024), '1024 B');
@@ -201,8 +207,10 @@ process.on('exit', cleanupTmp);
 	assert(bindingGyp.indexOf('supports_mno_evex512') !== -1, 'binding.gyp should probe supports_mno_evex512');
 	assert(bindingGyp.indexOf('-mno-evex512') !== -1, 'binding.gyp should include -mno-evex512 flag');
 
+	clearTimeout(watchdog);
 	console.log('PAR2/PAR3 shared utilities and deduplication tests passed!');
 })().catch(function(err) {
+	clearTimeout(watchdog);
 	console.error(err);
 	process.exit(1);
 });

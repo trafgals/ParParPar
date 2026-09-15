@@ -52,7 +52,7 @@ GF_PREPARE_PACKED_FUNCS(gf16_affine, _bmm, sizeof(__m512i), gf16_bmm_prepare_blo
 # else
 GF_PREPARE_PACKED_FUNCS(gf16_affine, _bmm, sizeof(__m512i), gf16_bmm_prepare_block, gf16_bmm_prepare_blocku, 6, _mm256_zeroupper(), __m512i checksum = _mm512_setzero_si512(), gf16_checksum_block_avx512, gf16_checksum_blocku_avx512, gf16_checksum_exp_avx512, gf16_checksum_prepare_avx512, sizeof(__m512i))
 # endif
-GF_FINISH_PACKED_FUNCS(gf16_affine, _bmm, sizeof(__m512i), gf16_bmm_finish_block, gf16_bmm_finish_blocku, 1, (void)0, gf16_checksum_block_avx512, gf16_checksum_blocku_avx512, gf16_checksum_exp_avx512, NULL, sizeof(__m512i))
+GF_FINISH_PACKED_FUNCS(gf16_affine, _bmm, sizeof(__m512i), gf16_bmm_finish_block, gf16_bmm_finish_blocku, 1, _mm256_zeroupper(), gf16_checksum_block_avx512, gf16_checksum_blocku_avx512, gf16_checksum_exp_avx512, NULL, sizeof(__m512i))
 #else
 GF_PREPARE_PACKED_FUNCS_STUB(gf16_affine, _bmm)
 GF_FINISH_PACKED_FUNCS_STUB(gf16_affine, _bmm)
@@ -126,6 +126,7 @@ void gf16_affine_mul_bmm(const void *HEDLEY_RESTRICT scratch, void* dst, const v
 		data = _mm512_bmacxor16x16x16(_mm512_setzero_si512(), data, mat);
 		_mm512_store_si512(_dst + ptr, data);
 	}
+	_mm256_zeroupper();
 #else
 	UNUSED(scratch); UNUSED(dst); UNUSED(src); UNUSED(len); UNUSED(coefficient);
 #endif
@@ -194,6 +195,7 @@ void gf16_affine_muladd_bmm(const void *HEDLEY_RESTRICT scratch, void *HEDLEY_RE
 	UNUSED(mutScratch);
 #if defined(__AVX512BMM__) && defined(__AVX512VL__)
 	gf16_muladd_single(scratch, &gf16_affine_muladd_x_bmm, dst, src, len, coefficient);
+	_mm256_zeroupper();
 #else
 	UNUSED(scratch); UNUSED(dst); UNUSED(src); UNUSED(len); UNUSED(coefficient);
 #endif
@@ -203,6 +205,7 @@ void gf16_affine_muladd_prefetch_bmm(const void *HEDLEY_RESTRICT scratch, void *
 	UNUSED(mutScratch);
 #if defined(__AVX512BMM__) && defined(__AVX512VL__)
 	gf16_muladd_prefetch_single(scratch, &gf16_affine_muladd_x_bmm, dst, src, len, coefficient, prefetch);
+	_mm256_zeroupper();
 #else
 	UNUSED(scratch); UNUSED(dst); UNUSED(src); UNUSED(len); UNUSED(coefficient); UNUSED(prefetch);
 #endif
@@ -210,9 +213,9 @@ void gf16_affine_muladd_prefetch_bmm(const void *HEDLEY_RESTRICT scratch, void *
 
 #if defined(__AVX512BMM__) && defined(__AVX512VL__)
 #ifdef PLATFORM_AMD64
-GF16_MULADD_MULTI_FUNCS(gf16_affine, _bmm, gf16_affine_muladd_x_bmm, 12, sizeof(__m512i), 0, (void)0)
+GF16_MULADD_MULTI_FUNCS(gf16_affine, _bmm, gf16_affine_muladd_x_bmm, 12, sizeof(__m512i), 0, _mm256_zeroupper())
 #else
-GF16_MULADD_MULTI_FUNCS(gf16_affine, _bmm, gf16_affine_muladd_x_bmm, 6, sizeof(__m512i), 0, (void)0)
+GF16_MULADD_MULTI_FUNCS(gf16_affine, _bmm, gf16_affine_muladd_x_bmm, 6, sizeof(__m512i), 0, _mm256_zeroupper())
 #endif
 #else
 GF16_MULADD_MULTI_FUNCS_STUB(gf16_affine, _bmm)
@@ -252,6 +255,7 @@ void* gf16_affine_init_bmm(int polynomial) {
 		}
 		_mm256_store_si256((__m256i*)ret + val, result);
 	}
+	_mm256_zeroupper();
 	
 	return ret;
 #else

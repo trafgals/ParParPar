@@ -45,11 +45,7 @@ jobs:
       matrix:
         compiler:
           - { toolset: v143, os: 2022, vsver: '17 2022' }
-          - { toolset: ClangCL, os: 2022, vsver: '17 2022' }
         arch: ['ARM64']  # 'ARM' SDK seems to be missing on GHA now
-        exclude:
-          - compiler: ClangCL
-            arch: ARM64
     name: Test VS ${{ matrix.compiler.toolset }} ${{ matrix.arch }}
     runs-on: windows-${{ matrix.compiler.os }}
     timeout-minutes: 30
@@ -136,6 +132,8 @@ jobs:
         if: ${{ matrix.t.arch == 'i386' }}
       - run: sudo apt update
       - uses: petarpetrovt/setup-sde@v6.0
+        with:
+          sdeVersion: 9.24.0  # 9.27/9.33 doesn't work in Linux VMs
         if: ${{ matrix.t.arch == 'amd64' || matrix.t.arch == 'i386' }}
       - run: |
           sudo apt install -y g++-${{ matrix.cc_ver }}-${{ matrix.t.target }} cmake
@@ -213,6 +211,8 @@ jobs:
         if: ${{ matrix.t.arch == 'i386' }}
       - run: sudo apt update && sudo apt install -y clang-${{ matrix.cc_ver }} cmake
       - uses: petarpetrovt/setup-sde@v6.0
+        with:
+          sdeVersion: 9.24.0  # 9.27/9.33 doesn't work in Linux VMs
         if: ${{ matrix.t.arch == 'amd64' || matrix.t.arch == 'i386' }}
       - run: sudo apt install -y binutils-${{ matrix.t.target }} libgcc-12-dev-${{ matrix.t.libc }}-cross libstdc++-12-dev-${{ matrix.t.libc }}-cross
         if: ${{ matrix.t.arch != 'amd64' }}
