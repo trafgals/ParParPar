@@ -208,7 +208,7 @@ void _FN(gf16pmul)(void *HEDLEY_RESTRICT dst, const void* src1, const void* src2
 		_mword rem = _MM(unpacklo_epi64)(tmp1, tmp2);
 		_mword quot = _MM(unpackhi_epi64)(tmp1, tmp2);
 		
-# if defined(_USE_BMM) || defined(__AVX512BMM__)
+# ifdef _USE_BMM
 		_mword result = _MM(bmacxor16x16x16)(rem, quot, _MM(set_epi16)(
 #  if MWORD_SIZE >= 64
 			0x0dff, 0x8efa, 0x477d, 0xabbb, 0xddd8, 0x6eec, 0x3776, 0x1bbb,

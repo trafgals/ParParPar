@@ -152,6 +152,55 @@ process.on('exit', cleanupTmp);
 	}
 	assert.strictEqual(fs.existsSync(failTmpDir), false, 'Temp directory must be cleaned up on failure');
 
+	// 9. cubic review f4fe9a2d P1: verify fileScan handles cyclic directory links without infinite recursion
+	var cycleTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parpar-cycle-test-'));
+	try {
+		var subDir = path.join(cycleTmpDir, 'sub');
+		fs.mkdirSync(subDir);
+		var normalFile = path.join(subDir, 'file.bin');
+		fs.writeFileSync(normalFile, Buffer.from('cycle-test-data'));
+
+		var symlinkCreated = false;
+		var linkPath = path.join(subDir, 'link_to_parent');
+		try {
+			fs.symlinkSync(cycleTmpDir, linkPath, 'junction');
+			symlinkCreated = true;
+		} catch(symErr) {
+			// Symlink creation may fail on non-elevated Windows without Developer Mode
+		}
+
+		if(symlinkCreated) {
+			var cycleResults = await new Promise(function(resolve, reject) {
+				filescan.fileScan([cycleTmpDir], true, false, 2, 'sha256', function(err, res) {
+					if(err) return reject(err);
+					resolve(res);
+				});
+			});
+			assert(Array.isArray(cycleResults), 'cycleResults should be an array');
+			var foundNormal = cycleResults.some(function(f) { return f.name === normalFile; });
+			assert(foundNormal, 'fileScan should find non-cyclic file');
+			// Assert that infinite recursion was avoided and results are bounded
+			assert(cycleResults.length <= 2, 'fileScan should not produce duplicate results from cyclic links');
+		}
+	} finally {
+		try {
+			if(symlinkCreated) {
+				try { fs.unlinkSync(linkPath); } catch(e) {}
+			}
+			fs.rmSync(cycleTmpDir, { recursive: true, force: true });
+		} catch(e) {}
+	}
+
+	// 10. cubic review f4fe9a2d P1: verify stdio lifecycle is preserved and lazy getters function
+	assert.strictEqual(typeof par3gen.unrefStdio, 'function', 'par3gen.unrefStdio should be exported');
+	assert(parpar.par3, 'Lazy getter parpar.par3 should resolve');
+	assert(parpar.PAR3Gen, 'Lazy getter parpar.PAR3Gen should resolve');
+
+	// 11. cubic review f4fe9a2d P1: verify binding.gyp contains supports_mno_evex512 probe
+	var bindingGyp = fs.readFileSync(path.join(__dirname, '../binding.gyp'), 'utf8');
+	assert(bindingGyp.indexOf('supports_mno_evex512') !== -1, 'binding.gyp should probe supports_mno_evex512');
+	assert(bindingGyp.indexOf('-mno-evex512') !== -1, 'binding.gyp should include -mno-evex512 flag');
+
 	console.log('PAR2/PAR3 shared utilities and deduplication tests passed!');
 })().catch(function(err) {
 	console.error(err);

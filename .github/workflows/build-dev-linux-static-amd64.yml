@@ -5,6 +5,7 @@ on:
 jobs:
   build-dev-linux-static-amd64:
     name: Build dev amd64 Linux static binary
+    if: false # Disabled: musl.cc blocks GitHub Actions; pending reachable toolchain migration
     runs-on: ubuntu-24.04
     env:
       BUILD_ARCH: x64

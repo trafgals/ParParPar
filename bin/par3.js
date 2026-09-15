@@ -5,6 +5,8 @@
 var par3 = require('../lib/par3gen.js');
 var arg_parser = require('../lib/arg_parser.js');
 
+if(par3.unrefStdio) par3.unrefStdio();
+
 var cliFormat = process.stderr.isTTY ? function(code, msg) {
 	return '\x1b[' + code + 'm' + msg + '\x1b[0m';
 } : function(code, msg) { return msg; };

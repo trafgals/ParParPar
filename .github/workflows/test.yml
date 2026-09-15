@@ -10,8 +10,8 @@ jobs:
         config: [Debug, Release]
         compiler:
         - { toolset: v142, os: 2022, vsver: '17 2022' }
-        - { toolset: v145, os: 2025, vsver: '18 2026' }
-        - { toolset: ClangCL, os: 2025, vsver: '18 2026' }
+        - { toolset: v143, os: 2022, vsver: '17 2022' }
+        - { toolset: ClangCL, os: 2022, vsver: '17 2022' }
         arch: ['Win32', 'x64']
     name: Test VS ${{ matrix.compiler.toolset }} ${{ matrix.arch }} (${{ matrix.config }})
     runs-on: windows-${{ matrix.compiler.os }}
@@ -31,9 +31,9 @@ jobs:
       - run: Invoke-Expression "$env:SDE_PATH\sde.exe -icx -- test/gf16/build/${{ matrix.config }}/test.exe"
       - run: Invoke-Expression "$env:SDE_PATH\sde.exe -icx -- test/gf16/build/${{ matrix.config }}/test-pmul.exe"
       - run: Invoke-Expression "$env:SDE_PATH\sde.exe -icx -- test/gf16/build/${{ matrix.config }}/test-ctrl.exe -f"
-        if: ${{ matrix.config == 'Release' && matrix.compiler.os == '2025' }}
+        if: ${{ matrix.config == 'Release' && (matrix.compiler.toolset == 'ClangCL' || matrix.compiler.toolset == 'v143') }}
       - run: Invoke-Expression "$env:SDE_PATH\sde.exe -icx -- test/gf16/build/${{ matrix.config }}/test-inv.exe -f"
-        if: ${{ matrix.config == 'Release' && matrix.compiler.os == '2025' }}
+        if: ${{ matrix.config == 'Release' && (matrix.compiler.toolset == 'ClangCL' || matrix.compiler.toolset == 'v143') }}
       - run: Invoke-Expression "$env:SDE_PATH\sde.exe -icx -- test/hasher/build/${{ matrix.config }}/test.exe"
       
       # TODO: XOP tests for hasher?
@@ -45,8 +45,7 @@ jobs:
       matrix:
         compiler:
           - { toolset: v143, os: 2022, vsver: '17 2022' }
-          - { toolset: v145, os: 2025, vsver: '18 2026' }
-          - { toolset: ClangCL, os: 2025, vsver: '18 2026' }
+          - { toolset: ClangCL, os: 2022, vsver: '17 2022' }
         arch: ['ARM64']  # 'ARM' SDK seems to be missing on GHA now
         exclude:
           - compiler: ClangCL

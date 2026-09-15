@@ -5,6 +5,7 @@ on:
 jobs:
   build-dev-linux-static-aarch64:
     name: Build dev aarch64 Linux static binary
+    if: false # Disabled: musl.cc blocks GitHub Actions; pending reachable toolchain migration
     runs-on: ubuntu-24.04
     env:
       BUILD_ARCH: arm64
