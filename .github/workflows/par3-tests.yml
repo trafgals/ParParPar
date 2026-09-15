@@ -94,6 +94,10 @@ jobs:
         run: node test/par3-adaptive-chunk-sizing.js
         timeout-minutes: 5
 
+      - name: Windows multi-group affinity and effective CPU test
+        run: node test/par3-windows-multi-group-affinity.js
+        timeout-minutes: 5
+
   test-wave9:
     name: Wave 9 Tests
     runs-on: ubuntu-latest
@@ -143,6 +147,10 @@ jobs:
 
       - name: Adaptive chunk sizing test
         run: node test/par3-adaptive-chunk-sizing.js
+        timeout-minutes: 5
+
+      - name: Windows multi-group affinity and effective CPU test
+        run: node test/par3-windows-multi-group-affinity.js
         timeout-minutes: 5
 
       - name: Create test files

@@ -245,8 +245,12 @@ public:
 
 /// Effective CPU count for auto-threading, respecting OS affinity masks
 /// (sched_getaffinity on POSIX; GetProcessGroupAffinity / GetProcessAffinityMask
-/// on Windows). Falls back to GetCpuTopology().logicalCores and
-/// std::thread::hardware_concurrency(). Cached after the first call and capped
-/// at 128 to keep per-worker overhead bounded on high-core-count architectures.
-/// Shared by the engine and the Fenger path (par3_engine_fenger.cc).
+/// and multi-group Job Objects / CPU sets on Windows). Falls back to
+/// GetCpuTopology().logicalCores and std::thread::hardware_concurrency().
+/// Cached after the first call and capped at 128 to keep per-worker overhead
+/// bounded on high-core-count architectures. Shared by the engine and the
+/// Fenger path (par3_engine_fenger.cc).
 size_t GetEffectiveCpuCount(void);
+
+/// Resets the cached effective CPU count (for testing).
+void ResetEffectiveCpuCountCache(void);
