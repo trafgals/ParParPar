@@ -147,16 +147,60 @@ size_t GetEffectiveCpuCount() {
 		count = (size_t)CPU_COUNT(&mask);
 	}
 #elif defined(_WIN32)
+	// Use GetLogicalProcessorInformationEx(RelationGroup) to enumerate per-group
+	// active counts, intersecting with the process's affinity. The simpler
+	// GetActiveProcessorCount(g) returns the *system's* total in group g —
+	// if the process is affinity-restricted within group g, that overcounts.
+	// Multi-group processes (groups.size() > 1) require the full enumeration.
+	// Single-group processes still use GetActiveProcessorCount since the
+	// process's group is the only one available.
 	USHORT groupCount = 0;
+	std::vector<USHORT> processGroups;
 	if (GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, nullptr) == 0 &&
-	    GetLastError() == ERROR_INSUFFICIENT_BUFFER && groupCount > 1) {
-		std::vector<USHORT> groups(groupCount);
-		if (GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, groups.data())) {
-			size_t total_aff = 0;
-			for (USHORT g : groups) {
-				total_aff += (size_t)GetActiveProcessorCount(g);
+	    GetLastError() == ERROR_INSUFFICIENT_BUFFER && groupCount > 0) {
+		processGroups.resize(groupCount);
+		if (!GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, processGroups.data())) {
+			processGroups.clear();
+		}
+	}
+	if (processGroups.size() > 1) {
+		// Multi-group: enumerate RelationGroup entries and count bits that
+		// belong to a group the process actually uses. The process group
+		// number equals the index into GroupInfo (the API does not return
+		// the group number per entry — see _GROUP_RELATIONSHIP docs).
+		DWORD len = 0;
+		GetLogicalProcessorInformationEx(RelationGroup, nullptr, &len);
+		if (len > 0) {
+			std::vector<uint8_t> buffer(len);
+			if (GetLogicalProcessorInformationEx(RelationGroup,
+			    reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &len)) {
+				size_t total_aff = 0;
+				DWORD offset = 0;
+				while (offset < len) {
+					auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
+					if (info->Relationship == RelationGroup) {
+						WORD activeGroupCount = info->Group.ActiveGroupCount;
+						for (WORD gi = 0; gi < activeGroupCount; gi++) {
+							WORD g = gi;  // GroupInfo index == group number
+							KAFFINITY mask = info->Group.GroupInfo[gi].ActiveProcessorMask;
+							bool processUsesGroup = false;
+							for (USHORT pg : processGroups) {
+								if (pg == g) { processUsesGroup = true; break; }
+							}
+							if (!processUsesGroup) continue;
+							for (KAFFINITY m = mask; m != 0; m &= (m - 1)) total_aff++;
+						}
+					}
+					offset += info->Size;
+				}
+				if (total_aff > 0) count = total_aff;
 			}
-			if (total_aff > 0) count = total_aff;
+		}
+	} else if (!processGroups.empty()) {
+		// Single-group process: GetActiveProcessorCount is accurate.
+		for (USHORT g : processGroups) {
+			size_t gc = (size_t)GetActiveProcessorCount(g);
+			if (gc > 0) count += gc;
 		}
 	}
 	if (count == 0) {
