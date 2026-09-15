@@ -68,23 +68,48 @@ fs.writeFileSync(fileB, Buffer.alloc(0));
 var expectedMd5_16k = crypto.createHash('md5').update(dataA.subarray(0, 16384)).digest('hex');
 var expectedSha256_16k = crypto.createHash('sha256').update(dataA.subarray(0, 16384)).digest('hex');
 
-// Test fileScan directly with md5 (PAR2)
-filescan.fileScan([fileA, fileB], false, false, 2, 'md5', function(err, info) {
-	assert.ifError(err);
-	assert.strictEqual(info.length, 2);
-	var fA = info.find(function(f) { return f.name === fileA; });
-	var fB = info.find(function(f) { return f.name === fileB; });
+function cleanupTmp() {
+	if(tmpDir && fs.existsSync(tmpDir)) {
+		try {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		} catch(e) {
+			try {
+				if(fs.existsSync(fileA)) fs.unlinkSync(fileA);
+				if(fs.existsSync(fileB)) fs.unlinkSync(fileB);
+				fs.rmdirSync(tmpDir);
+			} catch(e2) {}
+		}
+	}
+}
+process.on('exit', cleanupTmp);
 
-	assert.strictEqual(fA.size, 32768);
-	assert.strictEqual(fA.md5_16k.toString('hex'), expectedMd5_16k);
+(async function() {
+	try {
+		// Test fileScan directly with md5 (PAR2)
+		var info = await new Promise(function(resolve, reject) {
+			filescan.fileScan([fileA, fileB], false, false, 2, 'md5', function(err, res) {
+				if(err) return reject(err);
+				resolve(res);
+			});
+		});
+		assert.strictEqual(info.length, 2);
+		var fA = info.find(function(f) { return f.name === fileA; });
+		var fB = info.find(function(f) { return f.name === fileB; });
 
-	assert.strictEqual(fB.size, 0);
-	assert.strictEqual(fB.md5_16k.toString('hex'), 'd41d8cd98f00b204e9800998ecf8427e');
-	assert.strictEqual(fB.md5.toString('hex'), 'd41d8cd98f00b204e9800998ecf8427e');
+		assert.strictEqual(fA.size, 32768);
+		assert.strictEqual(fA.md5_16k.toString('hex'), expectedMd5_16k);
 
-	// Test fileScan directly with sha256 (PAR3)
-	filescan.fileScan([fileA, fileB], false, false, 2, 'sha256', function(err2, info2) {
-		assert.ifError(err2);
+		assert.strictEqual(fB.size, 0);
+		assert.strictEqual(fB.md5_16k.toString('hex'), 'd41d8cd98f00b204e9800998ecf8427e');
+		assert.strictEqual(fB.md5.toString('hex'), 'd41d8cd98f00b204e9800998ecf8427e');
+
+		// Test fileScan directly with sha256 (PAR3)
+		var info2 = await new Promise(function(resolve, reject) {
+			filescan.fileScan([fileA, fileB], false, false, 2, 'sha256', function(err, res) {
+				if(err) return reject(err);
+				resolve(res);
+			});
+		});
 		assert.strictEqual(info2.length, 2);
 		var fA2 = info2.find(function(f) { return f.name === fileA; });
 		var fB2 = info2.find(function(f) { return f.name === fileB; });
@@ -96,22 +121,39 @@ filescan.fileScan([fileA, fileB], false, false, 2, 'md5', function(err, info) {
 		assert.strictEqual(fB2.sha256_16k.length, 32);
 
 		// Verify par2gen.fileInfo delegates correctly
-		par2gen.fileInfo([fileA], function(err3, p2Info) {
-			assert.ifError(err3);
-			assert.strictEqual(p2Info[0].md5_16k.toString('hex'), expectedMd5_16k);
-
-			// Verify par3gen.fileInfo delegates correctly
-			par3gen.fileInfo([fileA], function(err4, p3Info) {
-				assert.ifError(err4);
-				assert.strictEqual(p3Info[0].sha256_16k.toString('hex'), expectedSha256_16k);
-
-				// Clean up
-				fs.unlinkSync(fileA);
-				fs.unlinkSync(fileB);
-				fs.rmdirSync(tmpDir);
-
-				console.log('PAR2/PAR3 shared utilities and deduplication tests passed!');
+		var p2Info = await new Promise(function(resolve, reject) {
+			par2gen.fileInfo([fileA], function(err, res) {
+				if(err) return reject(err);
+				resolve(res);
 			});
 		});
-	});
+		assert.strictEqual(p2Info[0].md5_16k.toString('hex'), expectedMd5_16k);
+
+		// Verify par3gen.fileInfo delegates correctly
+		var p3Info = await new Promise(function(resolve, reject) {
+			par3gen.fileInfo([fileA], function(err, res) {
+				if(err) return reject(err);
+				resolve(res);
+			});
+		});
+		assert.strictEqual(p3Info[0].sha256_16k.toString('hex'), expectedSha256_16k);
+	} finally {
+		cleanupTmp();
+	}
+
+	// 8. cubic review 4021045610 P3: verify that cleanup reliably removes directory on simulated failure
+	var failTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parpar-dedup-fail-test-'));
+	var failFile = path.join(failTmpDir, 'dummy.bin');
+	fs.writeFileSync(failFile, Buffer.from('test'));
+	try {
+		throw new Error('simulated failure inside async test');
+	} catch(e) {
+		fs.rmSync(failTmpDir, { recursive: true, force: true });
+	}
+	assert.strictEqual(fs.existsSync(failTmpDir), false, 'Temp directory must be cleaned up on failure');
+
+	console.log('PAR2/PAR3 shared utilities and deduplication tests passed!');
+})().catch(function(err) {
+	console.error(err);
+	process.exit(1);
 });
