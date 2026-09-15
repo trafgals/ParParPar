@@ -1007,7 +1007,19 @@ int main(int argc, char** argv) {
 	ALIGN_FREE(tmp);
 	ALIGN_FREE(tmp2);
 	ALIGN_FREE(dst);
-	ALIGN_FREE(ref);
+	// cubic review on PR #123 P2: verify default_method selects BMM when available
+	bool hasBmmMethod = false;
+	for(auto method : methods) {
+		if(method == GF16_AFFINE_BMM) hasBmmMethod = true;
+	}
+	if(hasBmmMethod) {
+		Galois16Methods defMethod = Galois16Mul::default_method();
+		if(defMethod != GF16_AFFINE_BMM) {
+			std::cout << "default_method failed to select BMM when available" << std::endl;
+			return 1;
+		}
+	}
+
 	std::cout << "All tests passed" << std::endl;
 	return 0;
 }

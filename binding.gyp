@@ -8,7 +8,7 @@
       ['target_arch=="ia32"', {
         "msvs_settings": {"VCCLCompilerTool": {"EnableEnhancedInstructionSet": "2"}}
       }],
-      ['OS!="win" and enable_native_tuning!=0', {
+      ['OS!="win" and enable_native_tuning!=0 and target_arch==host_arch', {
         "variables": {"supports_native%": "<!(<!(echo ${CXX_target:-${CXX:-c++}}) -MM -E hasher/hasher.cpp -march=native 2>/dev/null || true)"},
         "conditions": [
           ['supports_native!=""', {
@@ -67,7 +67,7 @@
     {
       "target_name": "parpar_gf",
       "dependencies": [
-        "parpar_gf_c", "gf16", "gf16_generic", "gf16_sse2", "gf16_ssse3", "gf16_avx", "gf16_avx2", "gf16_avx512", "gf16_vbmi", "gf16_gfni", "gf16_gfni_avx2", "gf16_gfni_avx512", "gf16_gfni_avx10", "gf16_neon", "gf16_sha3", "gf16_sve", "gf16_sve2", "gf16_rvv", "gf16_rvv_zvbc",
+        "parpar_gf_c", "gf16", "gf16_generic", "gf16_sse2", "gf16_ssse3", "gf16_avx", "gf16_avx2", "gf16_avx512", "gf16_vbmi", "gf16_gfni", "gf16_gfni_avx2", "gf16_gfni_avx512", "gf16_bmm", "gf16_neon", "gf16_sha3", "gf16_sve", "gf16_sve2", "gf16_rvv", "gf16_rvv_zvbc",
         "hasher", "hasher_sse2", "hasher_clmul", "hasher_xop", "hasher_bmi1", "hasher_avx2", "hasher_avx512", "hasher_avx512vl", "hasher_armcrc", "hasher_neon", "hasher_neoncrc", "hasher_sve2", "hasher_rvzbc"
       ],
       "sources": ["src/gf.cc", "gf16/controller.cpp", "gf16/controller_cpu.cpp", "gf16/controller_ocl.cpp", "gf16/controller_ocl_init.cpp"],
@@ -507,8 +507,7 @@
       "conditions": [
         ['target_arch in "ia32 x64" and OS!="win"', {
           "variables": {
-            "supports_avx512vl%": "<!(<!(echo ${CC_target:-${CC:-cc}}) -MM -E hasher/hasher_avx512vl.cpp -mavx512vl -mavx512bw -mbmi2 -mpclmul 2>/dev/null || true)",
-            "supports_avx10%": "<!(<!(echo ${CC_target:-${CC:-cc}}) -MM -E hasher/hasher_avx512vl.cpp -mavx512vl -mavx512bw -mbmi2 -mpclmul -mno-evex512 2>/dev/null || true)"
+            "supports_avx512vl%": "<!(<!(echo ${CC_target:-${CC:-cc}}) -MM -E hasher/hasher_avx512vl.cpp -mavx512vl -mavx512bw -mbmi2 -mpclmul 2>/dev/null || true)"
           },
           "conditions": [
             ['supports_avx512vl!=""', {
@@ -517,14 +516,6 @@
               "xcode_settings": {
                 "OTHER_CFLAGS": ["-mavx512vl", "-mavx512bw", "-mbmi2", "-mpclmul"],
                 "OTHER_CXXFLAGS": ["-mavx512vl", "-mavx512bw", "-mbmi2", "-mpclmul"],
-              }
-            }],
-            ['supports_avx10!=""', {
-              "cflags": ["-mno-evex512"],
-              "cxxflags": ["-mno-evex512"],
-              "xcode_settings": {
-                "OTHER_CFLAGS": ["-mno-evex512"],
-                "OTHER_CXXFLAGS": ["-mno-evex512"],
               }
             }]
           ]
@@ -1060,12 +1051,11 @@
       ]
     },
     {
-      "target_name": "gf16_gfni_avx10",
+      "target_name": "gf16_bmm",
       "type": "static_library",
       "defines": ["NDEBUG"],
       "sources": [
-        "gf16/gf16_affine_avx10.c",
-        "gf16/gf_add_avx10.c"
+        "gf16/gf16_affine_bmm.c"
       ],
       "cflags": ["-Wno-unused-function", "-std=gnu99"],
       "xcode_settings": {
@@ -1076,21 +1066,21 @@
       "msvs_settings": {"VCCLCompilerTool": {"BufferSecurityCheck": "false"}},
       "conditions": [
         ['target_arch in "ia32 x64" and OS!="win"', {
-          "variables": {"supports_gfni_avx10%": "<!(<!(echo ${CC_target:-${CC:-cc}}) -MM -E gf16/gf16_affine_avx10.c -mgfni -mavx512vl -mavx512bw -mno-evex512 2>/dev/null || true)"},
+          "variables": {"supports_bmm%": "<!(<!(echo ${CC_target:-${CC:-cc}}) -MM -E gf16/gf16_affine_bmm.c -mavx512vl -mavx512bmm 2>/dev/null || true)"},
           "conditions": [
-            ['supports_gfni_avx10!=""', {
-              "cflags": ["-mgfni", "-mavx512vl", "-mavx512bw", "-mno-evex512"],
-              "cxxflags": ["-mgfni", "-mavx512vl", "-mavx512bw", "-mno-evex512"],
+            ['supports_bmm!=""', {
+              "cflags": ["-mavx512vl", "-mavx512bmm"],
+              "cxxflags": ["-mavx512vl", "-mavx512bmm"],
               "xcode_settings": {
-                "OTHER_CFLAGS": ["-mgfni", "-mavx512vl", "-mavx512bw", "-mno-evex512"],
-                "OTHER_CXXFLAGS": ["-mgfni", "-mavx512vl", "-mavx512bw", "-mno-evex512"],
+                "OTHER_CFLAGS": ["-mavx512vl", "-mavx512bmm"],
+                "OTHER_CXXFLAGS": ["-mavx512vl", "-mavx512bmm"],
               }
             }]
           ]
         }],
         ['target_arch in "ia32 x64" and OS=="win"', {
           "msvs_settings": {
-            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX2"], "EnableEnhancedInstructionSet": "0"}
+            "VCCLCompilerTool": {"AdditionalOptions": ["/arch:AVX512"], "EnableEnhancedInstructionSet": "0"}
           }
         }]
       ]
