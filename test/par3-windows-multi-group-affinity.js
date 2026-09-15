@@ -158,7 +158,7 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Concurrency / Thread-Safety Test with Watchdog (cubic review 5b1b83d5 P2, 0f33d3d0 P2, 2aa8af0f P3)
+// 5. Concurrency / Thread-Safety Test with Watchdog (cubic review 5b1b83d5 P2, 0f33d3d0 P2, 2aa8af0f P3, 12274c8e P2)
 // ---------------------------------------------------------------------------
 
 function runConcurrentThreadSafetyTest(opts) {
@@ -174,36 +174,52 @@ function runConcurrentThreadSafetyTest(opts) {
   var settled = false;
 
   return new Promise(function(resolve, reject) {
-    var timer = setTimeout(function() {
-      cleanup();
-      reject(new Error('Watchdog timeout: worker threads did not complete within ' + timeoutMs + 'ms (cubic review 2aa8af0f P3)'));
-    }, timeoutMs);
+    function terminateAllWorkers() {
+      return Promise.all(workers.map(function(w) {
+        try {
+          return w.terminate().catch(function() {});
+        } catch (_) {
+          return Promise.resolve();
+        }
+      }));
+    }
 
-    function cleanup() {
+    function cleanupAndReject(err) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      for (var k = 0; k < workers.length; k++) {
-        try { workers[k].terminate(); } catch (_) {}
-      }
+      terminateAllWorkers().then(function() {
+        reject(err);
+      });
     }
+
+    function cleanupAndResolve() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      terminateAllWorkers().then(function() {
+        resolve();
+      });
+    }
+
+    var timer = setTimeout(function() {
+      cleanupAndReject(new Error('Watchdog timeout: worker threads did not complete within ' + timeoutMs + 'ms (cubic review 2aa8af0f P3 & 12274c8e P2)'));
+    }, timeoutMs);
 
     function onWorkerMessage() {
       completedWorkers++;
       if (completedWorkers === totalWorkers) {
-        cleanup();
-        resolve();
+        cleanupAndResolve();
       }
     }
 
     function onWorkerError(err) {
-      cleanup();
-      reject(err);
+      cleanupAndReject(err);
     }
 
     function onWorkerExit(code) {
       if (code !== 0 && !settled) {
-        onWorkerError(new Error('Worker exited unexpectedly with exit code ' + code));
+        cleanupAndReject(new Error('Worker exited unexpectedly with exit code ' + code));
       }
     }
 
@@ -238,12 +254,12 @@ function runConcurrentThreadSafetyTest(opts) {
   });
 }
 
-console.log('5a. Verifying watchdog timeout and worker termination on stall (cubic review 2aa8af0f P3)...');
+console.log('5a. Verifying watchdog timeout and worker termination on stall (cubic review 2aa8af0f P3 & 12274c8e P2)...');
 runConcurrentThreadSafetyTest({ testWatchdog: true, timeoutMs: 150 }).then(function() {
   assert.fail('Expected watchdog timeout on stalled worker');
 }).catch(function(err) {
   assert(err.message.includes('Watchdog timeout'), 'Error must be watchdog timeout: ' + err.message);
-  console.log('   PASS: Watchdog cleanly caught stall, terminated workers, and returned diagnostic.');
+  console.log('   PASS: Watchdog cleanly caught stall, awaited worker termination, and returned diagnostic.');
 
   console.log('5b. Verifying cache read / reset thread safety across concurrent worker threads...');
   return runConcurrentThreadSafetyTest({ timeoutMs: 15000 });
