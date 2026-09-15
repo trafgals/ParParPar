@@ -14,6 +14,11 @@ var path = require('path');
 var { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
 if (!isMainThread) {
+  if (workerData.role === 'staller') {
+    // Intentionally stall without posting 'done' to exercise watchdog timeout contract
+    setTimeout(function() {}, 60000);
+    return;
+  }
   // Worker thread executing concurrent cache reads or resets for section 5
   var gf64Worker = require(workerData.addonPath);
   var iters = workerData.iterations || 5000;
@@ -153,31 +158,53 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Concurrency / Thread-Safety Test (cubic review 5b1b83d5 & 0f33d3d0 P2)
+// 5. Concurrency / Thread-Safety Test with Watchdog (cubic review 5b1b83d5 P2, 0f33d3d0 P2, 2aa8af0f P3)
 // ---------------------------------------------------------------------------
-console.log('5. Verifying cache read / reset thread safety across concurrent worker threads...');
 
-function runConcurrentThreadSafetyTest() {
+function runConcurrentThreadSafetyTest(opts) {
+  opts = opts || {};
+  var timeoutMs = opts.timeoutMs || 15000;
+  var numReaders = opts.testWatchdog ? 0 : 4;
+  var numResetters = opts.testWatchdog ? 0 : 2;
+  var numStallers = opts.testWatchdog ? 1 : 0;
+  var iterations = opts.iterations || 5000;
+  var totalWorkers = numReaders + numResetters + numStallers;
+  var completedWorkers = 0;
+  var workers = [];
+  var settled = false;
+
   return new Promise(function(resolve, reject) {
-    var numReaders = 4;
-    var numResetters = 2;
-    var iterations = 5000;
-    var totalWorkers = numReaders + numResetters;
-    var completedWorkers = 0;
-    var workers = [];
+    var timer = setTimeout(function() {
+      cleanup();
+      reject(new Error('Watchdog timeout: worker threads did not complete within ' + timeoutMs + 'ms (cubic review 2aa8af0f P3)'));
+    }, timeoutMs);
+
+    function cleanup() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      for (var k = 0; k < workers.length; k++) {
+        try { workers[k].terminate(); } catch (_) {}
+      }
+    }
 
     function onWorkerMessage() {
       completedWorkers++;
       if (completedWorkers === totalWorkers) {
+        cleanup();
         resolve();
       }
     }
 
     function onWorkerError(err) {
-      for (var k = 0; k < workers.length; k++) {
-        try { workers[k].terminate(); } catch (_) {}
-      }
+      cleanup();
       reject(err);
+    }
+
+    function onWorkerExit(code) {
+      if (code !== 0 && !settled) {
+        onWorkerError(new Error('Worker exited unexpectedly with exit code ' + code));
+      }
     }
 
     for (var r = 0; r < numReaders; r++) {
@@ -186,6 +213,7 @@ function runConcurrentThreadSafetyTest() {
       });
       wReader.on('message', onWorkerMessage);
       wReader.on('error', onWorkerError);
+      wReader.on('exit', onWorkerExit);
       workers.push(wReader);
     }
 
@@ -195,12 +223,31 @@ function runConcurrentThreadSafetyTest() {
       });
       wResetter.on('message', onWorkerMessage);
       wResetter.on('error', onWorkerError);
+      wResetter.on('exit', onWorkerExit);
       workers.push(wResetter);
+    }
+
+    for (var t = 0; t < numStallers; t++) {
+      var wStaller = new Worker(__filename, {
+        workerData: { addonPath: ADDON_PATH, role: 'staller' }
+      });
+      wStaller.on('error', onWorkerError);
+      wStaller.on('exit', onWorkerExit);
+      workers.push(wStaller);
     }
   });
 }
 
-runConcurrentThreadSafetyTest().then(function() {
+console.log('5a. Verifying watchdog timeout and worker termination on stall (cubic review 2aa8af0f P3)...');
+runConcurrentThreadSafetyTest({ testWatchdog: true, timeoutMs: 150 }).then(function() {
+  assert.fail('Expected watchdog timeout on stalled worker');
+}).catch(function(err) {
+  assert(err.message.includes('Watchdog timeout'), 'Error must be watchdog timeout: ' + err.message);
+  console.log('   PASS: Watchdog cleanly caught stall, terminated workers, and returned diagnostic.');
+
+  console.log('5b. Verifying cache read / reset thread safety across concurrent worker threads...');
+  return runConcurrentThreadSafetyTest({ timeoutMs: 15000 });
+}).then(function() {
   console.log('   PASS: Cache read / reset thread safety verified across 6 concurrent worker threads (20,000 reads, 10,000 resets).');
   console.log('\nAll Windows multi-group affinity and effective CPU count tests passed!\n');
 }).catch(function(err) {
