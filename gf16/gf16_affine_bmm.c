@@ -2,6 +2,14 @@
 #include "gf16_global.h"
 #include "../src/platform.h"
 
+#if defined(_MSC_VER) && defined(__AVX512F__) && _MSC_VER >= 1951 && defined(PLATFORM_AMD64)
+# ifndef __AVX512BMM__
+#  define __AVX512BMM__ 1
+#  define _mm256_bmacxor16x16x16 _mm256_bmacxor16x16x16_epi16
+#  define _mm512_bmacxor16x16x16 _mm512_bmacxor16x16x16_epi16
+# endif
+#endif
+
 #if defined(__AVX512BMM__) && defined(__AVX512VL__)
 int gf16_affine_available_bmm = 1;
 

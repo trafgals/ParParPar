@@ -72,6 +72,24 @@ test('cancelling a single queued item', function() {
 	assert.strictEqual(result, false, 'double cancel should return false');
 });
 
+test('re-entrant cancel/flush during _finish should not double-invoke callbacks or overflow stack (cubic review 0e185704 P1)', function() {
+	var dt = new DelayThrottle(100);
+	var callsA = 0;
+	var callsB = 0;
+	dt.pass(1, function(cancelled) {
+		callsA++;
+		dt.cancel(); // re-entrant call
+		dt.flush();  // re-entrant call
+	});
+	dt.pass(2, function(cancelled) {
+		callsB++;
+	});
+	dt.cancel();
+	assert.strictEqual(callsA, 1, 'Callback A should only be called once');
+	assert.strictEqual(callsB, 1, 'Callback B should only be called once');
+	assert.deepStrictEqual(dt.queue, {}, 'Queue should be empty');
+});
+
 // cubic review on PR #123 P3: exercise DelayThrottle natural timeout path
 var asyncTests = [];
 function testAsync(name, fn) {
