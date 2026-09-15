@@ -11,6 +11,27 @@ var assert = require('assert');
 var cp = require('child_process');
 var fs = require('fs');
 var path = require('path');
+var { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
+
+if (!isMainThread) {
+  // Worker thread executing concurrent cache reads or resets for section 5
+  var gf64Worker = require(workerData.addonPath);
+  var iters = workerData.iterations || 5000;
+  if (workerData.role === 'reader') {
+    for (var wi = 0; wi < iters; wi++) {
+      var countRead = gf64Worker.get_effective_cpu_count();
+      if (countRead < 1 || countRead > 128) {
+        throw new Error('Worker observed invalid effective CPU count: ' + countRead);
+      }
+    }
+  } else if (workerData.role === 'resetter') {
+    for (var wj = 0; wj < iters; wj++) {
+      gf64Worker.reset_effective_cpu_count_cache();
+    }
+  }
+  parentPort.postMessage('done');
+  return;
+}
 
 var ADDON_PATH = path.join(__dirname, '..', 'build', 'Release', 'parpar_gf64.node');
 var HEADER_PATH = path.join(__dirname, '..', 'src', 'par3_engine.h');
@@ -28,10 +49,10 @@ assert(!headerContent.includes('respecting Linux affinity masks.\n/// Cached aft
   'par3_engine.h should not state Linux-only and capped at 32');
 assert(headerContent.includes('capped at 128'),
   'par3_engine.h must document 128 cap');
-assert(headerContent.includes('Windows affinity masks') || headerContent.includes('Windows'),
-  'par3_engine.h must document Windows affinity support');
-assert(headerContent.includes('multi-group'),
-  'par3_engine.h must document multi-group support');
+assert(headerContent.includes('multi-group') && headerContent.includes('Windows'),
+  'par3_engine.h must document Windows multi-group support');
+assert(headerContent.includes('CPU sets'),
+  'par3_engine.h must document CPU sets support');
 console.log('   PASS: Header declaration comment correctly matches implementation.');
 
 // ---------------------------------------------------------------------------
@@ -132,16 +153,58 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Concurrency / Thread-Safety Test (cubic review 5b1b83d5 Finding 1 P2)
+// 5. Concurrency / Thread-Safety Test (cubic review 5b1b83d5 & 0f33d3d0 P2)
 // ---------------------------------------------------------------------------
-console.log('5. Verifying cache read / reset thread safety...');
-var readRaces = 1000;
-for (var r = 0; r < readRaces; r++) {
-  gf64.reset_effective_cpu_count_cache();
-  var c = gf64.get_effective_cpu_count();
-  assert(c >= 1 && c <= 128, 'Concurrent cache reset/read must yield valid count');
-}
-console.log('   PASS: Cache read / reset thread safety verified across 1000 iterations.');
+console.log('5. Verifying cache read / reset thread safety across concurrent worker threads...');
 
-console.log('\nAll Windows multi-group affinity and effective CPU count tests passed!\n');
+function runConcurrentThreadSafetyTest() {
+  return new Promise(function(resolve, reject) {
+    var numReaders = 4;
+    var numResetters = 2;
+    var iterations = 5000;
+    var totalWorkers = numReaders + numResetters;
+    var completedWorkers = 0;
+    var workers = [];
+
+    function onWorkerMessage() {
+      completedWorkers++;
+      if (completedWorkers === totalWorkers) {
+        resolve();
+      }
+    }
+
+    function onWorkerError(err) {
+      for (var k = 0; k < workers.length; k++) {
+        try { workers[k].terminate(); } catch (_) {}
+      }
+      reject(err);
+    }
+
+    for (var r = 0; r < numReaders; r++) {
+      var wReader = new Worker(__filename, {
+        workerData: { addonPath: ADDON_PATH, role: 'reader', iterations: iterations }
+      });
+      wReader.on('message', onWorkerMessage);
+      wReader.on('error', onWorkerError);
+      workers.push(wReader);
+    }
+
+    for (var s = 0; s < numResetters; s++) {
+      var wResetter = new Worker(__filename, {
+        workerData: { addonPath: ADDON_PATH, role: 'resetter', iterations: iterations }
+      });
+      wResetter.on('message', onWorkerMessage);
+      wResetter.on('error', onWorkerError);
+      workers.push(wResetter);
+    }
+  });
+}
+
+runConcurrentThreadSafetyTest().then(function() {
+  console.log('   PASS: Cache read / reset thread safety verified across 6 concurrent worker threads (20,000 reads, 10,000 resets).');
+  console.log('\nAll Windows multi-group affinity and effective CPU count tests passed!\n');
+}).catch(function(err) {
+  console.error('Thread safety test failed:', err);
+  process.exit(1);
+});
 
