@@ -61,6 +61,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <chrono>
+#include "par3_topology.h"
 
 // ============================================================================
 // Dispatch initialisation (one-shot)
@@ -70,34 +71,10 @@ static bool s_dispatch_initialized = false;
 // ============================================================================
 // L3 cache size detection
 // ----------------------------------------------------------------------------
-// Reads shared L3 cache size from sysfs. Falls back to 32 MiB if unavailable.
+// Uses cross-platform CpuTopology discovery module (par3_topology.h).
 // ============================================================================
 static size_t GetL3CacheSize() {
-	FILE* f = std::fopen("/sys/devices/system/cpu/cpu0/cache/index3/size", "r");
-	if (f) {
-		char buf[256];
-		if (std::fgets(buf, sizeof(buf), f)) {
-			std::fclose(f);
-			char* endptr = nullptr;
-			// strtod handles leading whitespace and numbers
-			double val = std::strtod(buf, &endptr);
-			size_t multiplier = 1;
-			// skip whitespace before unit
-			while (endptr && (*endptr == ' ' || *endptr == '\t')) {
-				endptr++;
-			}
-			if (endptr) {
-				switch (*endptr) {
-					case 'K': case 'k': multiplier = 1024; break;
-					case 'M': case 'm': multiplier = 1024 * 1024; break;
-					case 'G': case 'g': multiplier = 1024 * 1024 * 1024; break;
-				}
-			}
-			return static_cast<size_t>(val * multiplier);
-		}
-		std::fclose(f);
-	}
-	return 32ULL * 1024 * 1024; // 32 MiB fallback
+	return GetCpuTopology().l3PerCluster;
 }
 
 // ============================================================================
@@ -151,13 +128,12 @@ static inline void EnsureDispatch() {
 static constexpr size_t kCauchyMaxWorkers = 8;
 static size_t s_cauchyWorkerCount = 0;
 // ============================================================================
-// Effective CPU count  (affinity-aware)
+// Effective CPU count  (affinity- and topology-aware)
 // ----------------------------------------------------------------------------
 // Returns the number of CPUs the process is allowed to run on according to
-// the thread's CPU affinity mask (sched_getaffinity), falling back to
-// std::thread::hardware_concurrency() when affinity info is unavailable or
-// on non-Linux platforms.  The result is cached after the first call and
-// capped at 32 to keep per-worker overhead bounded on large machines.
+// the thread's CPU affinity mask, falling back to GetCpuTopology().logicalCores
+// and std::thread::hardware_concurrency(). Capped at 128 to keep per-worker
+// overhead bounded on high-core-count architectures.
 // ============================================================================
 size_t GetEffectiveCpuCount() {
 	static size_t s_cached = 0;
@@ -170,11 +146,79 @@ size_t GetEffectiveCpuCount() {
 	if (sched_getaffinity(0, sizeof(mask), &mask) == 0) {
 		count = (size_t)CPU_COUNT(&mask);
 	}
+#elif defined(_WIN32)
+	// Use GetLogicalProcessorInformationEx(RelationGroup) to enumerate per-group
+	// active counts, intersecting with the process's affinity. The simpler
+	// GetActiveProcessorCount(g) returns the *system's* total in group g —
+	// if the process is affinity-restricted within group g, that overcounts.
+	// Multi-group processes (groups.size() > 1) require the full enumeration.
+	// Single-group processes still use GetActiveProcessorCount since the
+	// process's group is the only one available.
+	USHORT groupCount = 0;
+	std::vector<USHORT> processGroups;
+	if (GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, nullptr) == 0 &&
+	    GetLastError() == ERROR_INSUFFICIENT_BUFFER && groupCount > 0) {
+		processGroups.resize(groupCount);
+		if (!GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, processGroups.data())) {
+			processGroups.clear();
+		}
+	}
+	if (processGroups.size() > 1) {
+		// Multi-group: enumerate RelationGroup entries and count bits that
+		// belong to a group the process actually uses. The process group
+		// number equals the index into GroupInfo (the API does not return
+		// the group number per entry — see _GROUP_RELATIONSHIP docs).
+		DWORD len = 0;
+		GetLogicalProcessorInformationEx(RelationGroup, nullptr, &len);
+		if (len > 0) {
+			std::vector<uint8_t> buffer(len);
+			if (GetLogicalProcessorInformationEx(RelationGroup,
+			    reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &len)) {
+				size_t total_aff = 0;
+				DWORD offset = 0;
+				while (offset < len) {
+					auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
+					if (info->Relationship == RelationGroup) {
+						WORD activeGroupCount = info->Group.ActiveGroupCount;
+						for (WORD gi = 0; gi < activeGroupCount; gi++) {
+							WORD g = gi;  // GroupInfo index == group number
+							KAFFINITY mask = info->Group.GroupInfo[gi].ActiveProcessorMask;
+							bool processUsesGroup = false;
+							for (USHORT pg : processGroups) {
+								if (pg == g) { processUsesGroup = true; break; }
+							}
+							if (!processUsesGroup) continue;
+							for (KAFFINITY m = mask; m != 0; m &= (m - 1)) total_aff++;
+						}
+					}
+					offset += info->Size;
+				}
+				if (total_aff > 0) count = total_aff;
+			}
+		}
+	} else if (!processGroups.empty()) {
+		// Single-group process: GetActiveProcessorCount is accurate.
+		for (USHORT g : processGroups) {
+			size_t gc = (size_t)GetActiveProcessorCount(g);
+			if (gc > 0) count += gc;
+		}
+	}
+	if (count == 0) {
+		DWORD_PTR processMask = 0, systemMask = 0;
+		if (GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) && processMask != 0) {
+			size_t aff_count = 0;
+			for (DWORD_PTR m = processMask; m > 0; m &= (m - 1)) aff_count++;
+			count = aff_count;
+		}
+	}
 #endif
+	if (count == 0) {
+		count = GetCpuTopology().logicalCores;
+	}
 	if (count == 0) {
 		count = std::thread::hardware_concurrency();
 	}
-	if (count > 32) count = 32;
+	if (count > 128) count = 128;
 	if (count == 0) count = 1;
 
 	s_cached = count;
@@ -191,8 +235,9 @@ size_t GetEffectiveCpuCount() {
 // Matches the JS implementation at lib/par3gen.js:594-604.
 //
 // Parallelization: distributes rows across std::async workers via row-stealing
-// (std::atomic<size_t> nextRow).  Single-row or single-worker workloads fall
-// through to a serial loop.
+// (std::atomic<size_t> nextRow). Single-row, single-worker, or small-matrix
+// (<= 32768 elements) workloads fall through to a serial SIMD-batched loop to
+// eliminate thread spawn overhead.
 // ============================================================================
 void GF64Controller::BuildCauchyMatrix(
 	gf64_t* coeffMatrix,
@@ -211,7 +256,7 @@ void GF64Controller::BuildCauchyMatrix(
 	// to the row-stealing default path below.
 	(void)0;
 
-	if (numRecovery <= 1 || s_cauchyWorkerCount <= 1) {
+	if (numRecovery <= 1 || s_cauchyWorkerCount <= 1 || (numRecovery * numInputs <= 32768)) {
 		// v2 fix: build the row's denominators into a flat array, call the
 		// SIMD-batched gf64_inverse_batch_* once, scatter the inverses back
 		// into the row. The original code called the scalar gf64_inverse()
@@ -575,16 +620,17 @@ static size_t AutotuneBlockSize() {
 // recovery blocks or input blocks.
 // ============================================================================
 struct WorkerRange {
-	gf64_t*       out_start;       // first recovery block of this worker
-	size_t        num_out;         // how many recovery blocks this worker handles
-	size_t        total_num_out;   // total recovery blocks across all workers
-	const gf64_t* in;
-	size_t        num_in;
-	const gf64_t* coeff_row_start; // coeffMatrix + outStart * coeff_stride
-	size_t        coeff_stride;    // row stride in coefficient matrix
-	size_t        block_size64;
-	size_t        tile_size;       // L3-aware input tile size (in blocks)
-	bool          accumulate;      // accumulate into out_start rather than zeroing
+	gf64_t*       out_start = nullptr;       // first recovery block of this worker (or slice start)
+	size_t        num_out = 0;               // how many recovery blocks this worker handles
+	size_t        total_num_out = 0;         // total recovery blocks across all workers
+	const gf64_t* in = nullptr;              // first input block of this worker (or slice start)
+	size_t        num_in = 0;
+	const gf64_t* coeff_row_start = nullptr; // coeffMatrix + outStart * coeff_stride
+	size_t        coeff_stride = 0;          // row stride in coefficient matrix
+	size_t        block_size64 = 0;          // slice length in words
+	size_t        block_stride64 = 0;        // stride between blocks in words (defaults to block_size64 if 0)
+	size_t        tile_size = 0;             // L3-aware input tile size (in blocks)
+	bool          accumulate = false;        // accumulate into out_start rather than zeroing
 };
 
 static inline void xor_buffer(gf64_t* dst, const gf64_t* src, size_t count) {
@@ -624,7 +670,8 @@ static void WorkerThread(const WorkerRange& range) {
 	const size_t num_in = range.num_in;
 	const size_t num_out = range.num_out;
 	const size_t total_num_out = range.total_num_out;
-	const size_t B = range.block_size64;
+	const size_t slice_len = range.block_size64;
+	const size_t stride_len = range.block_stride64 ? range.block_stride64 : slice_len;
 	const size_t stride = range.coeff_stride;
 
 	if (total_num_out <= 32) {
@@ -635,7 +682,7 @@ static void WorkerThread(const WorkerRange& range) {
 		// exactly once. This eliminates the multi-pass input read traffic.
 		if (!range.accumulate) {
 			for (size_t k = 0; k < num_out; k++) {
-				memset(range.out_start + k * B, 0, B * sizeof(gf64_t));
+				memset(range.out_start + k * stride_len, 0, slice_len * sizeof(gf64_t));
 			}
 		}
 		if (num_out == 1) {
@@ -643,7 +690,7 @@ static void WorkerThread(const WorkerRange& range) {
 			for (size_t j = 0; j < num_in; j++) {
 				gf64_t c = row[j];
 				if (c != 0) {
-					gf64_region_muladd_arr(range.out_start, range.in + j * B, &c, B, 1);
+					gf64_region_muladd_arr(range.out_start, range.in + j * stride_len, &c, slice_len, 1);
 				}
 			}
 			return;
@@ -651,15 +698,15 @@ static void WorkerThread(const WorkerRange& range) {
 
 		gf64_t* outs_ptrs[32];
 		for (size_t k = 0; k < num_out; k++) {
-			outs_ptrs[k] = range.out_start + k * B;
+			outs_ptrs[k] = range.out_start + k * stride_len;
 		}
 		const gf64_t* coeff_ptrs[32];
 		for (size_t j = 0; j < num_in; j++) {
-			const gf64_t* in_block = range.in + j * B;
+			const gf64_t* in_block = range.in + j * stride_len;
 			for (size_t k = 0; k < num_out; k++) {
 				coeff_ptrs[k] = &range.coeff_row_start[k * stride + j];
 			}
-			gf64_region_fused_output_muladd_arr(outs_ptrs, in_block, coeff_ptrs, B, num_out);
+			gf64_region_fused_output_muladd_arr(outs_ptrs, in_block, coeff_ptrs, slice_len, num_out);
 		}
 		return;
 	}
@@ -685,9 +732,9 @@ static void WorkerThread(const WorkerRange& range) {
 			outs_ptr = outs_heap.data();
 		}
 		for (size_t k_local = 0; k_local < Kk; k_local++) {
-			outs_ptr[k_local] = range.out_start + (k_start + k_local) * B;
+			outs_ptr[k_local] = range.out_start + (k_start + k_local) * stride_len;
 			if (!range.accumulate) {
-				memset(outs_ptr[k_local], 0, B * sizeof(gf64_t));
+				memset(outs_ptr[k_local], 0, slice_len * sizeof(gf64_t));
 			}
 		}
 
@@ -705,7 +752,7 @@ static void WorkerThread(const WorkerRange& range) {
 					in_blocks_ptr = in_blocks_heap.data();
 				}
 				for (size_t g_local = 0; g_local < Gk; g_local++) {
-					in_blocks_ptr[g_local] = range.in + (j + g_local) * B;
+					in_blocks_ptr[g_local] = range.in + (j + g_local) * stride_len;
 				}
 				gf64_region_2d_muladd_arr(
 					(gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT)outs_ptr,
@@ -714,7 +761,7 @@ static void WorkerThread(const WorkerRange& range) {
 					Gk,
 					coeff_base + j,
 					stride,
-					B);
+					slice_len);
 			}
 		} else {
 			for (size_t j_tile = 0; j_tile < num_in; j_tile += range.tile_size) {
@@ -727,7 +774,7 @@ static void WorkerThread(const WorkerRange& range) {
 						in_blocks_ptr = in_blocks_heap.data();
 					}
 					for (size_t g_local = 0; g_local < Gk; g_local++) {
-						in_blocks_ptr[g_local] = range.in + (j + g_local) * B;
+						in_blocks_ptr[g_local] = range.in + (j + g_local) * stride_len;
 					}
 					gf64_region_2d_muladd_arr(
 						(gf64_t *HEDLEY_RESTRICT *HEDLEY_RESTRICT)outs_ptr,
@@ -736,7 +783,7 @@ static void WorkerThread(const WorkerRange& range) {
 						Gk,
 						coeff_base + j,
 						stride,
-						B);
+						slice_len);
 				}
 			}
 		}
@@ -1042,6 +1089,7 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		r.coeff_row_start = coeff;
 		r.coeff_stride = numInputs;
 		r.block_size64 = blockSize64;
+		r.block_stride64 = blockSize64;
 		r.tile_size = tileSize;
 		r.accumulate = accumulate;
 		WorkerThread(r);
@@ -1090,8 +1138,10 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 
 		if (alloc_ok) {
 			s_last_decomposition_path.store(2);
+			WorkerRange r0;
+			bool r0_set = false;
 			std::vector<std::thread> workers;
-			workers.reserve(n_input_workers);
+			workers.reserve(n_input_workers > 1 ? (n_input_workers - 1) : 0);
 
 			for (size_t t = 0; t < n_input_workers; t++) {
 				size_t in_start = (t * numInputs) / n_input_workers;
@@ -1108,10 +1158,20 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 				r.coeff_row_start = coeff + in_start;
 				r.coeff_stride = numInputs;
 				r.block_size64 = blockSize64;
+				r.block_stride64 = blockSize64;
 				r.tile_size = tileSize;
 				r.accumulate = (t == 0) ? accumulate : false;
 
-				workers.emplace_back(WorkerThread, r);
+				if (t == 0) {
+					r0 = r;
+					r0_set = true;
+				} else {
+					workers.emplace_back(WorkerThread, r);
+				}
+			}
+
+			if (r0_set) {
+				WorkerThread(r0);
 			}
 
 			for (auto& w : workers) {
@@ -1138,40 +1198,71 @@ void GF64Controller::ComputeRecoveryBlocksWithCoeff(
 		}
 	}
 
-	// Case 3: Output-domain decomposition (standard path when numThreads <= numRecovery)
+	// Case 3: Output-domain & 2D Block-Domain Decomposition (Issue #119)
+	// Partitions output recovery blocks (SR) and block byte ranges (SB) across workers.
+	// Zero scratch allocations, zero XOR reductions, and calling-thread reuse for worker 0.
 	s_last_decomposition_path.store(3);
-	if ((size_t)numThreads > numRecovery) numThreads = (int)numRecovery;
-	size_t n_workers = (size_t)numThreads;
-	size_t chunk = (numRecovery + n_workers - 1) / n_workers;
-	size_t base = 0;
 
-	std::thread* workers = new std::thread[n_workers];
-	size_t active = 0;
+	size_t SR = std::min((size_t)numThreads, numRecovery);
+	if (SR == 0) SR = 1;
 
-	while (base < numRecovery) {
-		size_t end = std::min(base + chunk, numRecovery);
-		WorkerRange r;
-		r.out_start       = recovery + base * blockSize64;
-		r.num_out         = end - base;
-		r.total_num_out   = numRecovery;
-		r.in              = inputs;
-		r.num_in          = numInputs;
-		r.coeff_row_start = coeff + base * numInputs;
-		r.coeff_stride    = numInputs;
-		r.block_size64    = blockSize64;
-		r.tile_size       = tileSize;
-		r.accumulate      = accumulate;
-
-		new (&workers[active]) std::thread(WorkerThread, r);
-		active++;
-		base = end;
+	size_t SB = 1;
+	size_t block_bytes = blockSize64 * sizeof(gf64_t);
+	size_t min_slice_bytes = 64 * 1024; // 64 KiB min slice
+	if ((size_t)numThreads > SR && block_bytes >= min_slice_bytes && (blockSize64 % 8 == 0)) {
+		size_t max_sb_threads = (size_t)numThreads / SR;
+		size_t max_sb_blocks = block_bytes / min_slice_bytes;
+		SB = std::min(max_sb_threads, max_sb_blocks);
+		if (SB == 0) SB = 1;
 	}
 
-	for (size_t i = 0; i < active; i++) {
-		workers[i].join();
+	size_t n_workers = SR * SB;
+	std::vector<WorkerRange> ranges;
+	ranges.reserve(n_workers);
+
+	for (size_t wr = 0; wr < SR; wr++) {
+		size_t r_start = (wr * numRecovery) / SR;
+		size_t r_end = ((wr + 1) * numRecovery) / SR;
+		size_t r_count = r_end - r_start;
+		if (r_count == 0) continue;
+
+		for (size_t wb = 0; wb < SB; wb++) {
+			size_t o_start = ((wb * blockSize64) / SB) & ~7ULL; // 64-byte (8 words) aligned
+			size_t o_end = (wb + 1 == SB) ? blockSize64 : ((((wb + 1) * blockSize64) / SB) & ~7ULL);
+			size_t o_words = (o_end > o_start) ? (o_end - o_start) : 0;
+			if (o_words == 0) continue;
+
+			WorkerRange r;
+			r.out_start       = recovery + r_start * blockSize64 + o_start;
+			r.num_out         = r_count;
+			r.total_num_out   = numRecovery;
+			r.in              = inputs + o_start;
+			r.num_in          = numInputs;
+			r.coeff_row_start = coeff + r_start * numInputs;
+			r.coeff_stride    = numInputs;
+			r.block_size64    = o_words;
+			r.block_stride64  = blockSize64;
+			r.tile_size       = tileSize;
+			r.accumulate      = accumulate;
+
+			ranges.push_back(r);
+		}
 	}
 
-	delete[] workers;
+	size_t active = ranges.size();
+	if (active == 1) {
+		WorkerThread(ranges[0]);
+	} else if (active > 1) {
+		std::vector<std::thread> workers;
+		workers.reserve(active - 1);
+		for (size_t i = 1; i < active; i++) {
+			workers.emplace_back(WorkerThread, ranges[i]);
+		}
+		WorkerThread(ranges[0]);
+		for (auto& w : workers) {
+			w.join();
+		}
+	}
 }
 
 // ============================================================================

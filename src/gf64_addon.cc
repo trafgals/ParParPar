@@ -29,6 +29,7 @@
 
 #include "gf64_global.h"
 #include "par3_engine.h"
+#include "par3_topology.h"
 #include "platform.h"
 #include "../hasher/hasher_blake3.h"
 
@@ -3156,6 +3157,43 @@ static napi_value GetLastDecompositionPath_NAPI(napi_env env, napi_callback_info
 	return result;
 }
 
+static napi_value GetCpuTopology_NAPI(napi_env env, napi_callback_info info) {
+	(void)info;
+	CpuTopology topo = GetCpuTopology();
+	napi_value obj;
+	napi_status status = napi_create_object(env, &obj);
+	if (status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create topology object");
+		return NULL;
+	}
+
+	auto set_prop = [&](const char* name, size_t num) -> bool {
+		napi_value val;
+		if (napi_create_int64(env, (int64_t)num, &val) != napi_ok) return false;
+		if (napi_set_named_property(env, obj, name, val) != napi_ok) return false;
+		return true;
+	};
+
+	if (!set_prop("physicalCores", topo.physicalCores) ||
+	    !set_prop("logicalCores", topo.logicalCores) ||
+	    !set_prop("l3PerCluster", topo.l3PerCluster) ||
+	    !set_prop("numClusters", topo.numClusters) ||
+	    !set_prop("totalL3", topo.totalL3)) {
+		napi_throw_error(env, NULL, "Failed to populate topology properties");
+		return NULL;
+	}
+
+	return obj;
+}
+
+static napi_value ResetCpuTopologyCache_NAPI(napi_env env, napi_callback_info info) {
+	(void)info;
+	ResetCpuTopologyCache();
+	napi_value undef;
+	napi_get_undefined(env, &undef);
+	return undef;
+}
+
 static napi_value XorBuffers_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
 	size_t argc = 2;
@@ -3499,6 +3537,30 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "xor_buffers", xor_buffers_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set xor_buffers property");
+		return NULL;
+	}
+
+	napi_value get_cpu_topo_fn;
+	status = napi_create_function(env, NULL, 0, GetCpuTopology_NAPI, NULL, &get_cpu_topo_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create get_cpu_topology function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "get_cpu_topology", get_cpu_topo_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set get_cpu_topology property");
+		return NULL;
+	}
+
+	napi_value reset_cpu_topo_fn;
+	status = napi_create_function(env, NULL, 0, ResetCpuTopologyCache_NAPI, NULL, &reset_cpu_topo_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create reset_cpu_topology_cache function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "reset_cpu_topology_cache", reset_cpu_topo_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set reset_cpu_topology_cache property");
 		return NULL;
 	}
 
