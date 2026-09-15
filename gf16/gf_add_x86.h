@@ -17,24 +17,26 @@ static HEDLEY_ALWAYS_INLINE void _FN(gf_add_x)(
 	ASSUME((len & (sizeof(_mword)*vecStride-1)) == 0);
 	// vecStride assumed to be a known compile-time constant
 	
+	intptr_t dScale = (intptr_t)dstScale;
+	intptr_t sScale = (intptr_t)srcScale;
 	for(intptr_t ptr = -(intptr_t)len; ptr; ptr += sizeof(_mword)*vecStride) {
 		for(unsigned v=0; v<vecStride; v++) {
-			_mword data = _MMI(load)((_mword*)(_dst1+ptr*dstScale) + v);
+			_mword data = _MMI(load)((_mword*)(_dst1+ptr*dScale) + v);
 			#ifdef _ADD_USE_TERNLOG
 			# define ADD_PAIR(m, n) \
 				if(srcCount == m) \
-					data = _MMI(xor)(data, _MMI(load)((_mword*)(_src##m+ptr*srcScale) + v)); \
+					data = _MMI(xor)(data, _MMI(load)((_mword*)(_src##m+ptr*sScale) + v)); \
 				else if(srcCount > m) \
 					data = _MM(ternarylogic_epi32)(data, \
-						_MMI(load)((_mword*)(_src##m+ptr*srcScale) + v), \
-						_MMI(load)((_mword*)(_src##n+ptr*srcScale) + v), \
+						_MMI(load)((_mword*)(_src##m+ptr*sScale) + v), \
+						_MMI(load)((_mword*)(_src##n+ptr*sScale) + v), \
 					0x96)
 			#else
 			# define ADD_PAIR(m, n) \
 				if(srcCount >= m) \
-					data = _MMI(xor)(data, _MMI(load)((_mword*)(_src##m+ptr*srcScale) + v)); \
+					data = _MMI(xor)(data, _MMI(load)((_mword*)(_src##m+ptr*sScale) + v)); \
 				if(srcCount >= n) \
-					data = _MMI(xor)(data, _MMI(load)((_mword*)(_src##n+ptr*srcScale) + v))
+					data = _MMI(xor)(data, _MMI(load)((_mword*)(_src##n+ptr*sScale) + v))
 			#endif
 			ADD_PAIR(1, 2);
 			ADD_PAIR(3, 4);
@@ -46,7 +48,7 @@ static HEDLEY_ALWAYS_INLINE void _FN(gf_add_x)(
 			ADD_PAIR(15, 16);
 			ADD_PAIR(17, 18);
 			#undef ADD_PAIR
-			_MMI(store)((_mword*)(_dst1+ptr*dstScale) + v, data);
+			_MMI(store)((_mword*)(_dst1+ptr*dScale) + v, data);
 		}
 		
 		if(vecStride == 16) {

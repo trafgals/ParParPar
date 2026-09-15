@@ -50,6 +50,15 @@ struct HasherCpuCap {
 					hasAVX512F = ((cpuInfoX[1] & 0x10000) == 0x10000);
 					hasAVX512VLBW = ((cpuInfoX[1] & 0xC0010100) == 0xC0010100); // AVX512VL + AVX512BW + AVX512F + BMI2
 				}
+				// AVX10.1/256 promotion: on CPUs with AVX10 and opmask enabled (xcr bit 5),
+				// 256-bit AVX512VL+BW+F instructions are supported without 512-bit ZMM registers
+				if(!hasAVX512VLBW && (xcr & 0x20) == 0x20) {
+					int cpuInfo7_1[4];
+					_cpuidX(cpuInfo7_1, 7, 1);
+					if((cpuInfo7_1[3] & (1 << 19)) && (cpuInfoX[1] & 0x100)) { // AVX10 + BMI2
+						hasAVX512VLBW = true;
+					}
+				}
 			}
 		}
 #endif

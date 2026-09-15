@@ -118,7 +118,7 @@ process.on('exit', cleanupTmp);
 		assert.strictEqual(fA2.sha256_16k.toString('hex'), expectedSha256_16k);
 
 		assert.strictEqual(fB2.size, 0);
-		assert.strictEqual(fB2.sha256_16k.length, 32);
+		assert.strictEqual(fB2.sha256_16k.toString('hex'), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
 
 		// Verify par2gen.fileInfo delegates correctly
 		var p2Info = await new Promise(function(resolve, reject) {

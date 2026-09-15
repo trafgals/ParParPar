@@ -34,42 +34,44 @@ static HEDLEY_ALWAYS_INLINE void gf16_clmul_muladd_x_rvv(
 	UNUSED(scratch);
 	
 	size_t vl = RV(vsetvlmax_e8m1)();
+	intptr_t dScale = (intptr_t)dstScale;
+	intptr_t sScale = (intptr_t)srcScale;
 	for(intptr_t ptr = -(intptr_t)len; ptr; ptr += vl) {
 		// TODO: does RISC-V have prefetch instructions?
 		UNUSED(doPrefetch); UNUSED(_pf);
 		
 		vuint64m1_t ra, rb;
-		gf16_clmul_rvv_round0(vl, _src1+ptr*srcScale, &ra, &rb, coefficients[0]);
+		gf16_clmul_rvv_round0(vl, _src1+ptr*sScale, &ra, &rb, coefficients[0]);
 		if(srcCount > 1)
-			gf16_clmul_rvv_round(vl, _src2+ptr*srcScale, &ra, &rb, coefficients[1]);
+			gf16_clmul_rvv_round(vl, _src2+ptr*sScale, &ra, &rb, coefficients[1]);
 		if(srcCount > 2)
-			gf16_clmul_rvv_round(vl, _src3+ptr*srcScale, &ra, &rb, coefficients[2]);
+			gf16_clmul_rvv_round(vl, _src3+ptr*sScale, &ra, &rb, coefficients[2]);
 		if(srcCount > 3)
-			gf16_clmul_rvv_round(vl, _src4+ptr*srcScale, &ra, &rb, coefficients[3]);
+			gf16_clmul_rvv_round(vl, _src4+ptr*sScale, &ra, &rb, coefficients[3]);
 		if(srcCount > 4)
-			gf16_clmul_rvv_round(vl, _src5+ptr*srcScale, &ra, &rb, coefficients[4]);
+			gf16_clmul_rvv_round(vl, _src5+ptr*sScale, &ra, &rb, coefficients[4]);
 		if(srcCount > 5)
-			gf16_clmul_rvv_round(vl, _src6+ptr*srcScale, &ra, &rb, coefficients[5]);
+			gf16_clmul_rvv_round(vl, _src6+ptr*sScale, &ra, &rb, coefficients[5]);
 		if(srcCount > 6)
-			gf16_clmul_rvv_round(vl, _src7+ptr*srcScale, &ra, &rb, coefficients[6]);
+			gf16_clmul_rvv_round(vl, _src7+ptr*sScale, &ra, &rb, coefficients[6]);
 		if(srcCount > 7)
-			gf16_clmul_rvv_round(vl, _src8+ptr*srcScale, &ra, &rb, coefficients[7]);
+			gf16_clmul_rvv_round(vl, _src8+ptr*sScale, &ra, &rb, coefficients[7]);
 		if(srcCount > 8)
-			gf16_clmul_rvv_round(vl, _src9+ptr*srcScale, &ra, &rb, coefficients[8]);
+			gf16_clmul_rvv_round(vl, _src9+ptr*sScale, &ra, &rb, coefficients[8]);
 		if(srcCount > 9)
-			gf16_clmul_rvv_round(vl, _src10+ptr*srcScale, &ra, &rb, coefficients[9]);
+			gf16_clmul_rvv_round(vl, _src10+ptr*sScale, &ra, &rb, coefficients[9]);
 		if(srcCount > 10)
-			gf16_clmul_rvv_round(vl, _src11+ptr*srcScale, &ra, &rb, coefficients[10]);
+			gf16_clmul_rvv_round(vl, _src11+ptr*sScale, &ra, &rb, coefficients[10]);
 		if(srcCount > 11)
-			gf16_clmul_rvv_round(vl, _src12+ptr*srcScale, &ra, &rb, coefficients[11]);
+			gf16_clmul_rvv_round(vl, _src12+ptr*sScale, &ra, &rb, coefficients[11]);
 		
 		// reduce & add to dest
 		vuint16m1_t r = RV(vxor_vv_u16m1)(
 			gf16_clmul_rvv_reduction(ra, rb, vl),
-			RV(vle16_v_u16m1)((const uint16_t*)(_dst1+ptr*dstScale), vl),
+			RV(vle16_v_u16m1)((const uint16_t*)(_dst1+ptr*dScale), vl),
 			vl
 		);
-		RV(vse16_v_u16m1)((uint16_t*)(_dst1+ptr*dstScale), r, vl);
+		RV(vse16_v_u16m1)((uint16_t*)(_dst1+ptr*dScale), r, vl);
 	}
 }
 

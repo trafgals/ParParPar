@@ -22,44 +22,47 @@ static HEDLEY_ALWAYS_INLINE void gf_add_x_neon(
 	GF16_BLKMAC_SRCDST_UNUSED(18, 1);
 	UNUSED(scratch); UNUSED(coefficients);
 	
+	intptr_t dScale = (intptr_t)dstScale;
+	intptr_t sScale = (intptr_t)srcScale;
+	
 	#define DO_PROCESS \
-		uint8x16x2_t data = vld1q_u8_x2_align(_dst1+ptr*dstScale); \
-		data = veorq_u8_x2(data, _vld1q_u8_x2(_src1+ptr*srcScale)); \
+		uint8x16x2_t data = vld1q_u8_x2_align(_dst1+ptr*dScale); \
+		data = veorq_u8_x2(data, _vld1q_u8_x2(_src1+ptr*sScale)); \
 		if(srcCount >= 2) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src2+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src2+ptr*sScale)); \
 		if(srcCount >= 3) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src3+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src3+ptr*sScale)); \
 		if(srcCount >= 4) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src4+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src4+ptr*sScale)); \
 		if(srcCount >= 5) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src5+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src5+ptr*sScale)); \
 		if(srcCount >= 6) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src6+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src6+ptr*sScale)); \
 		if(srcCount >= 7) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src7+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src7+ptr*sScale)); \
 		if(srcCount >= 8) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src8+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src8+ptr*sScale)); \
 		if(srcCount >= 9) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src9+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src9+ptr*sScale)); \
 		if(srcCount >= 10) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src10+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src10+ptr*sScale)); \
 		if(srcCount >= 11) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src11+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src11+ptr*sScale)); \
 		if(srcCount >= 12) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src12+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src12+ptr*sScale)); \
 		if(srcCount >= 13) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src13+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src13+ptr*sScale)); \
 		if(srcCount >= 14) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src14+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src14+ptr*sScale)); \
 		if(srcCount >= 15) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src15+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src15+ptr*sScale)); \
 		if(srcCount >= 16) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src16+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src16+ptr*sScale)); \
 		if(srcCount >= 17) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src17+ptr*srcScale)); \
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src17+ptr*sScale)); \
 		if(srcCount >= 18) \
-			data = veorq_u8_x2(data, _vld1q_u8_x2(_src18+ptr*srcScale)); \
-		vst1q_u8_x2_align(_dst1+ptr*dstScale, data)
+			data = veorq_u8_x2(data, _vld1q_u8_x2(_src18+ptr*sScale)); \
+		vst1q_u8_x2_align(_dst1+ptr*dScale, data)
 	
 	if(doPrefetch) {
 		intptr_t ptr = -(intptr_t)len;
