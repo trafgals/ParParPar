@@ -131,13 +131,41 @@ static size_t s_cauchyWorkerCount = 0;
 // Effective CPU count  (affinity- and topology-aware)
 // ----------------------------------------------------------------------------
 // Returns the number of CPUs the process is allowed to run on according to
-// the thread's CPU affinity mask, falling back to GetCpuTopology().logicalCores
-// and std::thread::hardware_concurrency(). Capped at 128 to keep per-worker
-// overhead bounded on high-core-count architectures.
+// OS affinity masks (Linux sched_getaffinity, Windows Job Objects / CPU sets /
+// GetProcessGroupAffinity / GetProcessAffinityMask), falling back to
+// GetCpuTopology().logicalCores and std::thread::hardware_concurrency().
+// Capped at 128 to keep per-worker overhead bounded on high-core-count
+// architectures.
 // ============================================================================
+static size_t s_effectiveCpuCountCached = 0;
+
+void ResetEffectiveCpuCountCache() {
+	s_effectiveCpuCountCached = 0;
+}
+
 size_t GetEffectiveCpuCount() {
-	static size_t s_cached = 0;
-	if (s_cached != 0) return s_cached;
+#ifdef _WIN32
+	char mockEffEnv[32];
+	DWORD envLen = GetEnvironmentVariableA("PAR3_MOCK_EFFECTIVE_CPUS", mockEffEnv, sizeof(mockEffEnv));
+	if (envLen > 0 && envLen < sizeof(mockEffEnv)) {
+		int v = std::atoi(mockEffEnv);
+		if (v > 0) {
+			if (v > 128) v = 128;
+			return (size_t)v;
+		}
+	}
+#else
+	const char* mockEffEnv = std::getenv("PAR3_MOCK_EFFECTIVE_CPUS");
+	if (mockEffEnv && *mockEffEnv) {
+		int v = std::atoi(mockEffEnv);
+		if (v > 0) {
+			if (v > 128) v = 128;
+			return (size_t)v;
+		}
+	}
+#endif
+
+	if (s_effectiveCpuCountCached != 0) return s_effectiveCpuCountCached;
 
 	size_t count = 0;
 #ifdef __linux__
@@ -164,54 +192,92 @@ size_t GetEffectiveCpuCount() {
 		}
 	}
 	if (processGroups.size() > 1) {
-		// Multi-group: enumerate RelationGroup entries and count bits that
-		// belong to a group the process actually uses. The process group
-		// number equals the index into GroupInfo (the API does not return
-		// the group number per entry — see _GROUP_RELATIONSHIP docs).
-		DWORD len = 0;
-		GetLogicalProcessorInformationEx(RelationGroup, nullptr, &len);
-		if (len > 0) {
-			std::vector<uint8_t> buffer(len);
-			if (GetLogicalProcessorInformationEx(RelationGroup,
-			    reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &len)) {
-				size_t total_aff = 0;
-				DWORD offset = 0;
-				while (offset < len) {
-					auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
-					if (info->Relationship == RelationGroup) {
-						WORD activeGroupCount = info->Group.ActiveGroupCount;
-						for (WORD gi = 0; gi < activeGroupCount; gi++) {
-							WORD g = gi;  // GroupInfo index == group number
-							KAFFINITY mask = info->Group.GroupInfo[gi].ActiveProcessorMask;
-							bool processUsesGroup = false;
-							for (USHORT pg : processGroups) {
-								if (pg == g) { processUsesGroup = true; break; }
-							}
-							if (!processUsesGroup) continue;
-							for (KAFFINITY m = mask; m != 0; m &= (m - 1)) total_aff++;
-						}
-					}
-					offset += info->Size;
-				}
-				if (total_aff > 0) count = total_aff;
+		// Multi-group: check if restricted by a multi-group Job Object first.
+		std::vector<GROUP_AFFINITY> jobAffinities;
+		DWORD jobLen = 0;
+		if (!QueryInformationJobObject(NULL, (JOBOBJECTINFOCLASS)14 /* JobObjectGroupInformationEx */, nullptr, 0, &jobLen) &&
+		    (GetLastError() == ERROR_MORE_DATA || GetLastError() == ERROR_INSUFFICIENT_BUFFER) && jobLen > 0) {
+			jobAffinities.resize(jobLen / sizeof(GROUP_AFFINITY));
+			if (!QueryInformationJobObject(NULL, (JOBOBJECTINFOCLASS)14, jobAffinities.data(), jobLen, &jobLen)) {
+				jobAffinities.clear();
 			}
 		}
-	} else if (!processGroups.empty()) {
-		// Single-group process: GetActiveProcessorCount is accurate.
-		for (USHORT g : processGroups) {
-			size_t gc = (size_t)GetActiveProcessorCount(g);
-			if (gc > 0) count += gc;
+
+		size_t total_aff = 0;
+		if (!jobAffinities.empty()) {
+			for (USHORT g : processGroups) {
+				size_t group_cpus = 0;
+				bool found_job_aff = false;
+				for (const auto& ga : jobAffinities) {
+					if (ga.Group == g) {
+						found_job_aff = true;
+						if (ga.Mask != 0) {
+							for (KAFFINITY m = ga.Mask; m > 0; m &= (m - 1)) group_cpus++;
+						} else {
+							group_cpus = (size_t)GetActiveProcessorCount(g);
+						}
+						break;
+					}
+				}
+				if (!found_job_aff) {
+					group_cpus = (size_t)GetActiveProcessorCount(g);
+				}
+				total_aff += group_cpus;
+			}
+		} else {
+			// Enumerate RelationGroup entries and count active processors in assigned groups
+			DWORD len = 0;
+			GetLogicalProcessorInformationEx(RelationGroup, nullptr, &len);
+			if (len > 0) {
+				std::vector<uint8_t> buffer(len);
+				if (GetLogicalProcessorInformationEx(RelationGroup,
+				    reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &len)) {
+					DWORD offset = 0;
+					while (offset < len) {
+						auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
+						if (info->Relationship == RelationGroup) {
+							WORD activeGroupCount = info->Group.ActiveGroupCount;
+							for (WORD gi = 0; gi < activeGroupCount; gi++) {
+								WORD g = gi;
+								KAFFINITY mask = info->Group.GroupInfo[gi].ActiveProcessorMask;
+								bool processUsesGroup = false;
+								for (USHORT pg : processGroups) {
+									if (pg == g) { processUsesGroup = true; break; }
+								}
+								if (!processUsesGroup) continue;
+								for (KAFFINITY m = mask; m != 0; m &= (m - 1)) total_aff++;
+							}
+						}
+						offset += info->Size;
+					}
+				}
+			}
 		}
-	}
-	if (count == 0) {
+	} else {
+		// Single-group or unassigned process: query process affinity mask first
 		DWORD_PTR processMask = 0, systemMask = 0;
 		if (GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) && processMask != 0) {
 			size_t aff_count = 0;
 			for (DWORD_PTR m = processMask; m > 0; m &= (m - 1)) aff_count++;
 			count = aff_count;
 		}
+		if (count == 0 && !processGroups.empty()) {
+			for (USHORT g : processGroups) {
+				size_t gc = (size_t)GetActiveProcessorCount(g);
+				if (gc > 0) count += gc;
+			}
+		}
+	}
+	// Check if restricted by Process Default CPU Sets (Windows 10 / Server 2016+)
+	ULONG cpuSetCount = 0;
+	if (GetProcessDefaultCpuSets(GetCurrentProcess(), nullptr, 0, &cpuSetCount) && cpuSetCount > 0) {
+		if (count == 0 || (size_t)cpuSetCount < count) {
+			count = (size_t)cpuSetCount;
+		}
 	}
 #endif
+
+
 	if (count == 0) {
 		count = GetCpuTopology().logicalCores;
 	}
@@ -221,7 +287,7 @@ size_t GetEffectiveCpuCount() {
 	if (count > 128) count = 128;
 	if (count == 0) count = 1;
 
-	s_cached = count;
+	s_effectiveCpuCountCached = count;
 	return count;
 }
 

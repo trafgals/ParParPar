@@ -58,22 +58,25 @@ If the PR target looks like `animetosho/ParPar`, STOP and switch to `trafgals/pa
 
 ## CI Watching Rules
 
-**Always watch CI with an exit-status flag so a failing run fails the command — never fire-and-forget a PR push or sleep-poll.**
+**Always watch CI with an exit-status flag so a failing run fails the command — never fire-and-forget a PR push, never sleep-poll, and never issue repeated manual status/poll commands.**
 
 ```bash
-# CORRECT — watch a PR's CI checks, exit watch mode (non-zero) on the first failure
-gh pr checks <number> --watch --fail-fast --interval 10
+# CORRECT — watch a PR's CI checks, wait up to 1 hour for exit status, fail on first failure
+gh pr checks <number> --watch --fail-fast
 
-# CORRECT — watch a specific workflow run; exit non-zero if it fails
+# CORRECT — watch a specific workflow run; wait up to 1 hour, exit non-zero if it fails
 gh run watch <run-id> --exit-status
 ```
 
 Verified against gh 2.85.0 (2026-01-14): there is **no** `gh watch` command and **no** `--exit-code` flag. The exit-status flags are `--fail-fast` (on `gh pr checks --watch`) and `--exit-status` (on `gh run watch`) — do not write `gh watch ... --exit-code` in scripts, docs, or PR instructions.
 
-- `gh pr checks --watch` polls until all checks finish; `--fail-fast` aborts the watch the moment a check fails (the command then exits non-zero) instead of waiting for every check to complete.
-- `gh run watch <run-id>` streams a run to completion; `--exit-status` makes the exit code reflect the run's success/failure, so it can gate `&&`/`||` chains and CI steps.
-- Interval flag on both commands: `-i/--interval` (`gh pr checks` default 10 s, `gh run watch` default 3 s).
-- Before merging a PR: `gh pr checks <number> --watch --fail-fast` must exit 0 AND the review threads must be resolved — threads anchor to commit SHAs and can stay open after the code is fixed.
+### Strict Rules:
+1. **NO POLLING**: Do NOT run repeated status commands (`gh pr checks`, `gh run view`, sleep loops, etc.) to check on CI progress. Launch a single watch command with `--exit-status` or `--fail-fast` and let it run.
+2. **WAIT UP TO 1 HOUR**: Allow the command to block or run in the background for up to 1 hour until it completes on its own. Rely on reactive completion notification rather than polling task status.
+3. **FAIL-FAST & EXIT STATUS**:
+   - `gh pr checks <number> --watch --fail-fast` waits until all checks finish or aborts immediately on the first check failure with a non-zero exit code.
+   - `gh run watch <run-id> --exit-status` streams run events and exits with the workflow's exit code.
+4. **Before merging a PR**: `gh pr checks <number> --watch --fail-fast` must exit 0 AND all review threads must be resolved — threads anchor to commit SHAs and can stay open after the code is fixed.
 
 ## Test Discipline for PR Comments
 

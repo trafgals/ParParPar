@@ -3194,6 +3194,25 @@ static napi_value ResetCpuTopologyCache_NAPI(napi_env env, napi_callback_info in
 	return undef;
 }
 
+static napi_value GetEffectiveCpuCount_NAPI(napi_env env, napi_callback_info info) {
+	(void)info;
+	size_t count = GetEffectiveCpuCount();
+	napi_value val;
+	if (napi_create_int64(env, (int64_t)count, &val) != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create effective cpu count value");
+		return NULL;
+	}
+	return val;
+}
+
+static napi_value ResetEffectiveCpuCountCache_NAPI(napi_env env, napi_callback_info info) {
+	(void)info;
+	ResetEffectiveCpuCountCache();
+	napi_value undef;
+	napi_get_undefined(env, &undef);
+	return undef;
+}
+
 static napi_value XorBuffers_NAPI(napi_env env, napi_callback_info info) {
 	napi_status status;
 	size_t argc = 2;
@@ -3561,6 +3580,30 @@ napi_value create_fn;
 	status = napi_set_named_property(env, exports, "reset_cpu_topology_cache", reset_cpu_topo_fn);
 	if(status != napi_ok) {
 		napi_throw_error(env, NULL, "Failed to set reset_cpu_topology_cache property");
+		return NULL;
+	}
+
+	napi_value get_eff_cpu_fn;
+	status = napi_create_function(env, NULL, 0, GetEffectiveCpuCount_NAPI, NULL, &get_eff_cpu_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create get_effective_cpu_count function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "get_effective_cpu_count", get_eff_cpu_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set get_effective_cpu_count property");
+		return NULL;
+	}
+
+	napi_value reset_eff_cpu_fn;
+	status = napi_create_function(env, NULL, 0, ResetEffectiveCpuCountCache_NAPI, NULL, &reset_eff_cpu_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to create reset_effective_cpu_count_cache function");
+		return NULL;
+	}
+	status = napi_set_named_property(env, exports, "reset_effective_cpu_count_cache", reset_eff_cpu_fn);
+	if(status != napi_ok) {
+		napi_throw_error(env, NULL, "Failed to set reset_effective_cpu_count_cache property");
 		return NULL;
 	}
 
