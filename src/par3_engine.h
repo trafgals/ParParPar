@@ -243,7 +243,10 @@ public:
 	);
 };
 
-/// Effective CPU count for auto-threading, respecting Linux affinity masks.
-/// Cached after the first call and capped at 32. Shared by the engine and
-/// the Fenger path (par3_engine_fenger.cc).
+/// Effective CPU count for auto-threading, respecting OS affinity masks
+/// (sched_getaffinity on POSIX; GetProcessGroupAffinity / GetProcessAffinityMask
+/// on Windows). Falls back to GetCpuTopology().logicalCores and
+/// std::thread::hardware_concurrency(). Cached after the first call and capped
+/// at 128 to keep per-worker overhead bounded on high-core-count architectures.
+/// Shared by the engine and the Fenger path (par3_engine_fenger.cc).
 size_t GetEffectiveCpuCount(void);

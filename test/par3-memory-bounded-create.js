@@ -381,7 +381,8 @@ function runTest() {
 				fail("Issue #113 alignment verification error", errAlign);
 			}
 
-			// 2. Test default chunked create with 70 MiB file (> 64 MiB default chunkCapBytes)
+			// 2. Test default chunked create with 70 MiB file (> adaptive chunkCapBytes
+			//    from getOptimalChunkCap — 64 MiB on 7800X3D, smaller on low-L3 hosts).
 			var file70M = path.join(tmpDir, "issue113_70M.bin");
 			var out70M = path.join(tmpDir, "issue113_70M_out");
 			var size70M = 70 * 1024 * 1024; // 70 MiB
@@ -419,13 +420,14 @@ function runTest() {
 				console.log("  Default 70M create Peak RSS:    " + (peakRss / 1048576).toFixed(1) + " MiB");
 				console.log("  Default 70M create Peak RSS Δ:  " + (peakRssDelta / 1048576).toFixed(1) + " MiB");
 
-				// Sized to 64 MiB chunk: peak RSS delta must not spike by the full 70 MiB + full recovery
+				// Sized to default chunk cap (getOptimalChunkCap, 64 MiB on 7800X3D):
+				// peak RSS delta must not spike by the full 70 MiB + full recovery.
 				var maxAllowedDelta = 120 * 1024 * 1024; // 120 MiB ceiling
 				if (peakRssDelta > maxAllowedDelta) {
 					fail("Issue #113: Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB exceeded budget " + (maxAllowedDelta / 1048576).toFixed(1) + " MiB");
 				} else {
-					pass("Issue #113: 70 MiB default create bounded to 64 MiB chunks with Peak RSS Δ " + (peakRssDelta / 1048576).toFixed(1) + " MiB");
-				}
+					pass("Issue #113: 70 MiB default create bounded to default chunks (" + (peakRssDelta / 1048576).toFixed(1) + " MiB peak RSS Δ)");
+			}
 
 				par3gen.verify(out70M + ".par3", function(errV, resV) {
 					if (errV || !resV || !resV.archiveOk) {
@@ -513,7 +515,7 @@ function runTest() {
 					fail("Issue #117 / #119: expected " + expectedCap + ", got " + cap32G);
 				}
 
-				// Explicit 96 MiB Zen4 topology yields exact 64 MiB regardless of host
+				// Explicit 96 MiB Zen4 topology yields 64 MiB (2/3 of 96 MiB clamped to 64 MiB max)
 				var topo96M = { l3PerCluster: 96 * 1024 * 1024 };
 				var capExplicit96M = par3gen.decideChunkCapBytes(32 * 1024 * 1024 * 1024, 8, 64 * 1024, "matvec", null, topo96M);
 				if (capExplicit96M === 64 * 1024 * 1024) {
