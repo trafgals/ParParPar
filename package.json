@@ -1,6 +1,6 @@
 {
   "name": "@animetosho/parpar",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "High performance multi-threaded PAR2 creation library",
   "keywords": [
     "par2",
@@ -47,7 +47,7 @@
   "bugs": {
     "url": "https://github.com/animetosho/parpar/issues"
   },
-  "homepage": "https://animetosho.org/app/parpar",
+  "homepage": "https://github.com/animetosho/parpar",
   "devDependencies": {
     "husky": "^9.1.7",
     "node-gyp": "^12.4.0"

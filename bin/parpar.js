@@ -103,10 +103,10 @@ var opts = {
 		alias: 'f',
 		type: 'enum',
 		enum: ['basename','keep','common','outrel','path'],
-		default: 'common',
 		map: 'displayNameFormat'
 	},
 	'filepath-base': {
+		alias: 'B',
 		type: 'string',
 		map: 'displayNameBase'
 	},
@@ -333,7 +333,7 @@ try {
 }
 
 var version = require('../package.json').version;
-var creator = 'ParPar v' + version + ' ' + process.arch + ' [https://animetosho.org/app/parpar]';
+var creator = 'ParPar v' + version + ' ' + process.arch + ' [https://github.com/animetosho/parpar]';
 
 var fs = require('fs');
 /*{{!include_in_executable!
@@ -455,6 +455,9 @@ if(argv['recovery-exponents']) {
 	if(!argv.noindex)
 		error('`--recovery-exponents` cannot be used with `--noindex`');
 }
+
+if(argv['filepath-base'] && !argv['filepath-format'])
+	argv['filepath-format'] = 'path';
 
 var inputFiles = argv._;
 

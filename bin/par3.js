@@ -5,6 +5,8 @@
 var par3 = require('../lib/par3gen.js');
 var arg_parser = require('../lib/arg_parser.js');
 
+if(par3.unrefStdio) par3.unrefStdio();
+
 var cliFormat = process.stderr.isTTY ? function(code, msg) {
 	return '\x1b[' + code + 'm' + msg + '\x1b[0m';
 } : function(code, msg) { return msg; };
@@ -94,24 +96,7 @@ if(!cmd) {
 	error('No command specified');
 }
 
-var parseSize = function(s) {
-	if(typeof s === 'number') return s;
-	var parts = (''+s).toUpperCase().match(/^([0-9.]+)([BKMGTPE])$/);
-	if(parts) {
-		var num = +(parts[1]);
-		switch(parts[2]) {
-			case 'E': num *= 1024;
-			case 'P': num *= 1024;
-			case 'T': num *= 1024;
-			case 'G': num *= 1024;
-			case 'M': num *= 1024;
-			case 'K': num *= 1024;
-			case 'B': num *= 1;
-		}
-		return Math.floor(num);
-	}
-	return parseInt(s) || 0;
-};
+var parseSize = arg_parser.parseSize;
 
 var buildOpts = function() {
 	var opts = {

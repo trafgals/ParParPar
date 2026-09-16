@@ -230,7 +230,7 @@ HEDLEY_WARNING("GFNI disabled on GCC < 10 due to incorrect GF2P8AFFINEQB operand
 #endif
 
 #if (defined(_MSC_VER) && defined(__clang__)) || (defined(PARPAR_SLIM_GF16) && defined(__APPLE__))
-// ClangCL doesn't support SVE as of 15.0.1 (maybe due to not being defined on Windows-ARM?)
+// ClangCL's SVE is broken in 20.1.8, so disabled until fixed
 // No Apple CPU supports SVE, and there's no defined way to detect it, meaning it'll never get used in practice (even if a later CPU supports SVE), so strip out SVE functionality for now
 # ifdef __ARM_FEATURE_SVE
 #  undef __ARM_FEATURE_SVE
@@ -290,6 +290,11 @@ HEDLEY_WARNING("NEON disabled due to missing arm_neon.h header");
 	// MSVC doesn't support C11 aligned_alloc: https://stackoverflow.com/a/62963007
 	#define ALIGN_ALLOC(buf, len, align) *(void**)&(buf) = _aligned_malloc((len), align)
 	#define ALIGN_FREE _aligned_free
+#elif defined(__ANDROID__)
+	// Android NDK may have broken std::aligned_alloc [https://github.com/android/ndk/issues/1339]
+	#include <malloc.h>
+	#define ALIGN_ALLOC(buf, len, align) *(void**)&(buf) = memalign(align, (len))
+	#define ALIGN_FREE free
 #elif defined(_ISOC11_SOURCE)
 	// C11 method
 	// len needs to be a multiple of alignment, although it sometimes works if it isn't...
